@@ -399,8 +399,10 @@ coverage from hostnames alone. Existing unscoped cache files are ignored.
 omitting it is deliberate age-based cleanup and is unsuitable for automatic use.
 
 Custom local PID directories now contribute to destination identity and therefore
-to deterministic workload IDs. Default local/Docker IDs are unchanged. Existing
-jobs remain addressable using their saved IDs and executor configuration.
+to deterministic workload IDs. User-scoped targets also include the resolved SSH
+user, so local default-path IDs change in 0.4.0. Docker's default IDs are unchanged.
+An unresolved local principal uses a fresh placement token. Existing jobs remain
+addressable using their saved IDs, executor configuration, and recorded user.
 
 Benchmark results add `measured_at` and `completed_at`. Runtime-default and
 builder-selected images now survive interrupted result processing. Exports use
@@ -432,7 +434,25 @@ Discovery errors remain errors in previews, including when some workloads were
 found; `success` is false whenever discovery or requested teardown failed.
 
 `ClusterStatus.observation_errors` is the shared incomplete-discovery view for
-classification, occupancy scheduling, and intent/replacement checks. Custom
+classification, occupancy scheduling, strict recipe-based lifecycle discovery,
+and strict replacement checks. `find_running_intent()` and ensure remain best
+effort; `None` can also mean discovery failed. For verified absence, acquire
+status and reject `observation_errors` before interpreting a miss. Custom
 occupancy consumers should inspect it before using partial host observations.
 See [executor coverage](EXECUTORS.md#status-observation-coverage) and the
 [measurement provenance contract](BENCHMARK_API.md#effective-measurement-provenance).
+
+
+Saved local jobs retain their recorded SSH principal even after their named
+cluster changes user. Explicit incompatible user overrides and legacy records
+with no principal fail without deleting metadata; use fresh status discovery to
+inspect the intended namespace. Authentication-key rotation remains supported.
+Metadata now persists `executor_user_scoped`; old local records derive that policy
+from the executor. Placement, observation matching, and lifecycle recovery share
+one private destination definition.
+
+Pending benchmark resume validates effective serving configuration on automatic,
+direct, skip-run, and artifact-gap paths. The initial job fingerprint is immutable;
+a new launch cannot replace it to accept changed preparation output. Verified image
+pins can change reference spelling while the remaining serving inputs stay equal.
+Publication continues to use recorded measurement context, including runtime info.

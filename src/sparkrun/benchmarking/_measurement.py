@@ -63,21 +63,22 @@ def _image_digest(reference):
     return value if value.startswith("sha256:") else None
 
 
-def _validate_serving_image(execution, image):
-    """Historical measurement identity cannot be overwritten by a new deployment."""
+def validate_image_references(references, image):
+    """Reject known image changes; return whether equivalence was established."""
     from sparkrun.benchmarking.run_state import BenchmarkStateError
 
-    references = {value for value in (execution.container_image, execution.container_image_sha, execution.longterm_image_ref) if value}
-    # Missing evidence stays unknown. It never relabels already measured rows.
-    if not references or not image or image in references:
-        return
+    references = {value for value in references if value}
+    if not references or not image:
+        return False  # missing evidence stays unknown
+    if image in references:
+        return True
     digest = _image_digest(image)
     if digest and digest in {_image_digest(ref) for ref in references}:
-        return
+        return True
     raise BenchmarkStateError("Running job image differs from the saved benchmark; explicitly start fresh")
 
 
-def capture_launch_context(execution, launch=None, metadata=None, *, container_image=None):
+def capture_launch_context(execution, launch=None, metadata=None, *, container_image=None, state=None):
     """Accept fresh launch context, or verify a candidate against recorded context.
 
     Resuming preserves the original measurement as a unit, including unknown
@@ -91,7 +92,7 @@ def capture_launch_context(execution, launch=None, metadata=None, *, container_i
         overrides = dict(launch.overrides or {})
         runtime_info = dict(launch.runtime_info or {})
     elif metadata is not None:
-        image = metadata.get("effective_container_image") or None
+        image = metadata.get("effective_container_image") or container_image or None
         recipe = execution.recipe
         if metadata.get("recipe_state"):
             from sparkrun.core.recipe import Recipe
@@ -103,7 +104,21 @@ def capture_launch_context(execution, launch=None, metadata=None, *, container_i
         image = container_image or None
         recipe, overrides, runtime_info = execution.recipe, execution.overrides, execution.runtime_info
     if execution.resumed:
-        _validate_serving_image(execution, image)
+        validate_image_references((execution.container_image, execution.container_image_sha, execution.longterm_image_ref), image)
+        if state is not None:
+            from sparkrun.benchmarking._specification import validate_job_specification
+
+            candidate = {**metadata, "effective_container_image": image} if metadata is not None else None
+            if launch is not None:
+                candidate = {
+                    "hosts": launch.host_list,
+                    "model": recipe.model,
+                    "runtime": recipe.runtime,
+                    "recipe_state": recipe.__getstate__(),
+                    "overrides": overrides,
+                    "effective_container_image": image,
+                }
+            validate_job_specification(state, candidate)
         # Legacy absence is now an explicit unknown, including automatic
         # resumes with a new LaunchResult that must not supply a fallback.
         execution.image_context_known = True

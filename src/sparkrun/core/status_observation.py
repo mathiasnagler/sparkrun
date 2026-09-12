@@ -37,24 +37,15 @@ class ExecutorCoverage:
             raise ValueError("Covered hosts must have been requested")
 
     def matches(self, target: ExecutorTarget, *, ssh_user=None) -> bool:
-        return (
-            self.target.executor == target.executor
-            and self.target.destination_key == target.destination_key
-            and (not (self.target.user_scoped or target.user_scoped) or bool(self.ssh_user) and self.ssh_user == ssh_user)
-        )
+        from sparkrun.core._executor_destination import ExecutorDestination
+
+        return ExecutorDestination.from_target(self.target, self.ssh_user).matches(ExecutorDestination.from_target(target, ssh_user))
 
     def matches_job(self, job) -> bool:
-        metadata = job.metadata
-        executor = metadata.get("executor")
-        if not executor:
-            return False  # legacy records without a selector have unknown coverage
-        key = metadata.get("executor_destination_key")
-        if key is None:
-            return False  # no durable destination evidence, including legacy custom local paths
-        return (
-            executor == self.target.executor
-            and key == self.target.destination_key
-            and (not self.target.user_scoped or bool(self.ssh_user) and self.ssh_user == metadata.get("ssh_user"))
+        from sparkrun.core._executor_destination import ExecutorDestination
+
+        return ExecutorDestination.from_target(self.target, self.ssh_user).matches(
+            ExecutorDestination.from_metadata(job.metadata, target=self.target)
         )
 
     def covers_job(self, job) -> bool:

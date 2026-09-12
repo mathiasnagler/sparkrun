@@ -246,7 +246,7 @@ def test_api_stop_tears_down_with_the_launching_executor(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         "sparkrun.orchestration.job_metadata.load_job_metadata",
-        lambda cid, cache_dir=None, **kw: {"hosts": ["h1"], "executor": "local"},
+        lambda cid, cache_dir=None, **kw: {"hosts": ["h1"], "executor": "local", "ssh_user": "alice"},
     )
 
     seen: dict = {}

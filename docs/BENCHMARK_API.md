@@ -386,3 +386,18 @@ as one measurement context. New live metadata cannot relabel old rows. Unknown
 historical image provenance stays unknown, even when a later deployment provides
 an image. Processing-only recovery with complete artifacts remains independent
 of live inference and does not perform this deployment check.
+
+
+The same acceptance rule also verifies the effective serving recipe and overrides
+against the first deployment's job fingerprint. Changed preparation output or
+runtime defaults require a fresh benchmark even if the requested recipe and image
+are unchanged. This applies to direct, automatic, skip-run, and artifact-gap
+continuation. The original fingerprint is never overwritten on acceptance.
+Verified equivalent image references are normalized for configuration comparison;
+other serving inputs still have to match. Older records use their saved effective
+context for this normalization only when it verifies against the original hash.
+
+Exports and integration snapshots use the recorded recipe, overrides, host set,
+and runtime information during resume. A newly observed `LaunchResult` supplies
+validation evidence and does not override this historical context. This does not
+change the recipe-free publication retry or complete-artifact processing contracts.

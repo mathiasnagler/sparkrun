@@ -8,6 +8,7 @@ import pytest
 
 from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, RunningWorkload
 from sparkrun.orchestration.job_metadata import check_job_running
+from sparkrun.orchestration.executor import Executor, ExecutorTarget
 
 
 @pytest.fixture
@@ -38,6 +39,12 @@ def _status_empty(hosts: list[str], executor_name: str = "docker") -> ClusterSta
     )
 
 
+def _executor(name="docker"):
+    executor = mock.Mock(spec=Executor)
+    executor.resolve_target.return_value = ExecutorTarget(name, user_scoped=name == "local")
+    return executor
+
+
 class TestCheckJobRunning:
     """Tests for check_job_running()."""
 
@@ -48,6 +55,7 @@ class TestCheckJobRunning:
         with (
             mock.patch(
                 "sparkrun.orchestration.executor.resolve_executor",
+                return_value=_executor(),
             ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
@@ -67,6 +75,7 @@ class TestCheckJobRunning:
         with (
             mock.patch(
                 "sparkrun.orchestration.executor.resolve_executor",
+                return_value=_executor(),
             ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
@@ -85,6 +94,7 @@ class TestCheckJobRunning:
         with (
             mock.patch(
                 "sparkrun.orchestration.executor.resolve_executor",
+                return_value=_executor(),
             ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
@@ -107,6 +117,7 @@ class TestCheckJobRunning:
         with (
             mock.patch(
                 "sparkrun.orchestration.executor.resolve_executor",
+                return_value=_executor(),
             ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
@@ -126,6 +137,7 @@ class TestCheckJobRunning:
         with (
             mock.patch(
                 "sparkrun.orchestration.executor.resolve_executor",
+                return_value=_executor(),
             ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
@@ -157,6 +169,7 @@ class TestCheckJobRunning:
         with (
             mock.patch(
                 "sparkrun.orchestration.executor.resolve_executor",
+                return_value=_executor(),
             ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
@@ -175,6 +188,7 @@ class TestCheckJobRunning:
         with (
             mock.patch(
                 "sparkrun.orchestration.executor.resolve_executor",
+                return_value=_executor(),
             ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
@@ -205,6 +219,7 @@ class TestCheckJobRunning:
         with (
             mock.patch(
                 "sparkrun.orchestration.executor.resolve_executor",
+                return_value=_executor(),
             ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
@@ -231,6 +246,7 @@ class TestCheckJobRunning:
         with (
             mock.patch(
                 "sparkrun.orchestration.executor.resolve_executor",
+                return_value=_executor(),
             ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
@@ -253,6 +269,7 @@ class TestCheckJobRunning:
         with (
             mock.patch(
                 "sparkrun.orchestration.executor.resolve_executor",
+                return_value=_executor(),
             ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
@@ -285,12 +302,14 @@ class TestCheckJobRunning:
         with (
             mock.patch(
                 "sparkrun.orchestration.executor.resolve_executor",
+                return_value=_executor("local"),
             ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
                 return_value={
                     "hosts": hosts,
                     "executor": "local",
+                    "ssh_user": "alice",
                     "executor_config": {"working_dir": "/tmp/x"},
                 },
             ),

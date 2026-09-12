@@ -102,6 +102,8 @@ def check_job_running(
         cluster_id: Explicit cluster ID.  If not given, generated from
             *recipe*, *hosts*, and *overrides*.
         recipe: Recipe object (used to generate cluster_id if not given).
+            This convenience covers default user-independent host placement;
+            pass the returned cluster_id for local/user-scoped or native jobs.
         hosts: Host list.  Falls back to job metadata if not provided.
         overrides: Recipe overrides (port, served_model_name, etc.).
         ssh_kwargs: SSH connection parameters.
@@ -150,23 +152,15 @@ def check_job_running(
     # inspect`` probes.  Use metadata-derived overrides so we query via
     # the same executor that launched the workload — mirrors what
     # ``api.stop`` / ``api.logs`` do.
-    cli_overrides: dict | None = None
-    if meta:
-        meta_exec = meta.get("executor")
-        meta_exec_cfg = meta.get("executor_config")
-        cli_overrides = {}
-        if meta_exec:
-            cli_overrides["executor"] = meta_exec
-        if isinstance(meta_exec_cfg, dict):
-            cli_overrides.update(meta_exec_cfg)
-        if not cli_overrides:
-            cli_overrides = None
+    from sparkrun.core._executor_destination import job_ssh_kwargs, metadata_executor_overrides
 
+    cli_overrides = metadata_executor_overrides(meta)
     executor = resolve_executor(
         cli_overrides=cli_overrides,
         rootless=False,
         auto_user=False,
     )
+    ssh_kwargs = job_ssh_kwargs(executor.resolve_target(dry_run=True), meta, ssh_kwargs, explicit_user="ssh_user" in (ssh_kwargs or {}))
     status_snapshot = executor.query_status(hosts, ssh_kwargs=ssh_kwargs)
 
     running = cluster_id in status_snapshot.running_cluster_ids()
@@ -438,7 +432,8 @@ def derive_cluster_id(recipe: "Recipe", hosts: "list[str] | tuple[str, ...]", ov
     with :func:`derive_placement_token_from_hosts` so callers that need
     the "same recipe + hosts → same cluster_id" lookup semantics don't
     have to repeat the derivation themselves. This helper covers host-only
-    deterministic placement. Native provider plans include their destination;
+    deterministic placement for default user-independent destinations. Local
+    and native provider plans include their destination;
     status-aware schedulers use random tokens. Use the returned run ID or live
     intent discovery for those cases.
     """
@@ -727,7 +722,9 @@ def save_job_metadata(
 
         meta["executor"] = executor.executor_name
         meta["executor_config"] = asdict(executor.config)
-        meta["executor_destination_key"] = executor.resolve_target(dry_run=True).destination_key
+        target = executor.resolve_target(dry_run=True)
+        meta["executor_destination_key"] = target.destination_key
+        meta["executor_user_scoped"] = target.user_scoped
     if native_resource is not None:
         meta["native_resource"] = dict(native_resource)
 

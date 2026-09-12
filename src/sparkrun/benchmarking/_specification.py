@@ -44,11 +44,70 @@ def _matches_identity(state, recipe, overrides) -> bool:
     )
 
 
+def _configuration_fingerprint(recipe, overrides):
+    """Compare serving inputs after image equivalence has been verified separately."""
+    from copy import copy
+
+    recipe = copy(recipe)
+    recipe.container = "<verified-image>"
+    recipe.defaults = {key: value for key, value in recipe.defaults.items() if key != "image"}
+    overrides = {key: value for key, value in (overrides or {}).items() if key != "image"}
+    return benchmark_recipe_fingerprint(recipe, overrides)
+
+
 def record_job_specification(state, meta: dict | None) -> None:
-    """Pin the effective running-job configuration after launcher preparation."""
+    """Establish the initial baseline once; later observations must match it."""
+    if (state.measurement_spec or {}).get("job_fingerprint"):
+        validate_job_specification(state, meta)
+        return
     if state.measurement_spec is not None and meta and meta.get("recipe_state"):
         actual = Recipe._deserialize(meta["recipe_state"])
-        state.measurement_spec["job_fingerprint"] = benchmark_recipe_fingerprint(actual, meta.get("overrides") or {})
+        overrides = meta.get("overrides") or {}
+        state.measurement_spec["job_fingerprint"] = benchmark_recipe_fingerprint(actual, overrides)
+        state.measurement_spec["job_configuration_fingerprint"] = _configuration_fingerprint(actual, overrides)
+
+
+def validate_job_specification(state, meta: dict | None, *, recipe=None) -> None:
+    """One acceptance rule before appending measurements; never rewrite evidence."""
+    from sparkrun.benchmarking._measurement import validate_image_references
+
+    spec = state.measurement_spec or {}
+    expected = spec.get("job_fingerprint")
+    if meta is None:
+        if expected:
+            raise BenchmarkStateError("Running job recipe provenance is missing")
+        return
+    if not state.matches_hosts(meta.get("hosts")):
+        raise BenchmarkStateError("Running job hosts differ from the saved benchmark")
+    if recipe is None and state.measurement_spec is not None:
+        recipe, _ = _saved_recipe(state.measurement_spec)
+    if recipe is not None:
+        for field in ("model", "runtime"):
+            if meta.get(field) and meta[field] != getattr(recipe, field):
+                raise BenchmarkStateError("Running job %s differs from the saved benchmark" % field)
+    equivalent_image = validate_image_references(
+        (state.extras.get(key) for key in ("container_image", "container_image_sha", "container_image_longterm_ref")),
+        meta.get("effective_container_image"),
+    )
+    if not expected:
+        return
+    if not meta.get("recipe_state"):
+        raise BenchmarkStateError("Running job recipe provenance is missing")
+    actual = Recipe._deserialize(meta["recipe_state"])
+    overrides = meta.get("overrides") or {}
+    if benchmark_recipe_fingerprint(actual, overrides) == expected:
+        return
+    normalized = spec.get("job_configuration_fingerprint")
+    if not normalized and state.extras.get("measurement_recipe_state"):
+        # Older baselines may establish the same evidence from their recorded
+        # effective context, but only if it verifies against the saved hash.
+        saved = Recipe._deserialize(state.extras["measurement_recipe_state"])
+        saved_overrides = state.extras.get("measurement_overrides") or {}
+        if benchmark_recipe_fingerprint(saved, saved_overrides) == expected:
+            normalized = _configuration_fingerprint(saved, saved_overrides)
+    if equivalent_image and normalized and _configuration_fingerprint(actual, overrides) == normalized:
+        return
+    raise BenchmarkStateError("Running job configuration differs from the saved benchmark")
 
 
 def restore_measurement_specification(state, meta: dict | None, *, config) -> tuple[Recipe, dict]:
@@ -68,16 +127,5 @@ def restore_measurement_specification(state, meta: dict | None, *, config) -> tu
     if not _matches_identity(state, recipe, overrides):
         raise BenchmarkStateError("Cannot verify the original benchmark recipe; explicitly start fresh")
     if meta is not None:
-        if not state.matches_hosts(meta.get("hosts")):
-            raise BenchmarkStateError("Running job hosts differ from the saved benchmark")
-        for field in ("model", "runtime"):
-            if meta.get(field) and meta[field] != getattr(recipe, field):
-                raise BenchmarkStateError("Running job %s differs from the saved benchmark" % field)
-        expected = (state.measurement_spec or {}).get("job_fingerprint")
-        if expected:
-            if not meta.get("recipe_state"):
-                raise BenchmarkStateError("Running job recipe provenance is missing")
-            actual = Recipe._deserialize(meta["recipe_state"])
-            if benchmark_recipe_fingerprint(actual, meta.get("overrides") or {}) != expected:
-                raise BenchmarkStateError("Running job configuration differs from the saved benchmark")
+        validate_job_specification(state, meta, recipe=recipe)
     return recipe, overrides

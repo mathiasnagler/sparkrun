@@ -1036,7 +1036,15 @@ def _execute_benchmark(
             # Establish ownership before invoking any frontend/plugin callback.
             launched = not getattr(run_result, "already_running", False)
             bench_result.launch_result = launch_result
-            capture_launch_context(bench_result, launch=launch_result, container_image=getattr(run_result, "container_image", None))
+            from sparkrun.orchestration.job_metadata import load_job_metadata
+
+            capture_launch_context(
+                bench_result,
+                launch=launch_result,
+                metadata=load_job_metadata(cluster_id, cache_dir=cache_dir) if launch_result is None else None,
+                container_image=getattr(run_result, "container_image", None),
+                state=state,
+            )
             container_image = bench_result.container_image
             if state is not None and not dry_run:
                 persist_measurement_context(bench_result, state)
@@ -1086,7 +1094,7 @@ def _execute_benchmark(
             logger.log(_PROGRESS_LEVEL, "Step 1/3: Skipping inference launch (--skip-run)")
             from sparkrun.orchestration.job_metadata import load_job_metadata
 
-            capture_launch_context(bench_result, metadata=load_job_metadata(cluster_id, cache_dir=cache_dir))
+            capture_launch_context(bench_result, metadata=load_job_metadata(cluster_id, cache_dir=cache_dir), state=state)
 
         # -----------------------------------------------------------------------
         # 7. Wait for readiness and build target URL
@@ -1818,7 +1826,7 @@ def _resume_locked(
     if result.overrides is None:
         result.overrides = saved_overrides
     if meta is not None:
-        capture_launch_context(result, metadata=meta)
+        capture_launch_context(result, metadata=meta, state=state)
     if dry_run:
         integrations.bind(result, state, resumed=True)
         emitter.info(
@@ -1863,7 +1871,7 @@ def _resume_locked(
         if gaps and processing_only:
             meta = load_job_metadata(state.cluster_id, cache_dir=cache_dir)
             restore_measurement_specification(state, meta, config=config)
-            capture_launch_context(result, metadata=meta)
+            capture_launch_context(result, metadata=meta, state=state)
         for task in gaps:
             if task.index in state.completed_indices:
                 state.mark_failed(task.index, "missing measurement coverage")
@@ -1934,7 +1942,7 @@ def _resume_locked(
     config = sctx.config
     integrations.use_context(sctx)
     result.host_list = hosts
-    capture_launch_context(result, metadata=meta)
+    capture_launch_context(result, metadata=meta, state=state)
 
     # Check if inference is currently running
     ssh_kwargs = build_ssh_kwargs(config)

@@ -322,7 +322,7 @@ def test_local_state_directory_is_part_of_observation_target():
     assert not observation.confirms_absent(job)
     assert not observation.covers(second, {"h1"})
     assert first.overrides["log_dir"] == "/logs/a"
-    assert LocalExecutor().resolve_target().destination_key == ""  # retain default host IDs
+    assert LocalExecutor().resolve_target().destination_key == ""  # default path needs no extra path key
 
 
 def test_missing_executor_metadata_is_unknown_even_on_observed_hosts():

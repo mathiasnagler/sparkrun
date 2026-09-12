@@ -456,7 +456,7 @@ class TestApiLogsIsSubstrateAgnostic:
 
         recipe = Recipe({"sparkrun_version": "2", "runtime": "vllm-distributed", "model": "test/m"})
         cluster_id = "sparkrun_aaaaaaaaaaaaaaaa_111111111111"
-        save_job_metadata(cluster_id, recipe, ["h1"], cache_dir=str(tmp_path))
+        save_job_metadata(cluster_id, recipe, ["h1"], cache_dir=str(tmp_path), ssh_user="alice")
         return cluster_id
 
     def test_local_executor_precheck_issues_no_docker_command(self, tmp_path):

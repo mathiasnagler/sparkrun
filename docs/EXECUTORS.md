@@ -486,8 +486,11 @@ remains available through the setup command.
 
 The local executor pins its PID/log directories. A custom PID directory is a
 separate destination; changing only the log directory preserves identity.
-Default local paths and Docker retain their existing deterministic IDs. Remote
-paths are not expanded against the controller's home directory.
+Local deterministic IDs also include the resolved SSH user, including with the
+default PID path. Docker's default IDs remain unchanged. Remote paths are not
+expanded against the controller's home directory. A local target with no known
+SSH user receives a fresh placement token rather than claiming deterministic
+identity. Existing jobs remain addressable by their saved IDs.
 
 `status_report()` retains coverage on its typed `ClusterStatusResult`.
 `stop_all(discovered=result)` uses its recorded executor targets, including for
@@ -521,6 +524,24 @@ failed backend on a host that answered through another backend. `errors` retains
 reachability/target failures; `for_host()` can still return partial observations.
 `free_slots()` reports zero on incomplete hosts. Occupancy schedulers exclude those
 hosts, and a failed status acquisition remains an explicit unknown observation
-rather than selecting the no-status greedy fallback. Intent discovery and strict
-replacement also reject incomplete observations. Callers that intentionally do
-not request occupancy can still supply `status=None` to a scheduler.
+rather than selecting the no-status greedy fallback. Strict recipe-based
+stop/log discovery and strict replacement reject incomplete observations.
+`api.find_running_intent()` and ensure remain best effort: they return positive
+matches from available observations, and a miss does not prove absence. A caller
+requiring verified absence must query status, reject `observation_errors`, and
+pass the complete snapshot to `find_running_intent(status=...)`. Callers that
+intentionally do not request occupancy can still supply `status=None` to a scheduler.
+
+Docker status preserves the exit status and diagnostics of `docker ps`. A missing
+executable, permission denial, or unavailable daemon is incomplete coverage,
+including when another host executor succeeds. Only a successful empty query
+establishes absence; optional peer failures are not treated as idle capacity.
+
+Placement, coverage matching, and saved-job recovery share the same private
+destination definition. User-scoped job metadata records the namespace policy
+alongside its SSH principal. Stop, logs, and liveness keep that recorded user
+when cluster defaults change, while credentials may rotate. An explicitly different
+user is rejected; a missing recorded principal requires fresh status discovery
+before teardown. Legacy local records with a known user retain this protection.
+The principal is checked again after transport preparation, which can refresh
+connection settings. No additional controller identity is introduced.

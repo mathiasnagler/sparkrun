@@ -76,10 +76,13 @@ def find_running_intent(
 
     Returns:
         The matching deployment with the most hosts (ties broken by
-        ``cluster_id`` for determinism), or ``None`` when the intent isn't
-        running.  A failed status query also yields ``None`` — the caller
-        should treat "couldn't tell" as "not running" and launch, since
-        refusing to launch on an unreachable cluster is the worse failure.
+        ``cluster_id`` for determinism), or ``None`` when no positive match
+        was observed. A failed or incomplete query can also yield ``None``;
+        this best-effort helper does not establish verified absence. Ensure
+        uses that best-effort policy. Callers requiring verified absence must
+        acquire ``api.status()``, reject ``snapshot.observation_errors``, then
+        pass the complete snapshot here. Partial snapshots can still supply
+        positive matches.
     """
     from sparkrun.core.cluster_status import workload_matches_intent
 

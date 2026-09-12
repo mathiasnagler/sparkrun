@@ -137,17 +137,9 @@ def stop(
 
     # Resolve the executor — prefer recipe-encoded selection from metadata
     # so we use the same executor that launched the workload.
-    cli_overrides: dict | None = None
-    if meta:
-        meta_exec = meta.get("executor")
-        meta_exec_cfg = meta.get("executor_config")
-        cli_overrides = {}
-        if meta_exec:
-            cli_overrides["executor"] = meta_exec
-        if isinstance(meta_exec_cfg, dict):
-            cli_overrides.update(meta_exec_cfg)
-        if not cli_overrides:
-            cli_overrides = None
+    from sparkrun.core._executor_destination import metadata_executor_overrides
+
+    cli_overrides = metadata_executor_overrides(meta)
 
     if not (cli_overrides or {}).get("executor"):
         # No metadata (or none naming an executor) — ask the cluster what is
@@ -171,6 +163,11 @@ def stop(
         v=sctx.variables if sctx is not None else None,
         config=sctx.config if sctx is not None else None,
     )
+
+    from sparkrun.api._resolve import bind_job_cluster
+
+    cluster_def = bind_job_cluster(cluster_def, executor.resolve_target(dry_run=True), meta)
+    sctx = sctx.for_cluster(cluster_def)
 
     try:
         native_removed = executor.stop_workload(cluster_id, metadata=meta)

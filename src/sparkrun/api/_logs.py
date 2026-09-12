@@ -150,14 +150,19 @@ def logs(
         )
 
     runtime = _resolve_runtime_for_job(meta, cluster_id, recipe=resolved_recipe, sctx=sctx)
+    from sparkrun.core._executor_destination import metadata_executor_overrides
+
     executor = resolve_executor(
         cluster=cluster_def,
-        cli_overrides=_executor_overrides_from_meta(meta),
+        cli_overrides=metadata_executor_overrides(meta),
         rootless=False,
         auto_user=False,
         v=sctx.variables if sctx is not None else None,
     )
 
+    from sparkrun.api._resolve import bind_job_cluster
+
+    cluster_def = bind_job_cluster(cluster_def, executor.resolve_target(dry_run=True), meta)
     sctx, ssh_kwargs = scope_operation(cluster_def, sctx=sctx, prepare=False)
 
     sources = runtime.log_sources(
@@ -377,22 +382,6 @@ def _resolve_runtime_for_job(meta: dict | None, cluster_id: str, *, recipe=None,
         return get_runtime(runtime_name, sctx.variables if sctx is not None else None)
     except ValueError as e:
         raise SparkrunError("Cannot resolve runtime %r for cluster_id %r: %s" % (runtime_name, cluster_id, e)) from e
-
-
-def _executor_overrides_from_meta(meta: dict | None) -> dict | None:
-    """Recover the launching executor's selector + config from job metadata.
-
-    Reading logs must go through the executor that *launched* the workload —
-    a ``local``-executor job has no container to ``docker exec`` into.
-    """
-    if not meta:
-        return None
-    overrides: dict = {}
-    if meta.get("executor"):
-        overrides["executor"] = meta["executor"]
-    if isinstance(meta.get("executor_config"), dict):
-        overrides.update(meta["executor_config"])
-    return overrides or None
 
 
 __all__ = ["logs"]

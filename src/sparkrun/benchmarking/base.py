@@ -577,9 +577,9 @@ class BenchmarkExecution:
         from sparkrun.models.download import parse_gguf_model_spec
         from sparkrun.utils.runtime_display import RUNTIME_DISPLAY as _RUNTIME_DISPLAY
 
-        # Use launch_result fields when available, fall back to direct fields
-        # (e.g. when --skip-run was used and no launch occurred).
-        if launch_result := self.launch_result:
+        # Recorded measurement context stays authoritative on resumed runs.
+        # Only legacy callers without captured context use the launch fallback.
+        if (launch_result := self.launch_result) and not self.resumed and not self.image_context_known:
             recipe = launch_result.recipe
             overrides = launch_result.overrides
             cluster_id = launch_result.cluster_id

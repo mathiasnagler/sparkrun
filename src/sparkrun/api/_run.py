@@ -207,13 +207,11 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
         # short-circuited the scheduler so the name was never validated):
         # fall back to a random token — it can never collide.
         deterministic_placement = False
-    if deterministic_placement:
-        placement_token = derive_placement_token_from_hosts(
-            hosts,
-            destination={"executor": executor_target.executor, "key": executor_target.destination_key}
-            if executor_target.destination_key
-            else None,
-        )
+    from sparkrun.core._executor_destination import ExecutorDestination
+
+    destination = ExecutorDestination.from_target(executor_target, config.ssh_user)
+    if deterministic_placement and destination.known:
+        placement_token = derive_placement_token_from_hosts(hosts, destination=destination.placement_key())
     else:
         placement_token = generate_placement_token()
     cluster_id_for_launch = options.cluster_id_override or generate_cluster_id(intent_id, placement_token)

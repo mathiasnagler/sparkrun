@@ -716,7 +716,9 @@ class DockerExecutor(Executor):
             return ClusterStatus(hosts=(), queried_at=time.time(), executor=self.executor_name)
 
         ssh_kwargs = ssh_kwargs or {}
-        script = "docker ps --no-trunc --format '{{json .}}' 2>/dev/null || true\n"
+        # Only a successful daemon query can establish absence. Preserve both
+        # the exit status and diagnostic when Docker cannot inspect workloads.
+        script = "docker ps --no-trunc --format '{{json .}}'\n"
         # ``allow_local=True``: a bare SSH to localhost fails on a host
         # without self-SSH configured, which would make every local
         # workload invisible to status discovery — and to everything
