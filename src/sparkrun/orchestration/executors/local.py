@@ -117,6 +117,7 @@ class LocalExecutor(Executor):
             self.executor_name,
             {"pid_dir": pid_dir, "log_dir": self.config.log_dir or default_log_dir()},
             destination_key=pid_dir if pid_dir != posixpath.normpath(default_pid_dir()) else "",
+            user_scoped=True,
         )
 
     def _resolve_pid_file(self, container_name: str) -> str:

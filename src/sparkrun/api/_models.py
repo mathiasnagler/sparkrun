@@ -487,11 +487,11 @@ class StopAllResult:
     found."""
     jobs_stopped: int
     """Discovered jobs (cluster groups + solo entries) whose containers
-    all confirmed teardown."""
+    all confirmed teardown, or would be targeted in a dry-run."""
     containers_removed: int
-    """Containers actually removed, summed across hosts."""
+    """Containers removed, or planned removals when ``dry_run`` is true."""
     hosts_stopped: tuple[str, ...] = ()
-    """Hosts whose teardown confirmed."""
+    """Hosts whose teardown confirmed, or planned targets in a dry-run."""
     hosts_failed: dict[str, str] = field(default_factory=dict)
     """Host → error for teardowns that did not confirm."""
     discovery_errors: dict[str, str] = field(default_factory=dict)
@@ -499,9 +499,12 @@ class StopAllResult:
     *not* "nothing to stop" — an unqueryable host may be running
     containers we never saw."""
 
+    dry_run: bool = False
+    """Preview mode: count/host fields describe planned work, not removals."""
+
     @property
     def success(self) -> bool:
-        """True when every host was queried and every teardown confirmed."""
+        """All discovery and requested teardown succeeded (or were previewed)."""
         return not self.hosts_failed and not self.discovery_errors
 
 

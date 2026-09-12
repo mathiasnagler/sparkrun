@@ -500,3 +500,27 @@ The completion cache stores the same observation model. Both normal cache reuse
 and stale fallback require a matching destination. Old host-only cache files
 are ignored and replaced by the next observation. Failed or missing coverage
 never authorizes hiding a job.
+
+
+An `ExecutorTarget` can set `user_scoped=True` when the SSH login determines its
+observable namespace. The local executor does so because PID files and process
+permissions depend on the remote user. This is derived destination evidence,
+not another controller ID. `ExecutorCoverage.ssh_user` participates in matching
+for those targets; absent users and legacy records cannot authorize automatic
+pruning. Default and relative local PID paths obey the same rule. Credential-key
+rotation does not change namespace identity.
+
+Coverage also retains detached, immutable SSH arguments in memory for subsequent
+teardown. Those arguments are not written to the completion cache: version 2
+stores only the SSH user alongside target/host coverage. Older caches are ignored.
+Cache matching checks user-sensitive peer backends even when Docker is the
+primary executor for the host sweep.
+
+Use `ClusterStatus.observation_errors` for incomplete discovery, including a
+failed backend on a host that answered through another backend. `errors` retains
+reachability/target failures; `for_host()` can still return partial observations.
+`free_slots()` reports zero on incomplete hosts. Occupancy schedulers exclude those
+hosts, and a failed status acquisition remains an explicit unknown observation
+rather than selecting the no-status greedy fallback. Intent discovery and strict
+replacement also reject incomplete observations. Callers that intentionally do
+not request occupancy can still supply `status=None` to a scheduler.

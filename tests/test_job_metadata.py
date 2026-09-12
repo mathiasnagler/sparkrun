@@ -373,7 +373,13 @@ def test_save_job_metadata_writes_where_o_nofollow_is_unavailable(tmp_path: Path
 # ---------------------------------------------------------------------------
 
 
-def test_api_stop_recipe_path_raises_job_not_found_on_zero_matches(tmp_path, intent_recipe, monkeypatch):
+@pytest.fixture
+def docker_discovery_only(monkeypatch):
+    """These intent-resolution cases observe one enabled, mocked backend."""
+    monkeypatch.setattr("sparkrun.orchestration.executor.list_executors", lambda *a: ["docker"])
+
+
+def test_api_stop_recipe_path_raises_job_not_found_on_zero_matches(tmp_path, intent_recipe, monkeypatch, docker_discovery_only):
     """No workloads running matching the intent → JobNotFound (not Ambiguous)."""
     import sparkrun.api as api
     from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy
@@ -390,7 +396,7 @@ def test_api_stop_recipe_path_raises_job_not_found_on_zero_matches(tmp_path, int
         api.stop(recipe=intent_recipe, hosts=("h1",), cache_dir=str(tmp_path))
 
 
-def test_api_stop_recipe_path_raises_ambiguous_on_multiple_matches(tmp_path, intent_recipe, monkeypatch):
+def test_api_stop_recipe_path_raises_ambiguous_on_multiple_matches(tmp_path, intent_recipe, monkeypatch, docker_discovery_only):
     """Two workloads with the same intent on different host sets → AmbiguousWorkload."""
     import sparkrun.api as api
     from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, RunningWorkload
@@ -424,7 +430,7 @@ def test_api_stop_recipe_path_raises_ambiguous_on_multiple_matches(tmp_path, int
     assert set(exc_info.value.cluster_ids) == {cid_a, cid_b}
 
 
-def test_api_stop_recipe_path_succeeds_on_single_match(tmp_path, intent_recipe, monkeypatch):
+def test_api_stop_recipe_path_succeeds_on_single_match(tmp_path, intent_recipe, monkeypatch, docker_discovery_only):
     """Exactly one matching workload → status-driven discovery resolves it."""
     import sparkrun.api as api
     from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, RunningWorkload

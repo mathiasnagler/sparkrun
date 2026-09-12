@@ -343,9 +343,8 @@ def test_resolve_effective_hosts_for_recipe_populates_status(monkeypatch):
     assert captured["request_status"] is fake_status
 
 
-def test_resolve_effective_hosts_for_recipe_status_failure_is_best_effort(monkeypatch):
-    """When ``api.status`` raises, scheduling still proceeds with
-    ``status=None`` rather than crashing the CLI."""
+def test_resolve_effective_hosts_for_recipe_preserves_status_failure(monkeypatch):
+    """When ``api.status`` raises, scheduling receives unknown occupancy."""
     from sparkrun.cli import _common
     import sparkrun.api as api
 
@@ -384,7 +383,7 @@ def test_resolve_effective_hosts_for_recipe_status_failure_is_best_effort(monkey
         solo=False,
     )
 
-    assert captured["request_status"] is None
+    assert set(captured["request_status"].observation_errors) == {"a", "b", "c"}
     assert len(host_list) == 2
 
 

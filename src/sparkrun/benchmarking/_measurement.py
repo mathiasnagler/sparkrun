@@ -57,22 +57,59 @@ def restore_measurement_context(state, *, category=""):
     return result
 
 
-def capture_launch_context(execution, launch=None, metadata=None):
-    """Capture the submitted launch or selected running deployment, without guessing."""
+def _image_digest(reference):
+    """Recognize a digest reference without resolving mutable tags or doing I/O."""
+    value = (reference or "").rsplit("@", 1)[-1]
+    return value if value.startswith("sha256:") else None
+
+
+def _validate_serving_image(execution, image):
+    """Historical measurement identity cannot be overwritten by a new deployment."""
+    from sparkrun.benchmarking.run_state import BenchmarkStateError
+
+    references = {value for value in (execution.container_image, execution.container_image_sha, execution.longterm_image_ref) if value}
+    # Missing evidence stays unknown. It never relabels already measured rows.
+    if not references or not image or image in references:
+        return
+    digest = _image_digest(image)
+    if digest and digest in {_image_digest(ref) for ref in references}:
+        return
+    raise BenchmarkStateError("Running job image differs from the saved benchmark; explicitly start fresh")
+
+
+def capture_launch_context(execution, launch=None, metadata=None, *, container_image=None):
+    """Accept fresh launch context, or verify a candidate against recorded context.
+
+    Resuming preserves the original measurement as a unit, including unknown
+    provenance. A current deployment supplies validation evidence, never a new
+    attribution for rows already measured. Digest references can establish image
+    equivalence; different mutable references require an explicit fresh run.
+    """
     if launch is not None:
-        execution.container_image = launch.container_image or None
-        execution.recipe = launch.recipe
-        execution.overrides = dict(launch.overrides or {})
-        execution.runtime_info = dict(launch.runtime_info or {})
+        image = launch.container_image or None
+        recipe = launch.recipe
+        overrides = dict(launch.overrides or {})
+        runtime_info = dict(launch.runtime_info or {})
     elif metadata is not None:
-        if metadata.get("effective_container_image") or not execution.image_context_known:
-            execution.container_image = metadata.get("effective_container_image") or None
-        execution.overrides = dict(metadata.get("overrides") or execution.overrides or {})
-        execution.runtime_info = dict(metadata.get("runtime_info") or execution.runtime_info)
+        image = metadata.get("effective_container_image") or None
+        recipe = execution.recipe
         if metadata.get("recipe_state"):
             from sparkrun.core.recipe import Recipe
 
-            execution.recipe = Recipe._deserialize(metadata["recipe_state"])
+            recipe = Recipe._deserialize(metadata["recipe_state"])
+        overrides = dict(metadata.get("overrides", execution.overrides) or {})
+        runtime_info = dict(metadata.get("runtime_info", execution.runtime_info) or {})
     else:
-        execution.container_image = None
+        image = container_image or None
+        recipe, overrides, runtime_info = execution.recipe, execution.overrides, execution.runtime_info
+    if execution.resumed:
+        _validate_serving_image(execution, image)
+        # Legacy absence is now an explicit unknown, including automatic
+        # resumes with a new LaunchResult that must not supply a fallback.
+        execution.image_context_known = True
+        return
+    execution.container_image = image
+    execution.recipe, execution.overrides, execution.runtime_info = recipe, overrides, runtime_info
+    execution.container_image_sha = execution.longterm_image_ref = None
+    execution.container_image_sha_pinned = execution.longterm_image_pinned = False
     execution.image_context_known = True

@@ -1139,12 +1139,12 @@ def _completion_running(cluster_def):
 
     hosts = list(getattr(cluster_def, "hosts", ()) or ())
     try:
-        config = SparkrunConfig()
+        config = SparkrunConfig().for_cluster(cluster_def)
         target = resolve_executor_target(cluster=cluster_def, config=config)
     except Exception:
         return None
     cached = load_running_snapshot(max_age_s=_completion_cache_ttl())
-    if cached is not None and cached.covers(target, hosts):
+    if cached is not None and cached.covers(target, hosts, ssh_user=config.ssh_user):
         return cached
 
     timeout = _completion_status_timeout()
@@ -1154,8 +1154,6 @@ def _completion_running(cluster_def):
             from sparkrun.orchestration.primitives import build_ssh_kwargs
             from dataclasses import replace
 
-            if getattr(cluster_def, "user", None):
-                config.ssh_user = cluster_def.user
             ssh_kwargs = build_ssh_kwargs(config)
             ssh_kwargs["timeout"] = timeout
             scoped = replace(cluster_def, executor=target.executor, executor_config=dict(target.overrides))
@@ -1166,7 +1164,7 @@ def _completion_running(cluster_def):
             logger.debug("Completion status query failed; falling back to scoped cache", exc_info=True)
 
     cached = load_running_snapshot()
-    return cached if cached is not None and cached.for_target(target) else None
+    return cached if cached is not None and cached.for_target(target, ssh_user=config.ssh_user) else None
 
 
 def _completion_cache_ttl() -> float:

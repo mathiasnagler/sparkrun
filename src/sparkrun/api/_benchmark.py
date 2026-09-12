@@ -899,8 +899,12 @@ def _execute_benchmark(
                 # ``measured_at`` covers the data (issue #267).
                 bench_result.resumed = True
                 context = _restore_measurement_context(existing_state, category=bench_result.category)
-                bench_result.category = context["category"]
-                bench_result.measured_at = context["measured_at"]
+                for attr, value in context.items():
+                    setattr(bench_result, attr, value)
+                if saved_recipe := existing_state.extras.get("measurement_recipe_state"):
+                    from sparkrun.core.recipe import Recipe
+
+                    bench_result.recipe = Recipe._deserialize(saved_recipe)
                 # Backfill on legacy state that predates the field, so the next
                 # session can answer the host question this one had to assume.
                 if not state.host_list:
@@ -956,7 +960,6 @@ def _execute_benchmark(
                     emitter.info("  (was: %s)" % container_image)
                 container_image = pinned_image_sha
                 overrides["image"] = pinned_image_sha
-                bench_result.container_image = container_image
                 bench_result.container_image_sha = pinned_image_sha
                 bench_result.container_image_sha_pinned = True
 
@@ -1033,9 +1036,7 @@ def _execute_benchmark(
             # Establish ownership before invoking any frontend/plugin callback.
             launched = not getattr(run_result, "already_running", False)
             bench_result.launch_result = launch_result
-            capture_launch_context(bench_result, launch=launch_result)
-            if launch_result is None:
-                bench_result.container_image = getattr(run_result, "container_image", None) or None
+            capture_launch_context(bench_result, launch=launch_result, container_image=getattr(run_result, "container_image", None))
             container_image = bench_result.container_image
             if state is not None and not dry_run:
                 persist_measurement_context(bench_result, state)
@@ -1816,7 +1817,7 @@ def _resume_locked(
     result.host_list = state.host_list
     if result.overrides is None:
         result.overrides = saved_overrides
-    if not result.image_context_known and meta:
+    if meta is not None:
         capture_launch_context(result, metadata=meta)
     if dry_run:
         integrations.bind(result, state, resumed=True)
@@ -1858,7 +1859,12 @@ def _resume_locked(
         from sparkrun.benchmarking.aggregator import gap_analysis
 
         consolidated = _collect_completed_results(fw, tasks, state, cache_dir)
-        for task in gap_analysis(tasks, consolidated, fw, completed_indices=state.completed_indices):
+        gaps = gap_analysis(tasks, consolidated, fw, completed_indices=state.completed_indices)
+        if gaps and processing_only:
+            meta = load_job_metadata(state.cluster_id, cache_dir=cache_dir)
+            restore_measurement_specification(state, meta, config=config)
+            capture_launch_context(result, metadata=meta)
+        for task in gaps:
             if task.index in state.completed_indices:
                 state.mark_failed(task.index, "missing measurement coverage")
         state.save(cache_dir)

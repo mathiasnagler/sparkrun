@@ -370,3 +370,19 @@ The exported benchmark mapping also includes category and the measurement interv
 Additional core-reserved state extras are `container_image_sha_pinned`,
 `measurement_runtime_info`, `measurement_overrides`, and `measurement_recipe_state`.
 These are private persistence details, not an integration extension interface.
+
+
+Pending-task resume compares the currently reported serving image with recorded
+measurement provenance before accepting more commands. Known different references
+require an explicit fresh benchmark. Identical references and references sharing
+a recorded SHA-256 digest are accepted; different mutable tags are not assumed
+equivalent. This comparison uses recorded references, not a live content audit of
+an unchanged mutable tag.
+
+Direct resume, automatic resume, and processing recovery that discovers missing
+artifacts use the same check. Accepted recovery preserves the original recipe,
+overrides, runtime information, image reference, digest, and archival reference
+as one measurement context. New live metadata cannot relabel old rows. Unknown
+historical image provenance stays unknown, even when a later deployment provides
+an image. Processing-only recovery with complete artifacts remains independent
+of live inference and does not perform this deployment check.

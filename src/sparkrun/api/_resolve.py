@@ -59,6 +59,21 @@ def prepare_transport(cluster_def: "ClusterDefinition | None", *, dry_run: bool 
         raise SparkrunError(str(e)) from e
 
 
+def scope_operation(cluster, *, sctx=None, ssh_kwargs=None, dry_run=False, prepare=True):
+    """Resolve one operation's context and SSH arguments without mutating callers.
+
+    Explicit arguments override individual configured keys, including explicit
+    None/empty values. Transport preparation precedes scoping and target lookup.
+    """
+    from sparkrun.api._context import resolve_sctx
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+    if prepare:
+        prepare_transport(cluster, dry_run=dry_run)
+    scoped = resolve_sctx(sctx).for_cluster(cluster)
+    return scoped, {**build_ssh_kwargs(scoped.config), **(ssh_kwargs or {})}
+
+
 def resolve_recipe(
     recipe_input: "str | Recipe",
     *,
@@ -423,10 +438,9 @@ def discover_cluster_id_by_intent(
     """
     from sparkrun.api._errors import AmbiguousWorkload, JobNotFound, SparkrunError
     from sparkrun.orchestration.executor import query_status_for_cluster
-    from sparkrun.orchestration.primitives import build_ssh_kwargs
 
-    config = sctx.config if sctx is not None else None
-    ssh_kwargs = build_ssh_kwargs(config) if config else {}
+    sctx, ssh_kwargs = scope_operation(cluster_def, sctx=sctx)
+    config = sctx.config
 
     status = query_status_for_cluster(
         cluster_def,
@@ -439,7 +453,7 @@ def discover_cluster_id_by_intent(
     # Missing/unreachable hosts cannot establish absence or uniqueness. In
     # particular, proxy unload may retire a saved binding on JobNotFound.
     missing = set(target_hosts) - {host.host for host in status.hosts}
-    unavailable = sorted(missing | set(status.errors))
+    unavailable = sorted(missing | set(status.observation_errors))
     if unavailable:
         raise SparkrunError("Cannot determine running workloads: status unavailable for %s" % ", ".join(unavailable))
 

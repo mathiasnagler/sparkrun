@@ -83,7 +83,7 @@ def logs(
     """
     from sparkrun.api._resolve import (
         discover_cluster_id_by_intent,
-        maybe_load_config,
+        scope_operation,
         prepare_transport,
         resolve_cluster,
         resolve_cluster_for_job,
@@ -92,7 +92,6 @@ def logs(
     from sparkrun.orchestration.executor import resolve_executor
     from sparkrun.orchestration.job_metadata import generate_intent_id, load_job_metadata
     from sparkrun.orchestration.logs import read_log_sources
-    from sparkrun.orchestration.primitives import build_ssh_kwargs
 
     if scope not in (SCOPE_HEAD, SCOPE_ALL):
         raise SparkrunError("Invalid log scope %r: expected %r or %r" % (scope, SCOPE_HEAD, SCOPE_ALL))
@@ -159,14 +158,7 @@ def logs(
         v=sctx.variables if sctx is not None else None,
     )
 
-    # Load a config even without an sctx (as ``api.stop`` does): it is what
-    # carries the SSH user, key and options into every read below.  Without
-    # it a library caller — the desktop sidecar, or anything driving api.logs
-    # directly — connected with no SSH configuration at all, so the cluster's
-    # user could not be applied even once it was known.
-    config = sctx.config if sctx is not None else maybe_load_config()
-    if config is not None:
-        config = config.for_cluster(cluster_def)
+    sctx, ssh_kwargs = scope_operation(cluster_def, sctx=sctx, prepare=False)
 
     sources = runtime.log_sources(
         cluster_id,
@@ -174,8 +166,6 @@ def logs(
         is_solo=len(target_hosts) <= 1,
         scope=scope,
     )
-
-    ssh_kwargs = build_ssh_kwargs(config) if config else {}
 
     # Liveness precheck: check ALL nodes (not just the head log source) —
     # in a multi-node job the head may have crashed while workers are still

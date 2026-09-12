@@ -5332,7 +5332,11 @@ class TestClusterUserInCLICommands:
         monkeypatch.setattr(DockerExecutor, "query_status", fake_query_status)
         # Discovery now sweeps the whole host scope (docker + local); keep the
         # local branch hermetic (no real SSH) — it contributes nothing here.
-        monkeypatch.setattr(LocalExecutor, "query_status", lambda self, hosts, **kw: ClusterStatus(hosts=(), executor="local"))
+        monkeypatch.setattr(
+            LocalExecutor,
+            "query_status",
+            lambda self, hosts, **kw: ClusterStatus(hosts=tuple(HostOccupancy(host=h) for h in hosts), executor="local"),
+        )
 
         result = runner.invoke(
             main,
@@ -5753,6 +5757,7 @@ class TestStopLogsClusterIdAndOverrides:
             mock.patch("sparkrun.orchestration.primitives.cleanup_containers_by_host"),
             mock.patch("sparkrun.orchestration.job_metadata.generate_intent_id", return_value="aabbccdd1122") as mock_gen,
             mock.patch.object(DockerExecutor, "query_status", fake_query_status),
+            mock.patch("sparkrun.orchestration.executor.list_executors", return_value=["docker"]),
             mock.patch("subprocess.run", return_value=mock.Mock(returncode=1, stderr="mocked")),
         ):
             result = runner.invoke(
@@ -5789,6 +5794,7 @@ class TestStopLogsClusterIdAndOverrides:
             mock.patch("sparkrun.orchestration.primitives.cleanup_containers_by_host"),
             mock.patch("sparkrun.orchestration.job_metadata.generate_intent_id", return_value="aabbccdd1122") as mock_gen,
             mock.patch.object(DockerExecutor, "query_status", fake_query_status),
+            mock.patch("sparkrun.orchestration.executor.list_executors", return_value=["docker"]),
             mock.patch("subprocess.run", return_value=mock.Mock(returncode=1, stderr="mocked")),
         ):
             result = runner.invoke(

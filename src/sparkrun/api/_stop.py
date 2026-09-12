@@ -51,7 +51,7 @@ def stop(
     """
     from sparkrun.api._resolve import (
         discover_cluster_id_by_intent,
-        prepare_transport,
+        scope_operation,
         resolve_cluster,
         resolve_cluster_for_job,
         resolve_recipe,
@@ -133,7 +133,7 @@ def stop(
 
     # Provider refresh may update connection/executor settings. Resolve only
     # after that refresh; SSH transports are a no-op here.
-    prepare_transport(cluster_def)
+    sctx, _ = scope_operation(cluster_def, sctx=sctx)
 
     # Resolve the executor — prefer recipe-encoded selection from metadata
     # so we use the same executor that launched the workload.
@@ -215,7 +215,7 @@ def stop(
 
 
 def _stop_containers(cluster_id, target_hosts, cluster_def, executor, sctx):
-    from sparkrun.api._resolve import maybe_load_config
+    from sparkrun.api._resolve import scope_operation
     from sparkrun.orchestration.teardown import parse_teardown_removed
 
     container_names = executor.enumerate_containers(cluster_id, len(target_hosts))
@@ -227,12 +227,9 @@ def _stop_containers(cluster_id, target_hosts, cluster_def, executor, sctx):
     # launched this job — without it every stop emitted ``docker rm -f``,
     # which a ``local`` executor's native process truthfully answers "no
     # such container" to while continuing to serve.
-    from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers_by_host
+    from sparkrun.orchestration.primitives import cleanup_containers_by_host
 
-    config = sctx.config if sctx is not None else maybe_load_config()
-    if config is not None:
-        config = config.for_cluster(cluster_def)
-    ssh_kwargs = build_ssh_kwargs(config) if config else {}
+    sctx, ssh_kwargs = scope_operation(cluster_def, sctx=sctx, prepare=False)
 
     errors: list[str] = []
     try:

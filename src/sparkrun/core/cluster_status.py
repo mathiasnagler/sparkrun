@@ -185,7 +185,8 @@ class ClusterStatus:
     so this is how a caller distinguishes an *unreachable* host from a
     reachable-but-idle one.  Merged as a union across executors, minus any
     host that turns out reachable via at least one of them (see
-    :meth:`merged_with`).
+    :meth:`merged_with`). Target-resolution failures are also retained. Use
+    :attr:`observation_errors` for the complete set of incomplete observations.
     """
 
     coverage: tuple[ExecutorCoverage, ...] = ()
@@ -194,6 +195,15 @@ class ClusterStatus:
     @property
     def observation(self) -> RunningSnapshot:
         return RunningSnapshot(frozenset(self.running_cluster_ids()), self.coverage)
+
+    @property
+    def observation_errors(self) -> dict[str, str]:
+        """Incomplete observations, including failed peers on a reachable host."""
+        errors = dict(self.errors)
+        for coverage in self.coverage:
+            for host in coverage.requested_hosts - coverage.hosts:
+                errors.setdefault(host, "%s status was not observed" % coverage.target.executor)
+        return errors
 
     def for_host(self, host: str) -> HostOccupancy | None:
         """Return the :class:`HostOccupancy` for *host*, or ``None`` if absent."""
@@ -204,7 +214,7 @@ class ClusterStatus:
 
     def free_slots(self, host: str) -> int:
         """Free accelerator slots on *host*; 0 when host is absent."""
-        entry = self.for_host(host)
+        entry = self.for_host(host) if host not in self.observation_errors else None
         return entry.free_slots if entry is not None else 0
 
     def running_cluster_ids(self) -> tuple[str, ...]:

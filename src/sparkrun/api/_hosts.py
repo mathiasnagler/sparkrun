@@ -328,8 +328,8 @@ def _gather_scheduling_inputs(host_list, recipe, overrides, *, cluster_def, sctx
     pick so the occupancy snapshot, usable-memory cap baking, and per-rank VRAM
     estimation live in exactly one place.
 
-    * ``status`` — live :class:`ClusterStatus` snapshot (``None`` when the query
-      fails; occupancy-aware schedulers then degrade to greedy packing).  When
+    * ``status`` — live :class:`ClusterStatus` snapshot, retaining query failures
+      so occupancy-aware schedulers cannot mistake unobserved hosts for free. When
       *exclude_intent_id* is set, workloads of that intent are subtracted so a
       relaunch / resume reuses the hosts its own containers occupy.
     * ``host_hardware`` — per-host hardware with the ``max_gpu_memory_utilization``
@@ -346,7 +346,10 @@ def _gather_scheduling_inputs(host_list, recipe, overrides, *, cluster_def, sctx
     try:
         cluster_status = api.status(list(host_list), cluster=cluster_def, sctx=sctx)
     except Exception as e:
-        logger.debug("Cluster status query failed; scheduling without occupancy info: %s", e)
+        from sparkrun.core.cluster_status import ClusterStatus
+
+        logger.debug("Cluster status query failed: %s", e)
+        cluster_status = ClusterStatus(errors={host: "status query failed" for host in host_list})
 
     if cluster_status is not None and exclude_intent_id:
         cluster_status = _status_excluding_intent(cluster_status, exclude_intent_id)

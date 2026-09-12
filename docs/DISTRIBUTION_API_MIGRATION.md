@@ -408,3 +408,31 @@ the same effective image/recipe projection as integrations; raw declarations are
 retained separately. Exported `recipe.hash` remains a hash of exported text,
 with `declared_hash` added for declared inputs. See the
 [provenance contract](BENCHMARK_API.md#effective-measurement-provenance).
+
+
+### Operation transport and preview results
+
+`api.status()`, `status_report()`, and `stop_all()` now honor application SSH
+configuration and the selected cluster's user when `ssh_kwargs` is omitted.
+Explicit kwargs override individual keys; `None` or an empty value explicitly
+clears that key. Resolving an operation does not mutate the shared context or
+carry a cluster user into the next operation. Launch planning, intent discovery,
+stop, and logs use the same operation-scoping helper.
+
+`stop_all(discovered=...)` keeps the observed connection when defaults change.
+Callers may override authentication settings (for example a rotated SSH key),
+but an explicit different SSH user requires a fresh discovery. A manually built
+snapshot without coverage still needs its matching caller-supplied context.
+The observation cache format is now version 2; old caches are discarded rather
+than treated as evidence about another remote user.
+
+`StopAllResult.dry_run` explicitly identifies preview counts/host lists. Those
+fields describe planned work when true and confirmed outcomes otherwise.
+Discovery errors remain errors in previews, including when some workloads were
+found; `success` is false whenever discovery or requested teardown failed.
+
+`ClusterStatus.observation_errors` is the shared incomplete-discovery view for
+classification, occupancy scheduling, and intent/replacement checks. Custom
+occupancy consumers should inspect it before using partial host observations.
+See [executor coverage](EXECUTORS.md#status-observation-coverage) and the
+[measurement provenance contract](BENCHMARK_API.md#effective-measurement-provenance).

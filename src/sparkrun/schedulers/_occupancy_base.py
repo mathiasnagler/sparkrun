@@ -110,6 +110,9 @@ class _OccupancyAwareBase(Scheduler):
                 raise LayoutConflictError(str(e)) from e
             except PlacementError as e:
                 raise SchedulingError(str(e)) from e
+            unavailable = set(request.status.observation_errors) if request.status is not None else set()
+            if unavailable.intersection(assignment.hosts_used):
+                raise InfeasibleScheduleError("Explicit layout includes hosts whose occupancy could not be observed")
             return SchedulingResult(
                 assignment=assignment,
                 scheduler_name=self.scheduler_name,
@@ -118,7 +121,7 @@ class _OccupancyAwareBase(Scheduler):
 
         resources = request.resources
         is_fractional = resources is not None and resources.is_fractional()
-        has_status = request.status is not None and len(request.status.hosts) > 0
+        has_status = request.status is not None and bool(request.status.hosts or request.status.observation_errors)
 
         # 2. Fallback path: no occupancy + no fractional claim → greedy.
         # Whole-GPU memory claims (util_fraction == 1.0, memory_gb set) flow
@@ -231,6 +234,7 @@ class _OccupancyAwareBase(Scheduler):
         is_fractional = resources is not None and resources.is_fractional()
 
         status = request.status
+        unavailable = status.observation_errors if status is not None else {}
 
         # Compute per-host load scores once, then ask the subclass to order them.
         scores = self._compute_host_load_scores(request)
@@ -245,6 +249,9 @@ class _OccupancyAwareBase(Scheduler):
         i = 0
         while i < len(sorted_hosts) and remaining > 0:
             host = sorted_hosts[i]
+            if host in unavailable:
+                i += 1
+                continue
 
             hw = _hw_for(host, request.host_hardware)
             if hw.total_gpus <= 0:

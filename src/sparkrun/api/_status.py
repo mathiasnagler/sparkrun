@@ -39,26 +39,27 @@ def status(
             ``hosts_hardware`` flow into the resolution and the
             query.  When ``None``, default executor is used and
             hardware falls back to DGX Spark per host.
-        ssh_kwargs: Optional SSH connection kwargs (forwarded to the
-            executor's ``query_status``).
+        ssh_kwargs: Per-key overrides for cluster-scoped SSH configuration.
+            Explicit None/empty values clear that configured key.
         sctx: Optional shared :class:`SparkrunContext`.  Provides
             cluster manager + SAF variables for chained-call sharing.
 
     Returns:
         A :class:`ClusterStatus` snapshot.  Unreachable hosts are
         omitted from :attr:`ClusterStatus.hosts`; callers can detect
-        this with ``status.for_host(h) is None``.
+        this with ``status.for_host(h) is None``. Use ``observation_errors``
+        to detect incomplete peer-backend coverage on otherwise reachable hosts.
     """
-    from sparkrun.api._resolve import prepare_transport, resolve_cluster
+    from sparkrun.api._resolve import scope_operation, resolve_cluster
     from sparkrun.orchestration.executor import query_status_for_cluster
 
     # Always end up with a populated ClusterDefinition; hosts are the
     # explicit list passed in.
     cluster_def = resolve_cluster(cluster, hosts, sctx=sctx)
     # Refresh provider-backed connection details before any SSH (no-op for ssh).
-    prepare_transport(cluster_def)
-    v = sctx.variables if sctx is not None else None
-    config = sctx.config if sctx is not None else None
+    sctx, ssh_kwargs = scope_operation(cluster_def, sctx=sctx, ssh_kwargs=ssh_kwargs)
+    v = sctx.variables
+    config = sctx.config
     host_hardware = cluster_def.hosts_hardware or None
 
     # The single status source: query every enabled executor on this cluster's

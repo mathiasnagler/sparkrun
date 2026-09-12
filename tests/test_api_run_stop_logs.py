@@ -252,7 +252,11 @@ def test_discover_cluster_id_sweeps_whole_host_scope(monkeypatch):
     cid = "sparkrun_%s_0123456789ab" % intent
 
     # docker sees nothing; the workload only exists as a local-executor process.
-    monkeypatch.setattr(DockerExecutor, "query_status", lambda self, hosts, **kw: ClusterStatus(hosts=(), executor="docker"))
+    monkeypatch.setattr(
+        DockerExecutor,
+        "query_status",
+        lambda self, hosts, **kw: ClusterStatus(hosts=tuple(HostOccupancy(host=h) for h in hosts), executor="docker"),
+    )
     monkeypatch.setattr(
         LocalExecutor,
         "query_status",
@@ -791,10 +795,10 @@ def test_run_populates_scheduling_request_status():
     assert captured_requests[0].status is fake_status
 
 
-def test_run_status_acquisition_failure_falls_back_gracefully():
+def test_run_status_acquisition_failure_reaches_scheduler_as_unknown():
     """When the cluster status query fails (partial reachability, missing
     executor, transient SSH error), scheduling still proceeds with
-    ``status=None`` rather than crashing the launch."""
+    an error-bearing status rather than inventing free capacity."""
     from sparkrun.core.scheduler import RankAssignment, SchedulingResult
 
     recipe, cluster_def, opts, fake_runtime, fake_launch_result = _build_multihost_run_fixtures()
@@ -822,7 +826,7 @@ def test_run_status_acquisition_failure_falls_back_gracefully():
         api.run(opts)
 
     assert len(captured_requests) == 1
-    assert captured_requests[0].status is None
+    assert set(captured_requests[0].status.observation_errors) == set(captured_requests[0].hosts)
 
 
 def test_run_result_scheduler_reflects_effective_resolution():

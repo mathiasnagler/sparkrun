@@ -132,20 +132,20 @@ def query_status_for_cluster(
     The single status source behind :func:`sparkrun.api.status`.  Resolves the
     cluster's *scope* (:func:`cluster_status_scope`), then queries **all
     enabled executors sharing that scope** and merges their snapshots — they
-    inspect disjoint state on the same substrate, so the merge is a complete
-    view.  For an SSH cluster that's docker + local (native pidfile workloads
+    inspect disjoint state on the same substrate. ``observation_errors``
+    identifies incomplete portions of that merged view.  For an SSH cluster that's docker + local (native pidfile workloads
     are invisible to ``docker ps`` and vice-versa); for a provider cluster
     (``modal`` / ``k8s``) it's that provider alone.
 
     The cluster's default executor is queried **first**, so it wins any
-    per-``cluster_id`` collision.  A single failing executor is skipped (never
-    breaks the whole status).  When the cluster's executor can't be resolved
+    per-``cluster_id`` collision. A failing executor leaves explicit unknown
+    coverage while successful peer observations remain available.  When the cluster's executor can't be resolved
     (e.g. a provider executor whose plugin / feature flag is unavailable), the
-    query degrades to an empty snapshot with a logged warning rather than
-    raising.
+    query returns an error-bearing snapshot with no observed hosts rather than
+    raising or describing those hosts as idle.
     """
     from dataclasses import replace
-    from sparkrun.core.cluster_status import ClusterStatus, attribute_executor, empty_status
+    from sparkrun.core.cluster_status import ClusterStatus, attribute_executor
     from sparkrun.core.status_observation import ExecutorCoverage
 
     try:
@@ -155,7 +155,7 @@ def query_status_for_cluster(
             "Could not resolve an executor for status on this cluster; returning an empty snapshot",
             exc_info=True,
         )
-        return empty_status(list(hosts))
+        return ClusterStatus(errors={host: "executor status unavailable" for host in hosts})
 
     # Enabled executors sharing the cluster's scope (list_executors already
     # excludes feature-gated-off executors).  Default executor first
@@ -177,7 +177,12 @@ def query_status_for_cluster(
             ex = resolve_executor(cluster=cluster, cli_overrides=target.overrides, rootless=False, auto_user=False, config=config, v=v)
             snapshot = ex.query_status(list(hosts), ssh_kwargs=ssh_kwargs, host_hardware=host_hardware)
             covered = frozenset(h.host for h in snapshot.hosts if h.host in hosts and h.host not in snapshot.errors)
-            snapshot = replace(snapshot, coverage=(ExecutorCoverage(target, scope, frozenset(hosts), covered),))
+            snapshot = replace(
+                snapshot,
+                coverage=(
+                    ExecutorCoverage(target, scope, frozenset(hosts), covered, (ssh_kwargs or {}).get("ssh_user") or None, ssh_kwargs),
+                ),
+            )
             # Stamp *before* the merge: afterwards a workload can hold
             # containers from two substrates, and teardown has to send each
             # back to the executor that reported it.
@@ -189,13 +194,21 @@ def query_status_for_cluster(
                     ClusterStatus(
                         executor=name,
                         errors={host: "executor query failed: " + name for host in hosts},
-                        coverage=(ExecutorCoverage(target, scope, frozenset(hosts), frozenset()),),
+                        coverage=(
+                            ExecutorCoverage(
+                                target, scope, frozenset(hosts), frozenset(), (ssh_kwargs or {}).get("ssh_user") or None, ssh_kwargs
+                            ),
+                        ),
                     )
                 )
+            else:
+                snapshots.append(ClusterStatus(errors={host: "executor target unavailable: " + name for host in hosts}))
 
     if not snapshots:
-        return empty_status(list(hosts))
-    return ClusterStatus.merge(snapshots)
+        return ClusterStatus(errors={host: "executor status unavailable" for host in hosts})
+    merged = ClusterStatus.merge(snapshots)
+    unresolved = {host: error for snapshot in snapshots if not snapshot.coverage for host, error in snapshot.errors.items()}
+    return replace(merged, errors={**unresolved, **merged.errors})
 
 
 # ---------------------------------------------------------------------------

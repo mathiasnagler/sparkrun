@@ -282,8 +282,8 @@ def test_scheduler_choice_threaded_through(monkeypatch):
     assert capture["scheduler_kw"] == "occupancy-dense"
 
 
-def test_status_failure_is_best_effort(monkeypatch):
-    """A failing ``api.status`` query does not abort scheduling (status=None)."""
+def test_status_failure_is_retained_for_scheduler(monkeypatch):
+    """Scheduling receives explicit unknown occupancy when the query fails."""
     capture: dict = {}
     _stub_schedule(monkeypatch, ["h1", "h2"], capture=capture)
 
@@ -300,7 +300,7 @@ def test_status_failure_is_best_effort(monkeypatch):
         {},
         cluster_def=cluster,
     )
-    assert capture["request"].status is None
+    assert set(capture["request"].status.observation_errors) == {"h1", "h2"}
     assert host_list == ["h1", "h2"]
 
 

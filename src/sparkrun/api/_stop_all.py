@@ -53,8 +53,11 @@ def stop_all(
         cluster: Optional cluster name/definition for executor + transport
             resolution (forwarded to :func:`sparkrun.api.status_report`).
         cache_dir: Cache directory holding job metadata.
-        ssh_kwargs: SSH connection parameters.
-        dry_run: Log the teardown without executing it.  Discovery still
+        ssh_kwargs: Per-key overrides for cluster-scoped SSH configuration.
+            With a discovery snapshot, authentication settings may be overridden
+            but an explicit different SSH user requires fresh discovery.
+        dry_run: Log planned teardown; result counts are previews and
+            ``result.dry_run`` is true. Discovery still
             runs for real — there is nothing to preview otherwise.
         discovered: A snapshot from :func:`sparkrun.api.status_report` to
             act on instead of re-querying.  Lets a caller that already
@@ -68,19 +71,24 @@ def stop_all(
     from sparkrun.orchestration.primitives import cleanup_containers_by_host, merge_teardown_results
     from sparkrun.orchestration.teardown import parse_teardown_removed
 
+    from sparkrun.api._resolve import resolve_cluster, scope_operation
+
     host_list = list(hosts)
+    explicit_ssh = ssh_kwargs
+    cluster_def = resolve_cluster(cluster, host_list, sctx=sctx)
+    sctx, ssh_kwargs = scope_operation(cluster_def, sctx=sctx, ssh_kwargs=ssh_kwargs, prepare=False)
+    if cache_dir is None:
+        cache_dir = str(sctx.config.cache_dir)
     result = discovered
     if result is None:
-        result = status_report(host_list, cluster=cluster, ssh_kwargs=ssh_kwargs, cache_dir=cache_dir, sctx=sctx)
-
-    discovery_errors = dict(result.errors)
+        result = status_report(host_list, cluster=cluster, ssh_kwargs=explicit_ssh, cache_dir=cache_dir, sctx=sctx)
 
     if result.total_containers == 0:
-        return StopAllResult(
-            discovered=result,
+        return _outcome(
+            result,
+            dry_run=dry_run,
             jobs_stopped=0,
             containers_removed=0,
-            discovery_errors=discovery_errors,
         )
 
     executor_names = set(result.container_executors.values())
@@ -106,13 +114,15 @@ def stop_all(
     # workloads *it* reported, then the per-host verdicts are recombined.
     # Sending the whole set to one executor is what let a `local` workload
     # survive a "successful" stop --all.
+    grouped_by_executor = _group_by_executor(host_containers, result)
+    connections = {name: _discovered_transport(result, name, ssh_kwargs, explicit_ssh) for name in grouped_by_executor}
     results: dict = {}
-    for executor_name, grouped in _group_by_executor(host_containers, result).items():
+    for executor_name, grouped in grouped_by_executor.items():
         results = merge_teardown_results(
             results,
             cleanup_containers_by_host(
                 grouped,
-                ssh_kwargs=ssh_kwargs,
+                ssh_kwargs=connections[executor_name],
                 dry_run=dry_run,
                 executor=executors.get(executor_name),
             ),
@@ -129,8 +139,9 @@ def stop_all(
     if dry_run:
         # Nothing was executed, so nothing failed and nothing was removed;
         # report the discovered shape as what *would* be stopped.
-        return StopAllResult(
-            discovered=result,
+        return _outcome(
+            result,
+            dry_run=dry_run,
             jobs_stopped=len(result.groups) + len(result.solo_entries),
             containers_removed=result.total_containers,
             hosts_stopped=tuple(host_containers),
@@ -152,14 +163,35 @@ def stop_all(
         _forget_job(solo_cid, cache_dir)
         jobs_stopped += 1
 
-    return StopAllResult(
-        discovered=result,
+    return _outcome(
+        result,
+        dry_run=dry_run,
         jobs_stopped=jobs_stopped,
         containers_removed=containers_removed,
         hosts_stopped=tuple(h for h in host_containers if h not in failed_hosts),
         hosts_failed=failed_hosts,
-        discovery_errors=discovery_errors,
     )
+
+
+def _outcome(discovered, *, dry_run, **counts):
+    """Discovery failures survive every backend and preview return path."""
+    return StopAllResult(discovered=discovered, discovery_errors=dict(discovered.errors), dry_run=dry_run, **counts)
+
+
+def _discovered_transport(discovered, executor_name, defaults, explicit):
+    from sparkrun.api._errors import SparkrunError
+    from sparkrun.utils.data import thaw
+
+    coverage = [c for c in discovered.coverage if c.target.executor == executor_name]
+    if not coverage:
+        return defaults
+    if len({(c.target.destination_key, c.ssh_user) for c in coverage}) != 1:
+        raise SparkrunError("Bulk teardown requires one observed destination per executor")
+    observed = coverage[0]
+    if explicit is not None and "ssh_user" in explicit and (explicit["ssh_user"] or None) != observed.ssh_user:
+        raise SparkrunError("SSH user differs from the discovery snapshot; query the intended destination first")
+    connection = thaw(observed.ssh_kwargs) if observed.ssh_kwargs is not None else {"ssh_user": observed.ssh_user}
+    return {**defaults, **connection, **(explicit or {})}
 
 
 def _stop_discovered_workloads(discovered, *, cluster, cache_dir, dry_run, sctx):
@@ -172,12 +204,12 @@ def _stop_discovered_workloads(discovered, *, cluster, cache_dir, dry_run, sctx)
             hosts.append(entry.host)
     all_hosts = tuple(dict.fromkeys(host for hosts in jobs.values() for host in hosts))
     if dry_run:
-        return StopAllResult(
-            discovered=discovered,
+        return _outcome(
+            discovered,
+            dry_run=dry_run,
             jobs_stopped=len(jobs),
             containers_removed=discovered.total_containers,
             hosts_stopped=all_hosts,
-            discovery_errors=dict(discovered.errors),
         )
     # A supplied discovery result owns its provider target even if defaults
     # changed or local job metadata disappeared after the query.
@@ -206,13 +238,13 @@ def _stop_discovered_workloads(discovered, *, cluster, cache_dir, dry_run, sctx)
         else:
             detail = "; ".join(outcome.errors) or "teardown did not confirm"
             failures.update({host: detail for host in outcome.hosts_failed or hosts})
-    return StopAllResult(
-        discovered=discovered,
+    return _outcome(
+        discovered,
+        dry_run=dry_run,
         jobs_stopped=jobs_stopped,
         containers_removed=removed,
         hosts_stopped=tuple(h for h in all_hosts if h not in failures),
         hosts_failed=failures,
-        discovery_errors=dict(discovered.errors),
     )
 
 

@@ -115,9 +115,10 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
     # ssh alias) BEFORE any SSH runs — the occupancy status query inside
     # ``resolve_effective_hosts`` below is the first SSH.  No-op for plain-SSH
     # clusters, so existing clusters pay nothing.
-    from sparkrun.api._resolve import prepare_transport
+    from sparkrun.api._resolve import scope_operation
 
-    prepare_transport(cluster_def, dry_run=bool(getattr(options, "dry_run", False)))
+    sctx, _ = scope_operation(cluster_def, sctx=sctx, dry_run=options.dry_run)
+    config = sctx.config
 
     recipe = resolve_recipe(options.recipe, sctx=sctx, overrides=options.overrides)
     hosts = list(cluster_def.hosts)
@@ -143,9 +144,6 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
     )
     if _scheduler_defaulted:
         logger.debug("No scheduler configured (recipe/cluster); using default %r", FALLBACK_DEFAULT_SCHEDULER)
-
-    sctx = sctx.for_cluster(cluster_def)
-    config = sctx.config
 
     # 2. Compute placement via the single shared authority
     # (:func:`sparkrun.api._hosts.resolve_effective_hosts`).  This is the
@@ -765,8 +763,8 @@ def _evict_superseded_deployments(
         logger.debug("Could not query cluster status for eviction; skipping: %s", e)
         return [], None
 
-    if strict and getattr(status, "errors", None):
-        raise RuntimeError("could not query cluster status before workload replacement: %s" % status.errors)
+    if strict and status.observation_errors:
+        raise RuntimeError("could not query cluster status before workload replacement: %s" % status.observation_errors)
 
     prefix = "sparkrun_%s_" % intent_id
     target = set(target_hosts)
