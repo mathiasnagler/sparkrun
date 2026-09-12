@@ -549,10 +549,18 @@ selects this class instead of keeping plugin-specific fields in core.
 Plugins with a native control-plane launch may register a
 `RunHandler(executor, callback, feature_flag=...)` through
 `sparkrun.core.run_handlers.register_run_handler()`. The typed callback receives
-`(options, sctx, *, plan: RunPlan, started_at: float)` and returns `RunResult`.
+`(options, sctx, *, plan: RunPlan, started_at: float, before_start)` and returns `RunResult`.
 The plan is the existing resolved recipe/cluster/placement/identity decision;
 handlers must not independently repeat placement. Core enforces execution-strategy
-compatibility and replacement semantics before dispatch. Both default and plugin
+compatibility before dispatch. For real launches, `before_start` is an idempotent
+zero-argument callback owned by core. Call it after validation and staging succeed,
+immediately before starting/submitting the new workload. Let any callback failure
+abort submission. During dry-run it is `None`; no replacement or submission occurs.
+Core does not stop the previous deployment merely by dispatching a handler.
+Kubernetes passes this callback through `launch_jobset()`, which invokes it after
+manifest construction and feasibility checks and before submission. A submission
+failure after replacement can still leave the old deployment stopped.
+Both default and plugin
 launches preserve typed `SparkrunError` errors and translate other exceptions with
 their cause; interrupts propagate unchanged. A runtime failure may instead return
 a nonzero `RunResult.rc`; consumers must inspect that public status. A plugin need

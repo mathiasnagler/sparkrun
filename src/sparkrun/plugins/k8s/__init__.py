@@ -22,10 +22,10 @@ def _load_setup_command():
     return build_setup_command()
 
 
-def _run(options, sctx, *, plan, started_at):
+def _run(options, sctx, *, plan, started_at, before_start):
     from .run import run_k8s
 
-    return run_k8s(options, sctx, plan=plan, started_at=started_at)
+    return run_k8s(options, sctx, plan=plan, started_at=started_at, before_start=before_start)
 
 
 def register(v):

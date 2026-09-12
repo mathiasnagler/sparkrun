@@ -1,5 +1,6 @@
 """Recorded setup rejects corrupt state and retains unfinished undo targets."""
 
+from itertools import permutations
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
@@ -424,3 +425,23 @@ def test_undo_preview_returns_unchanged_manifest(tmp_path, recorded):
     result.manifest.phases.clear()
     assert "earlyoom" in original.phases and "earlyoom" in manager.load("lab", strict=True).phases
     action.assert_not_called()
+
+
+@pytest.mark.parametrize("order", permutations(("provider", "middle", "consumer")))
+def test_custom_undo_orders_dependencies_independently_of_mapping(tmp_path, order):
+    manager = ManifestManager(tmp_path)
+    calls = []
+    steps = {}
+    for name, requires in (("provider", ()), ("middle", ("provider",)), ("consumer", ("middle",))):
+
+        def undo(host, details, action, name=name):
+            calls.append(name)
+            return SetupActionResult(host, OK, "removed")
+
+        steps[name] = SetupStep(name, name, requires=requires, undo=undo, requires_sudo=False)
+        manager.record_phase("lab", "tester", ["h1"], name)
+    original = manager.load("lab")
+    result = run_setup_undo(original, SetupActionContext("tester"), steps={name: steps[name] for name in order})
+    assert result.complete
+    assert calls == ["consumer", "middle", "provider"]
+    assert all(record.applied for record in original.phases.values())

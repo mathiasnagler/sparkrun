@@ -11,6 +11,7 @@ from sparkrun.benchmarking._credentials import BenchmarkCredentials, resolve_cre
 from sparkrun.benchmarking.metadata import public_benchmark_data, benchmark_recipe_fingerprint
 from sparkrun.benchmarking.run_state import DEFAULT_BENCHMARK_TIMEOUT
 
+from collections.abc import Mapping
 import contextlib
 import dataclasses
 import json
@@ -277,6 +278,31 @@ def _resolve_running_deployment(
 # ---------------------------------------------------------------------------
 
 
+def _validated_benchmark_options(options: BenchmarkOptions) -> BenchmarkOptions:
+    """Copy data inputs before hooks without coercing arbitrary containers."""
+    from sparkrun.utils.data import normalize_data
+
+    values = {}
+    for name in ("overrides", "bench_args", "integrations", "state_extras"):
+        value = getattr(options, name)
+        if not isinstance(value, Mapping):
+            raise TypeError("BenchmarkOptions.%s must be a mapping" % name)
+        if name == "integrations":
+            for integration, settings in value.items():
+                if not isinstance(settings, Mapping):
+                    raise TypeError("BenchmarkOptions.integrations.%s must be a mapping" % integration)
+        values[name] = normalize_data(value, path="BenchmarkOptions." + name)
+    return dataclasses.replace(options, **values)
+
+
+def _check_measurement_prerequisites(fw, emitter: _ProgressEmitter) -> None:
+    missing = fw.check_prerequisites()
+    if missing:
+        for message in missing:
+            emitter.error("Error: %s" % message)
+        raise BenchmarkFailed("Benchmark prerequisites not met: " + "; ".join(missing), exit_code=1)
+
+
 def _execute_benchmark(
     options: BenchmarkOptions,
     *,
@@ -330,6 +356,7 @@ def _execute_benchmark(
 
     from sparkrun.core.benchmark_integrations import BenchmarkIntegrationSession
 
+    options = _validated_benchmark_options(options)
     integrations = BenchmarkIntegrationSession(options, sctx=sctx, emitter=emitter)
     options = integrations.prepare()
 
@@ -345,7 +372,7 @@ def _execute_benchmark(
     # write to ``recipe.container`` — so it is pulled out here; ``port`` is
     # named separately only because ``skip_run`` needs it below.  Everything
     # else is forwarded verbatim (see the ``_apply_recipe_overrides`` call).
-    cli_overrides = dict(options.overrides) if isinstance(options.overrides, dict) else {}
+    cli_overrides = dict(options.overrides)
     image = cli_overrides.pop("image", None)
     port = cli_overrides.pop("port", None)
 
@@ -368,7 +395,7 @@ def _execute_benchmark(
     category = options.category
 
     # bench_args come from options.bench_args (already a dict) — no key=value parsing needed at this layer
-    user_bench_args: dict = dict(options.bench_args) if options.bench_args else {}
+    user_bench_args: dict = dict(options.bench_args)
 
     # Translate legacy fresh bool to the new ResumeMode axis when caller provided a FRESH mode
     if resume_mode is None:
@@ -898,11 +925,7 @@ def _execute_benchmark(
         bench_result.benchmark_id = state.benchmark_id if state else ""
         bench_result.state_dir = str(state.state_dir(cache_dir)) if state else None
         if not dry_run:
-            missing = fw.check_prerequisites()
-            if missing:
-                for msg in missing:
-                    emitter.error("Error: %s" % msg)
-                raise BenchmarkFailed("Benchmark prerequisites not met", exit_code=1)
+            _check_measurement_prerequisites(fw, emitter)
         credentials = (
             BenchmarkCredentials()
             if dry_run
@@ -1512,7 +1535,7 @@ def _resume_benchmark(
     dry_run: bool = False,
     sctx: "SparkrunContext | None" = None,
     emitter: _ProgressEmitter | None = None,
-    integrations: dict[str, dict[str, Any]] | None = None,
+    integrations: Mapping[str, Mapping[str, Any]] | None = None,
     export_files: bool = True,
     output_file: str | None = None,
     timeout: int | None = None,
@@ -1568,7 +1591,7 @@ def resume_benchmark(
     sctx: SparkrunContext | None = None,
     progress_callback: Callable[[ProgressEvent], None] | None = None,
     decision_callback: Callable[[BenchmarkDecision], bool] | None = None,
-    integrations: dict[str, dict[str, Any]] | None = None,
+    integrations: Mapping[str, Mapping[str, Any]] | None = None,
     export_files: bool = True,
     output_file: str | None = None,
     timeout: int | None = None,
@@ -1695,8 +1718,9 @@ def _resume_locked(
         framework=state.framework,
         profile=state.profile,
         dry_run=dry_run,
-        integrations=integration_settings or {},
+        integrations={} if integration_settings is None else integration_settings,
     )
+    options = _validated_benchmark_options(options)
     integrations = BenchmarkIntegrationSession(options, sctx=sctx, emitter=emitter)
     if state.is_complete(len(state.schedule)):
         return _complete_saved_benchmark(state, integrations, cache_dir)
@@ -1729,6 +1753,14 @@ def _resume_locked(
         result.success = True
         _complete_integrations(integrations)
         return result
+
+    # Reconstruct framework
+    try:
+        fw = get_benchmarking_framework(state.framework)
+    except ValueError as e:
+        raise BenchmarkFailed("Error: %s" % e, exit_code=1) from e
+
+    _check_measurement_prerequisites(fw, emitter)
 
     effective_timeout = timeout if timeout is not None else (state.timeout or DEFAULT_BENCHMARK_TIMEOUT)
     effective_fail_fast = exit_on_first_fail if exit_on_first_fail is not None else state.exit_on_first_fail
@@ -1788,12 +1820,6 @@ def _resume_locked(
             raise BenchmarkFailed("Error detecting head IP: %s" % e, exit_code=1) from e
 
     base_url = "http://%s:%d/v1" % (target_ip, serve_port)
-
-    # Reconstruct framework
-    try:
-        fw = get_benchmarking_framework(state.framework)
-    except ValueError as e:
-        raise BenchmarkFailed("Error: %s" % e, exit_code=1) from e
 
     # Rebuild tasks from saved state
     tasks = fw.build_task_list(state.base_args, state.schedule)

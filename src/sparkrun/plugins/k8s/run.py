@@ -19,6 +19,7 @@ per-rank GPU-class layout).  Kueue + JobSet must be installed first
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from sparkrun.api._errors import SparkrunError
@@ -36,6 +37,7 @@ def run_k8s(
     *,
     plan: RunPlan,
     started_at: float,
+    before_start: Callable[[], None] | None = None,
 ) -> RunResult:
     """Submit a solo k8s JobSet launch and return a :class:`RunResult`."""
     from . import api
@@ -89,6 +91,7 @@ def run_k8s(
         context=kube_context,
         dry_run=options.dry_run,
         follow=options.follow,
+        before_start=before_start,
     )
 
     serve_port = 0

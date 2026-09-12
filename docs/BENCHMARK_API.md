@@ -27,6 +27,24 @@ retaining its policy, as with `api.plan/run`. Cluster SSH users apply only to
 that operation; reusing the context for another cluster keeps the configured
 default account intact.
 
+`overrides`, `bench_args`, `integrations`, and `state_extras` accept string-keyed
+mappings, including read-only mappings. Each selected integration's settings must
+also be a mapping. At API entry, these data trees are copied into ordinary
+mappings/lists; values may be scalars, nested mappings or sequences. Dates become
+ISO strings and paths become strings, using the shared data normalization rules.
+Other objects, non-string keys, and non-mapping top-level inputs raise
+`SparkrunError` with a field path and `TypeError` cause before integration hooks
+or launch. Lists of pairs are not treated as mappings; use `{}` for an empty field.
+`resume_benchmark(integrations=...)` follows the same rules; its default `None`
+means no caller overrides. Preloaded recipe and cluster objects keep the behavior
+above.
+
+Actual measurements check framework prerequisites on both new runs and incomplete
+resumes. A missing prerequisite raises `BenchmarkFailed` with the details before
+inference launch, state-bound integration hooks, or measurement commands. Preview,
+completed-result loading, and publication-only retries do not require measurement
+tools. Resumes keep their saved execution policy and reacquire credentials.
+
 ## Progress and decisions
 
 The API does not instantiate a terminal progress UI. `progress_callback` receives

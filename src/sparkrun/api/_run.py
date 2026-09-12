@@ -388,7 +388,13 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     # metadata and so refuses to run at all without a trustworthy snapshot.
     observed_running: dict[str, set[str] | None] = {"ids": None}
 
+    replacement_attempted = False
+
     def _evict_before_start() -> None:
+        nonlocal replacement_attempted
+        if replacement_attempted:
+            return
+        replacement_attempted = True
         _, running = _evict_superseded_deployments(
             intent_id=intent_id,
             cluster_id_for_launch=cluster_id_for_launch,
@@ -425,16 +431,14 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
                 raise SparkrunError(
                     "execution strategy %r does not support the %r executor launch path" % (execution_strategy.name, _executor_name)
                 )
-            # This path returns without going through ``launch_inference``, so
-            # it never reaches the ``before_start`` hook — evict here to keep
-            # replace-my-own-deployment semantics.  It does not get the SSH
-            # path's "only after distribution succeeded" guarantee; the plugin
-            # launcher owns its own image/volume staging.
-            if not options.dry_run:
-                _evict_before_start()
-
             with _launch_errors("executor %r launch" % _executor_name):
-                return handler.run(options, sctx, plan=plan, started_at=started_at)
+                return handler.run(
+                    options,
+                    sctx,
+                    plan=plan,
+                    started_at=started_at,
+                    before_start=None if options.dry_run else _evict_before_start,
+                )
 
     # 4. Translate options → launch_inference kwargs.
     launch_kwargs: dict[str, Any] = {

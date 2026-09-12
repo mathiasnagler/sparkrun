@@ -9,6 +9,7 @@ from __future__ import annotations
 from sparkrun.core.registration import enlist_registry_state, register_unique
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 import re
 
@@ -18,7 +19,22 @@ if TYPE_CHECKING:
 
 
 class RunCallback(Protocol):
-    def __call__(self, options: RunOptions, sctx: SparkrunContext, *, plan: RunPlan, started_at: float) -> RunResult: ...
+    def __call__(
+        self,
+        options: RunOptions,
+        sctx: SparkrunContext,
+        *,
+        plan: RunPlan,
+        started_at: float,
+        before_start: Callable[[], None] | None,
+    ) -> RunResult:
+        """Validate/stage, call before_start immediately before launch, then launch.
+
+        Core owns replacement; the callback is idempotent and absent in previews.
+        Callback failure must abort submission. Handlers must not call it before
+        validation and preparation have succeeded.
+        """
+        ...
 
 
 @dataclass(frozen=True)

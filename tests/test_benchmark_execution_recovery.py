@@ -336,3 +336,154 @@ def test_implicit_legacy_backfill_captures_identity_before_image_pinning(schedul
     assert env.run.call_args.args[0].overrides["image"] == "test/image@sha256:abcd"
     env.fw.build_benchmark_command.side_effect = command
     assert resume_benchmark(path.parent.name, sctx=env.sctx, export_files=False).success
+
+
+@pytest.mark.parametrize("width", [1, 2, 7, 65536])
+@pytest.mark.parametrize("ending", ["", "\n", "\r", "\r\n"])
+def test_output_framing_preserves_payload_across_reads(width, ending):
+    from sparkrun.benchmarking._process import _Output
+
+    payload = "first\u2028second\u2029third\x85fourth\v\ffifth\r\nnext\rlast\nsecret é" + ending
+    output = []
+    reader = _Output(output.append, BenchmarkCredentials("secret é"))
+    data = payload.encode()
+    for start in range(0, len(data), width):
+        reader.feed(data[start : start + width])
+    reader.feed(b"", final=True)
+    assert "".join(output) == payload.replace("secret é", "[REDACTED]")
+    assert not reader.line
+
+
+def test_process_preserves_unicode_separators_on_both_streams():
+    payload = "first\u2028second\u2029third\x85fourth\v\ffifth\r\nnext\rlast\nsecret é"
+    stdout, stderr = [], []
+    code = "import os; data = %r; os.write(1, data); os.write(2, data)" % payload.encode()
+    rc = run_benchmark_process(
+        [sys.executable, "-c", code],
+        timeout=3,
+        credentials=BenchmarkCredentials("secret é"),
+        stdout=stdout.append,
+        stderr=stderr.append,
+    )
+    assert rc == 0
+    assert "".join(stdout) == "".join(stderr) == payload.replace("secret é", "[REDACTED]")
+
+
+def test_public_api_parses_json_with_literal_unicode_separators(bench_env):
+    env = bench_env
+    rows = {"text": "first\u2028second\u2029third\x85fourth"}
+    env.fw.build_benchmark_command.return_value = [sys.executable, "-c", "print(%r)" % json.dumps(rows, ensure_ascii=False)]
+    result = benchmark(env.options, sctx=env.sctx)
+    assert result.success and result.results == rows
+    env.stop.assert_called_once()
+
+
+@pytest.mark.parametrize("field", ["overrides", "bench_args", "integrations", "state_extras"])
+@pytest.mark.parametrize("value", [None, [], [("tensor_parallel", 4)], "bad", {1: "bad"}])
+def test_bad_benchmark_data_fails_before_hooks_or_launch(bench_env, field, value):
+    env = bench_env
+    prepare = Mock(side_effect=lambda defaults, context: defaults)
+    register_benchmark_integration(BenchmarkIntegration("audit", prepare=prepare))
+    options = replace(env.options, integrations={"audit": {}})
+    with pytest.raises(SparkrunError, match="BenchmarkOptions." + field) as caught:
+        benchmark(replace(options, **{field: value}), sctx=env.sctx)
+    assert isinstance(caught.value.__cause__, TypeError)
+    prepare.assert_not_called()
+    env.run.assert_not_called()
+    env.fw.build_benchmark_command.assert_not_called()
+
+
+@pytest.mark.parametrize("settings", [None, [], "bad"])
+def test_integration_settings_reject_non_mappings_before_hooks(bench_env, settings):
+    prepare = Mock()
+    register_benchmark_integration(BenchmarkIntegration("audit", prepare=prepare))
+    with pytest.raises(SparkrunError, match="integrations.audit must be a mapping"):
+        benchmark(replace(bench_env.options, integrations={"audit": settings}), sctx=bench_env.sctx)
+    prepare.assert_not_called()
+    bench_env.run.assert_not_called()
+
+
+def test_benchmark_mapping_inputs_are_detached_before_hooks(scheduled_env):
+    from types import MappingProxyType
+
+    env = scheduled_env
+    overrides, args, settings, extras = {"tensor_parallel": 1}, {"custom": [7]}, {"tags": ["original"]}, {"app.tags": ["original"]}
+
+    def prepare(defaults, context):
+        assert defaults.bench_args["custom"] == (7,)
+        assert context.settings == {"tags": ["original"]}
+        overrides["tensor_parallel"] = 9
+        args["custom"].append(99)
+        settings["tags"].append("changed")
+        extras["app.tags"].append("changed")
+        return defaults
+
+    register_benchmark_integration(BenchmarkIntegration("audit", prepare=prepare))
+    options = replace(
+        env.options,
+        recipe=env.recipe,
+        overrides=MappingProxyType(overrides),
+        bench_args=MappingProxyType(args),
+        integrations=MappingProxyType({"audit": MappingProxyType(settings)}),
+        state_extras=MappingProxyType(extras),
+    )
+    result = benchmark(options, sctx=env.sctx)
+    assert result.success
+    assert env.run.call_args.args[0].overrides["tensor_parallel"] == 1
+    assert result.metadata["bench_args"]["custom"] == [7]
+    state = BenchmarkRunState.load(result.benchmark_id, str(env.sctx.config.cache_dir), strict=True)
+    assert state.extras["app.tags"] == ["original"]
+    assert state.extras["benchmark_integrations"]["audit"]["settings"] == {"tags": ["original"]}
+
+
+@pytest.mark.parametrize("settings", [[], {"audit": []}, {1: {}}])
+def test_resume_rejects_invalid_integration_inputs_before_hooks(scheduled_env, settings):
+    env = scheduled_env
+    path = _interrupt_measurement(env)
+    before = path.read_bytes()
+    bind = Mock()
+    register_benchmark_integration(BenchmarkIntegration("audit", on_bind=bind))
+    env.fw.build_benchmark_command.reset_mock()
+    with pytest.raises(SparkrunError, match="BenchmarkOptions.integrations"):
+        resume_benchmark(path.parent.name, sctx=env.sctx, integrations=settings)
+    bind.assert_not_called()
+    env.fw.build_benchmark_command.assert_not_called()
+    assert path.read_bytes() == before
+
+
+def test_resume_and_initial_measurement_share_prerequisite_failure(scheduled_env):
+    env = scheduled_env
+    path = _interrupt_measurement(env)
+    before = path.read_bytes()
+    bind = Mock()
+    register_benchmark_integration(BenchmarkIntegration("audit", on_bind=bind))
+    env.fw.check_prerequisites.reset_mock()
+    env.fw.check_prerequisites.return_value = ["missing measurement tool"]
+    for operation in (env.run, env.stop, env.fw.build_benchmark_command):
+        operation.reset_mock()
+    failures = []
+    for execute in (
+        lambda: resume_benchmark(path.parent.name, sctx=env.sctx, integrations={"audit": {}}),
+        lambda: benchmark(replace(env.options, integrations={"audit": {}}, bench_args={"variant": "fresh"}), sctx=env.sctx),
+    ):
+        with pytest.raises(BenchmarkFailed, match="missing measurement tool") as error:
+            execute()
+        failures.append(str(error.value))
+    assert failures[0] == failures[1]
+    assert env.fw.check_prerequisites.call_count == 2
+    bind.assert_not_called()
+    for operation in (env.run, env.stop, env.fw.build_benchmark_command):
+        operation.assert_not_called()
+    assert path.read_bytes() == before
+
+
+def test_previews_skip_measurement_prerequisites(scheduled_env):
+    env = scheduled_env
+    path = _interrupt_measurement(env)
+    before = path.read_bytes()
+    env.fw.check_prerequisites.reset_mock()
+    env.fw.check_prerequisites.side_effect = AssertionError("preview must not check execution prerequisites")
+    assert resume_benchmark(path.parent.name, sctx=env.sctx, dry_run=True).success
+    assert benchmark(replace(env.options, dry_run=True), sctx=env.sctx).success
+    env.fw.check_prerequisites.assert_not_called()
+    assert path.read_bytes() == before

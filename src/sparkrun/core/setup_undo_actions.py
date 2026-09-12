@@ -106,4 +106,8 @@ def builtin_undo_steps(manifest: SetupManifest) -> dict[str, SetupStep]:
         "cx7": undo_cx7,
         "ssh_mesh": undo_mesh,
     }
-    return {key: SetupStep(key, key.replace("_", " "), undo=callbacks[key], requires_sudo=key != "ssh_mesh") for key in BUILTIN_UNDO_ORDER}
+    # Preserve built-in tie ordering within the shared reverse dependency walk.
+    return {
+        key: SetupStep(key, key.replace("_", " "), undo=callbacks[key], requires_sudo=key != "ssh_mesh", order=-index)
+        for index, key in enumerate(BUILTIN_UNDO_ORDER)
+    }

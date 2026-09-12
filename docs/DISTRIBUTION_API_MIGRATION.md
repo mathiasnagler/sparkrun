@@ -94,6 +94,13 @@ against `core.registration.PLUGIN_API_VERSION`, independently of the application
 profile API version. Installed modules require it; other sources validate it when
 present. See [framework registration and identifier terminology](PLUGINS.md#installing-a-benchmark-framework).
 
+Run-handler callbacks now receive `before_start` as a required keyword argument.
+For real launches call this core-owned, idempotent callback after validation and
+staging, immediately before submission; let failures abort the launch. It is `None`
+in dry-run. Core no longer replaces a running deployment before dispatching to
+the plugin. Kubernetes forwards it to `launch_jobset(before_start=...)` so its
+manifest and feasibility prechecks finish first.
+
 Run handlers reuse the supplied plan and standard executor resolver.
 `RunOptions.executor_overrides()` supplies the caller layer. Do not independently
 merge recipe/cluster/default layers or repeat placement in a handler.
@@ -229,3 +236,12 @@ handles are private. Replace any mutation of `InstalledIntegration` rows with
 explicit configuration before initialization. Profile integration lists,
 bootstrap URL lists, and environment-alias lists require list/tuple values;
 use `("arena",)` instead of `"arena"` for a single integration.
+
+Benchmark data inputs (`overrides`, `bench_args`, `integrations`, `state_extras`)
+now consistently accept string-keyed mappings and copy serializable nested data
+before hooks. Invalid shapes raise field-specific errors instead of silently
+falling back to empty overrides. Resume integration settings use the same rules.
+Incomplete resumes now enforce the same framework prerequisites as initial
+measurements; preview and completed-result/publication paths remain independent
+of those tools. Custom setup undo mappings now derive reverse dependency order
+from the shared graph, independent of insertion order.

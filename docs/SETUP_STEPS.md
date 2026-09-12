@@ -275,6 +275,11 @@ before a later orchestration or frontend callback can raise.
 removed from their phase records before frontend result notification. No later
 host success can clear a warning/failure on another host. Missing plugins,
 filtered phases, declined actions, and invalid results remain unresolved.
+Caller-supplied `steps` mappings are also executed in reverse dependency order,
+regardless of insertion order. Their prerequisites are merged with registered
+knowledge, then the shared setup graph validator orders execution. Unknown
+prerequisites and cycles fail before callbacks. `order` breaks ties between
+independent steps; built-in undo retains its established tie ordering.
 `only_steps` restricts execution, never authorizes discarding other records.
 Unresolved recorded dependents block prerequisite undo on the same host. This
 includes transitive dependencies and dependents outside `only_steps` or an

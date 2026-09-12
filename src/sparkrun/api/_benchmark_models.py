@@ -11,6 +11,7 @@ completed run.  ``ProgressEvent`` carries presentation-independent notifications
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable
@@ -100,7 +101,10 @@ class BenchmarkOptions:
     """Inputs to :func:`sparkrun.api.benchmark`.
 
     Mirrors the CLI ``benchmark run`` flag set.  ``recipe`` is required;
-    everything else defaults to sensible CLI-equivalent values.
+    everything else defaults to sensible CLI-equivalent values. Data fields
+    (overrides, bench_args, integrations, state_extras) accept string-keyed
+    mappings of serializable values and are recursively copied at API entry.
+    Invalid shapes raise SparkrunError before integration hooks or launch.
     """
 
     recipe: "str | Recipe"
@@ -114,7 +118,7 @@ class BenchmarkOptions:
     """Override the resolved benchmarking framework (e.g. ``"llama-benchy"``)."""
     profile: str | None = None
     """Named benchmark profile to run."""
-    bench_args: dict[str, Any] = field(default_factory=dict)
+    bench_args: Mapping[str, Any] = field(default_factory=dict)
     """Extra benchmark arguments forwarded as ``-b key=value`` options."""
 
     # --- Targeting ---
@@ -122,7 +126,7 @@ class BenchmarkOptions:
     """Explicit host list.  When set, overrides any cluster's hosts."""
     cluster: "str | ClusterDefinition | None" = None
     """Named cluster (resolved via ClusterManager) or pre-loaded definition."""
-    overrides: dict[str, Any] = field(default_factory=dict)
+    overrides: Mapping[str, Any] = field(default_factory=dict)
     """Recipe / runtime overrides threaded into the launch.
 
     Fed wholesale to :func:`sparkrun.core.resolve.apply_recipe_overrides`, so
@@ -153,7 +157,7 @@ class BenchmarkOptions:
     """
 
     # --- Mode ---
-    integrations: dict[str, dict[str, Any]] = field(default_factory=dict)
+    integrations: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     """Selected benchmark integrations and their settings, keyed by registered name."""
 
     # --- Output ---
@@ -189,7 +193,7 @@ class BenchmarkOptions:
     progress_callback: "Callable[[ProgressEvent], None] | None" = None
     """Callback invoked with :class:`ProgressEvent` instances during the run.
     The API does not render terminal progress when no callback is supplied."""
-    state_extras: dict[str, Any] = field(default_factory=dict)
+    state_extras: Mapping[str, Any] = field(default_factory=dict)
     """Caller metadata copied into new scheduled state. Use application-owned
     names (e.g. ``{"my_app.experiment": "run-abc"}``); core-reserved keys
     are documented in ``docs/BENCHMARK_API.md``."""

@@ -9,6 +9,8 @@ subclasses (see :mod:`._errors`).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from ..config import K8sSettings
 
 from sparkrun.core.application_profile import resource_name
@@ -371,6 +373,7 @@ def launch_jobset(
     precheck: bool = True,
     follow: bool = False,
     dry_run: bool = False,
+    before_start: Callable[[], None] | None = None,
 ) -> "LaunchJobsetResult":
     """Build, precheck, and submit a Kueue-admitted JobSet launch.
 
@@ -378,7 +381,9 @@ def launch_jobset(
     node selectors and the feasibility precheck come from the live node
     inventory.  *dry_run* renders the manifest (and the feasibility
     verdict) without submitting.  Raises :class:`JobSetLaunchError` when a
-    precheck fails or the apply is rejected.
+    precheck fails or the apply is rejected. If supplied, *before_start* runs
+    after preparation and prechecks, immediately before submission. An exception
+    aborts submission. Preview never invokes it.
     """
     from sparkrun.plugins.k8s.orchestration import launch as _launch
     from sparkrun.plugins.k8s.orchestration.inventory import probe_nodes as _probe_nodes
@@ -426,6 +431,8 @@ def launch_jobset(
     if precheck and not report.feasible:
         raise JobSetLaunchError("Launch is infeasible:\n%s" % report.summary())
 
+    if before_start is not None:
+        before_start()
     apply_res = _launch.submit_jobset(client, plan)
     if not apply_res.success:
         raise JobSetLaunchError("Failed to submit JobSet %s: %s" % (name, apply_res.stderr.strip()[:400]))

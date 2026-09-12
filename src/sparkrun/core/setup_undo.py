@@ -49,7 +49,7 @@ def available_undo_steps(manifest: SetupManifest) -> dict[str, SetupStep]:
     return steps
 
 
-def _undo_dependencies(available: Mapping[str, SetupStep]) -> dict[str, set[str]]:
+def _undo_graph(available: Mapping[str, SetupStep]) -> tuple[tuple[SetupStep, ...], dict[str, set[str]]]:
     # An explicit undo mapping may narrow execution, but cannot erase known
     # dependencies. Include registered steps even when their undo is absent.
     graph = {step.key: step for step in all_setup_steps()}
@@ -58,9 +58,10 @@ def _undo_dependencies(available: Mapping[str, SetupStep]) -> dict[str, set[str]
         requires = tuple(dict.fromkeys((*registered.requires, *step.requires))) if registered else step.requires
         graph[key] = replace(step, requires=requires)
     dependencies: dict[str, set[str]] = {}
-    for step in _order_setup_steps(graph):
+    ordered = _order_setup_steps(graph)
+    for step in ordered:
         dependencies[step.key] = set(step.requires).union(*(dependencies[key] for key in step.requires))
-    return dependencies
+    return ordered, dependencies
 
 
 def run_setup_undo(
@@ -79,8 +80,8 @@ def run_setup_undo(
     A manager reloads authoritative state and records each successful target
     while holding its lock. Without one, operate on a detached manifest only.
     Caller-supplied steps replace the default built-in/loaded plugin undo set.
-    Default plugin undo uses reverse dependency order, independent of feature
-    gates. Recorded dependents block prerequisite removal per host, including
+    All undo uses reverse dependency order, independent of mapping insertion
+    order and feature gates. Recorded dependents block prerequisite removal per host, including
     dependents outside caller-supplied steps or filters. Only OK confirms
     removal (including already absent). Preview/decline never invokes undo or
     credentials and leaves every record unresolved. Both input sources are
@@ -105,8 +106,11 @@ def run_setup_undo(
             raise ValueError("No teardown implementation for: " + ", ".join(sorted(unknown)))
         if any(key != step.key or not callable(step.undo) for key, step in available.items()):
             raise ValueError("Undo steps must be keyed by their ID and provide an undo callback")
-        dependencies = _undo_dependencies(available)
-        for key, step in available.items():
+        ordered, dependencies = _undo_graph(available)
+        for step in reversed(ordered):
+            key = step.key
+            if key not in available:
+                continue
             record = manifest.phases.get(key)
             if record is None or not record.applied or key in RETAINED_SETUP_PHASES or (only_steps is not None and key not in only_steps):
                 continue

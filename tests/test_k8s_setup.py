@@ -1620,3 +1620,42 @@ def test_cli_setup_k8s_run_job_dry_run(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "kind: Job" in result.output
     assert "dry-run" in result.output
+
+
+@pytest.mark.parametrize("case", ["submit", "preview", "infeasible", "invalid", "replacement_failure"])
+def test_jobset_replacement_follows_preflight(tmp_path, monkeypatch, case):
+    from unittest.mock import Mock
+    from sparkrun.plugins.k8s import api as apik8s
+    from sparkrun.plugins.k8s.orchestration import launch as launch_mod
+
+    sctx = _sctx(tmp_path)
+    nodes = _nodes_for([("s0", _SPARK_LABELS, 1, 1, False)])
+    monkeypatch.setattr(apik8s._ops, "make_client", lambda *a, **k: object())
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.inventory.probe_nodes", lambda client, **k: nodes)
+    calls = []
+
+    def replace():
+        calls.append("replace")
+        if case == "replacement_failure":
+            raise RuntimeError("replacement failed")
+
+    replacement = Mock(side_effect=replace)
+    submit = Mock(side_effect=lambda *a: calls.append("submit") or RemoteResult(host="k8s", returncode=0, stdout="created", stderr=""))
+    monkeypatch.setattr(launch_mod, "submit_jobset", submit)
+    kwargs = dict(
+        name="job-x",
+        rank_models=["gb10"] * (2 if case == "infeasible" else 1),
+        image="img",
+        serve_command="serve",
+        transport="invalid" if case == "invalid" else "tcp",
+        dry_run=case == "preview",
+        before_start=replacement,
+    )
+    if case in ("infeasible", "invalid", "replacement_failure"):
+        with pytest.raises(RuntimeError if case == "replacement_failure" else apik8s.JobSetLaunchError):
+            apik8s.launch_jobset(sctx, **kwargs)
+    else:
+        result = apik8s.launch_jobset(sctx, **kwargs)
+        assert result.submitted is (case == "submit")
+    assert calls == ({"submit": ["replace", "submit"], "replacement_failure": ["replace"]}.get(case, []))
+    assert submit.call_count == (1 if case == "submit" else 0)

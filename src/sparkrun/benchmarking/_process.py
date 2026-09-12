@@ -5,6 +5,7 @@ from __future__ import annotations
 import codecs
 import logging
 import os
+import re
 import selectors
 import signal
 import subprocess
@@ -39,13 +40,17 @@ class _Output:
                         text, self.pending = text[:-size], text[-size:]
                         break
             text = ready + text
-        lines = (self.line + text).splitlines(keepends=True)
-        self.line = ""
-        for line in lines:
-            if line.endswith(("\n", "\r")) or final:
-                self.sink(line)
-            else:
-                self.line = line
+        # Only CR/LF frame transport lines. Unicode separators are payload.
+        # Hold a trailing CR until the next read so split CRLF stays together.
+        text = self.line + text
+        start = 0
+        for match in re.finditer(r"\r\n|\n|\r(?!$)", text):
+            self.sink(text[start : match.end()])
+            start = match.end()
+        self.line = text[start:]
+        if final and self.line:
+            self.sink(self.line)
+            self.line = ""
 
 
 def run_benchmark_process(

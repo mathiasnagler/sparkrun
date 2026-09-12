@@ -156,3 +156,86 @@ def test_benchmark_cluster_user_is_local_to_invocation(bench_env):
         assert benchmark(replace(env.options, cluster=cluster), sctx=env.sctx).success
         assert env.run.call_args.kwargs["sctx"].config.ssh_user == (user or "configured-user")
         assert env.sctx.config.ssh_user == "configured-user"
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("failure", [None, "validation", "staging"])
+def test_handler_controls_replacement_after_preparation(monkeypatch, dry_run, failure):
+    from sparkrun.api import run, RunOptions, SparkrunError
+    from sparkrun.api._context import default_sctx
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.run_handlers import RunHandler
+
+    sctx = default_sctx()
+    plan = _plan(sctx, ClusterDefinition(name="lab", hosts=["localhost"], executor="docker"))
+    calls = []
+    replacement = Mock(side_effect=lambda **kw: (calls.append("replace"), set()))
+    monkeypatch.setattr("sparkrun.api._run._evict_superseded_deployments", replacement)
+    expected = object()
+
+    def launch(options, current, *, plan, started_at, before_start):
+        for phase in ("validation", "staging"):
+            calls.append(phase)
+            if failure == phase:
+                raise ValueError(phase + " failed")
+        if dry_run:
+            assert before_start is None
+        else:
+            before_start()
+            before_start()  # Replacement is owned once by core, even on repeated calls.
+            calls.append("submit")
+        return expected
+
+    monkeypatch.setattr("sparkrun.core.run_handlers.registered_run_handlers", lambda _: {"docker": RunHandler("docker", launch)})
+    options = RunOptions(recipe=plan.recipe, solo=True, dry_run=dry_run)
+    if failure:
+        with pytest.raises(SparkrunError, match=failure + " failed"):
+            run(options, sctx=sctx, plan=plan)
+        replacement.assert_not_called()
+        assert "submit" not in calls
+    else:
+        assert run(options, sctx=sctx, plan=plan) is expected
+        assert calls == (["validation", "staging"] if dry_run else ["validation", "staging", "replace", "submit"])
+        assert replacement.call_count == (0 if dry_run else 1)
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("failure", ["topology", "configuration"])
+def test_k8s_invalid_launch_keeps_previous_deployment(monkeypatch, dry_run, failure):
+    from sparkrun.api import run, RunOptions, SparkrunError
+    from sparkrun.api._context import default_sctx
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.run_handlers import RunHandler
+    from sparkrun.plugins.k8s.run import run_k8s
+
+    sctx = default_sctx()
+    cluster = ClusterDefinition(name="lab", hosts=["localhost", "second"], executor="k8s")
+    intent = "a" * 16
+    old_id = "sparkrun_%s_%s" % (intent, "c" * 12)
+    plan = replace(
+        _plan(sctx, cluster),
+        candidate_hosts=tuple(cluster.hosts),
+        host_list=tuple(cluster.hosts),
+        is_solo=failure != "topology",
+        intent_id=intent,
+        placement_token="b" * 12,
+        cluster_id="sparkrun_%s_%s" % (intent, "b" * 12),
+    )
+    monkeypatch.setattr("sparkrun.core.run_handlers.registered_run_handlers", lambda _: {"k8s": RunHandler("k8s", run_k8s)})
+    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor_name", lambda **kw: "k8s")
+    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", Mock(side_effect=ValueError("invalid kubeconfig")))
+    monkeypatch.setattr(
+        "sparkrun.orchestration.executor.query_status_for_cluster",
+        Mock(
+            return_value=SimpleNamespace(
+                hosts=[SimpleNamespace(host="localhost", workloads=[SimpleNamespace(cluster_id=old_id, intent_id=intent)])]
+            )
+        ),
+    )
+    stop, submit = Mock(return_value=SimpleNamespace(hosts_failed=[])), Mock()
+    monkeypatch.setattr("sparkrun.api.stop", stop)
+    monkeypatch.setattr("sparkrun.plugins.k8s.api.launch_jobset", submit)
+    with pytest.raises(SparkrunError, match="single-pod" if failure == "topology" else "invalid kubeconfig"):
+        run(RunOptions(recipe=plan.recipe, cluster=cluster, dry_run=dry_run), sctx=sctx, plan=plan)
+    stop.assert_not_called()
+    submit.assert_not_called()
