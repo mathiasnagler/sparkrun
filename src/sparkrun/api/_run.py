@@ -127,6 +127,14 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
 
     with _launch_errors("executor target resolution"):
         cluster_def, executor_target = resolve_operation_target(options, recipe=recipe, runtime=runtime, cluster=cluster_def, sctx=sctx)
+        from sparkrun.core._executor_destination import resolve_destination_user
+        from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+        if executor_target.user_scoped:
+            user = resolve_destination_user(executor_target, hosts, build_ssh_kwargs(config))
+            cluster_def = replace(cluster_def, user=user)
+            sctx = sctx.for_cluster(cluster_def)
+            config = sctx.config
     from sparkrun.core.readiness import validate_readiness_policy
 
     try:
@@ -245,6 +253,7 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
         cluster_id=cluster_id_for_launch,
         recipe_fingerprint=recipe_fingerprint,
         executor_target=executor_target,
+        _destination=destination,
     )
 
 
@@ -300,6 +309,8 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     except ValueError as error:
         raise SparkrunError(str(error)) from error
     cluster_def = plan.cluster
+    if plan._destination is not None and plan._destination.user_scoped:
+        cluster_def = replace(cluster_def, user=plan._destination.ssh_user)
     if plan.executor_target is not None:
         options = replace(
             options,
@@ -309,6 +320,14 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     sctx = sctx.for_cluster(cluster_def)
     config = sctx.config
     hosts = list(plan.candidate_hosts)
+    if plan.executor_target is not None and plan.executor_target.user_scoped:
+        from sparkrun.core._executor_destination import resolve_destination_user
+        from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+        # A changed -o User must not override the pinned principal, including
+        # on native handler and ensure paths that bypass the common launcher.
+        with _launch_errors("planned executor destination"):
+            resolve_destination_user(plan.executor_target, hosts, build_ssh_kwargs(config))
     host_list = list(plan.host_list)
     is_solo = plan.is_solo
     placement = plan.placement

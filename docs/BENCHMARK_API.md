@@ -401,3 +401,13 @@ Exports and integration snapshots use the recorded recipe, overrides, host set,
 and runtime information during resume. A newly observed `LaunchResult` supplies
 validation evidence and does not override this historical context. This does not
 change the recipe-free publication retry or complete-artifact processing contracts.
+
+
+Candidate deployment evidence is assembled once from a private launch handle, or
+from saved job metadata supplemented by the public `RunResult.container_image`.
+The same detached candidate is used for continuation validation and initial job
+baseline recording. Run handlers do not need a private launch handle: an equivalent
+digest supplied by their public result remains evidence even when job metadata
+omits the image. Fresh launches with a private handle record its actual serving
+recipe and overrides as the baseline. Pending-task recovery still requires matching
+job provenance; completed-artifact processing and publication-only retries do not.

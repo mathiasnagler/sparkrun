@@ -200,6 +200,17 @@ class RemoteResult:
 # ---------------------------------------------------------------------------
 
 
+def _local_user() -> str:
+    """Actual local process principal, independent of a stale USER environment."""
+    try:
+        import pwd
+    except ImportError:  # Windows controllers still need an SSH login default.
+        import getpass
+
+        return getpass.getuser()
+    return pwd.getpwuid(os.geteuid()).pw_name
+
+
 def should_run_locally(host: str, ssh_user: str | None = None) -> bool:
     """True if *host* is local AND no cross-user SSH is needed.
 
@@ -217,7 +228,7 @@ def should_run_locally(host: str, ssh_user: str | None = None) -> bool:
         return False
     if ssh_user is None:
         return True
-    return ssh_user == os.environ.get("USER", "root")
+    return ssh_user == _local_user()
 
 
 def run_local_script(script: str, dry_run: bool = False, timeout: int | None = None) -> RemoteResult:

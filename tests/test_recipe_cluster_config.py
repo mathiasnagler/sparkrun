@@ -7,6 +7,8 @@ applies the overrides (cache dirs, resolved_model_path → serve-arg + skip).
 
 from __future__ import annotations
 
+from sparkrun.orchestration.executors._base import ExecutorTarget
+
 from sparkrun.core.cluster_manager import ClusterDefinition
 from sparkrun.core.recipe import ClusterConfig, Recipe
 from sparkrun.orchestration.primitives import resolved_model_volume
@@ -321,7 +323,10 @@ def _patch_launch(monkeypatch, tmp_path, captured):
     monkeypatch.setattr(launcher, "resolve_effective_cache_dir", _resolve_cache)
     monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
     monkeypatch.setattr(
-        "sparkrun.orchestration.executor.resolve_executor", lambda **kw: type("Ex", (), {"prepare_launch": lambda self, **kw: None})()
+        "sparkrun.orchestration.executor.resolve_executor",
+        lambda **kw: type(
+            "Ex", (), {"prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")}
+        )(),
     )
 
 

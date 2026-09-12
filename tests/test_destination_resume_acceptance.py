@@ -61,14 +61,14 @@ def test_local_destinations_keep_independent_ids_and_lifecycle(run_env, monkeypa
         assert load_job_metadata(planned.cluster_id, sctx=env.sctx) is None
 
 
-def test_unknown_local_principal_does_not_claim_deterministic_identity(run_env, monkeypatch):
+def test_local_default_principal_has_stable_identity(run_env, monkeypatch):
     from sparkrun import api
     from sparkrun.api._run import plan
 
     env = run_env
     env.sctx.config.ssh_user = None
     options = api.RunOptions(recipe=env.recipe, hosts=("localhost",), solo=True, scheduler="greedy", executor="local", dry_run=True)
-    assert plan(options, sctx=env.sctx).cluster_id != plan(options, sctx=env.sctx).cluster_id
+    assert plan(options, sctx=env.sctx).cluster_id == plan(options, sctx=env.sctx).cluster_id
 
 
 @pytest.mark.parametrize("operation", ["stop", "logs", "liveness"])

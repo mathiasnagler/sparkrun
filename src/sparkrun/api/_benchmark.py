@@ -1038,7 +1038,7 @@ def _execute_benchmark(
             bench_result.launch_result = launch_result
             from sparkrun.orchestration.job_metadata import load_job_metadata
 
-            capture_launch_context(
+            candidate = capture_launch_context(
                 bench_result,
                 launch=launch_result,
                 metadata=load_job_metadata(cluster_id, cache_dir=cache_dir) if launch_result is None else None,
@@ -1094,16 +1094,15 @@ def _execute_benchmark(
             logger.log(_PROGRESS_LEVEL, "Step 1/3: Skipping inference launch (--skip-run)")
             from sparkrun.orchestration.job_metadata import load_job_metadata
 
-            capture_launch_context(bench_result, metadata=load_job_metadata(cluster_id, cache_dir=cache_dir), state=state)
+            candidate = capture_launch_context(bench_result, metadata=load_job_metadata(cluster_id, cache_dir=cache_dir), state=state)
 
         # -----------------------------------------------------------------------
         # 7. Wait for readiness and build target URL
         # -----------------------------------------------------------------------
         if state is not None and not dry_run:
             from sparkrun.benchmarking._specification import record_job_specification
-            from sparkrun.orchestration.job_metadata import load_job_metadata
 
-            record_job_specification(state, load_job_metadata(cluster_id, cache_dir=cache_dir))
+            record_job_specification(state, candidate)
         integrations.checkpoint()
 
         if is_local_host(head_host):

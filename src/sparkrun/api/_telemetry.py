@@ -32,19 +32,15 @@ logger = logging.getLogger(__name__)
 
 def _resolve_ctx(hosts, cluster, ssh_kwargs, sctx):
     """Shared setup: resolve the cluster def, scope, and ssh_kwargs."""
-    from sparkrun.api._resolve import prepare_transport, resolve_cluster
+    from sparkrun.api._context import resolve_sctx
+    from sparkrun.api._resolve import scope_operation, resolve_cluster
     from sparkrun.orchestration.executor import cluster_status_scope
 
+    sctx = resolve_sctx(sctx)
     cluster_def = resolve_cluster(cluster, hosts, sctx=sctx)
-    prepare_transport(cluster_def)
-    v = sctx.variables if sctx is not None else None
-    config = sctx.config if sctx is not None else None
-    if ssh_kwargs is None and config is not None:
-        from sparkrun.orchestration.primitives import build_ssh_kwargs
-
-        ssh_kwargs = build_ssh_kwargs(config)
-    scope = cluster_status_scope(cluster_def, config=config, v=v)
-    return cluster_def, scope, ssh_kwargs or {}, config, v
+    sctx, ssh_kwargs = scope_operation(cluster_def, sctx=sctx, ssh_kwargs=ssh_kwargs)
+    scope = cluster_status_scope(cluster_def, config=sctx.config, v=sctx.variables)
+    return cluster_def, scope, ssh_kwargs, sctx
 
 
 def open_telemetry(
@@ -61,16 +57,17 @@ def open_telemetry(
     Resolves the cluster's status scope and its telemetry provider (host / k8s /
     modal); returns ``None`` when no provider covers that substrate (the caller
     then has occupancy-only monitoring).  The caller drives ``snapshot()`` and
-    must ``close()`` (or use it as a context manager).
+    must ``close()`` (or use it as a context manager). SSH arguments override
+    cluster-scoped defaults per key; explicit None/empty values clear that key.
     """
     from sparkrun.orchestration.telemetry import get_telemetry_provider
 
-    cluster_def, scope, ssh_kwargs, config, v = _resolve_ctx(hosts, cluster, ssh_kwargs, sctx)
-    provider = get_telemetry_provider(scope, v)
+    cluster_def, scope, ssh_kwargs, sctx = _resolve_ctx(hosts, cluster, ssh_kwargs, sctx)
+    provider = get_telemetry_provider(scope, sctx.variables)
     if provider is None:
         logger.debug("No telemetry provider for scope %r; occupancy-only monitoring", scope)
         return None
-    return provider.open(list(hosts), ssh_kwargs=ssh_kwargs, interval=interval, config=config, backend=backend)
+    return provider.open(list(hosts), ssh_kwargs=ssh_kwargs, interval=interval, config=sctx.config, backend=backend)
 
 
 class LiveMonitorSession:
@@ -99,6 +96,7 @@ class LiveMonitorSession:
         self._sctx = sctx
         self._status_interval = max(1, int(status_interval))
         self._status = None
+        self._status_error = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._poller = threading.Thread(target=self._poll_loop, daemon=True)
@@ -109,11 +107,14 @@ class LiveMonitorSession:
 
         try:
             snap = api.status(self._hosts, cluster=self._cluster_def, ssh_kwargs=self._ssh_kwargs, sctx=self._sctx)
-        except Exception:  # noqa: BLE001 - keep last-known occupancy on a failed poll
+        except Exception as error:  # noqa: BLE001 - retain known workloads, but not confirmed capacity
             logger.debug("live_monitor status poll failed; keeping last snapshot", exc_info=True)
+            with self._lock:
+                self._status_error = "status poll failed: %s" % error
             return
         with self._lock:
             self._status = snap
+            self._status_error = None
 
     def _poll_loop(self) -> None:
         self._poll_once()  # prime immediately so the first frame has occupancy
@@ -127,7 +128,9 @@ class LiveMonitorSession:
         telemetry = self._tel.snapshot() if self._tel is not None else {}
         with self._lock:
             status = self._status
+            status_error = self._status_error
 
+        observation_errors = status.observation_errors if status is not None else {}
         activities = []
         for host in self._hosts:
             tel = telemetry.get(host)
@@ -139,8 +142,8 @@ class LiveMonitorSession:
                     telemetry_error=tel.error if tel is not None else None,
                     workloads=occ.workloads if occ is not None else (),
                     used_slots=occ.used_slots if occ is not None else 0,
-                    free_slots=occ.free_slots if occ is not None else 0,
-                    status_error=status.errors.get(host) if status is not None else None,
+                    free_slots=status.free_slots(host) if status is not None and not status_error else 0,
+                    status_error=status_error or observation_errors.get(host),
                 )
             )
         return MonitorFrame(hosts=tuple(activities), queried_at=time.time())
@@ -174,15 +177,18 @@ def open_live_monitor(
 
     *interval* is the telemetry cadence; *status_interval* the occupancy re-poll
     cadence (defaults to ``max(interval*2, 5)`` to bound SSH cost).  The TUI
-    ticks ``frame()``; the ``live_monitor`` generator wraps this.
+    ticks ``frame()``; the ``live_monitor`` generator wraps this. SSH arguments
+    use the same per-key cluster-scoped overrides as :func:`open_telemetry`.
+    Frames retain partial workloads but report incomplete observations as errors
+    with zero confirmed free slots.
     """
     from sparkrun.orchestration.telemetry import get_telemetry_provider
 
-    cluster_def, scope, ssh_kwargs, config, v = _resolve_ctx(hosts, cluster, ssh_kwargs, sctx)
-    provider = get_telemetry_provider(scope, v)
+    cluster_def, scope, ssh_kwargs, sctx = _resolve_ctx(hosts, cluster, ssh_kwargs, sctx)
+    provider = get_telemetry_provider(scope, sctx.variables)
     telemetry_session = None
     if provider is not None:
-        telemetry_session = provider.open(list(hosts), ssh_kwargs=ssh_kwargs, interval=interval, config=config, backend=backend)
+        telemetry_session = provider.open(list(hosts), ssh_kwargs=ssh_kwargs, interval=interval, config=sctx.config, backend=backend)
     return LiveMonitorSession(
         hosts,
         cluster_def=cluster_def,

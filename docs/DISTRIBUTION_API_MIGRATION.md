@@ -401,7 +401,10 @@ omitting it is deliberate age-based cleanup and is unsuitable for automatic use.
 Custom local PID directories now contribute to destination identity and therefore
 to deterministic workload IDs. User-scoped targets also include the resolved SSH
 user, so local default-path IDs change in 0.4.0. Docker's default IDs are unchanged.
-An unresolved local principal uses a fresh placement token. Existing jobs remain
+Implicit principals are resolved before a new user-scoped launch: the OS user
+for local dispatch, or OpenSSH's effective configuration (`ssh -G`) for remote
+hosts. A cluster must resolve to one user; unresolved or mixed defaults require
+an explicit `cluster.user`/`ssh.user` before submission. Existing jobs remain
 addressable using their saved IDs, executor configuration, and recorded user.
 
 Benchmark results add `measured_at` and `completed_at`. Runtime-default and
@@ -456,3 +459,18 @@ direct, skip-run, and artifact-gap paths. The initial job fingerprint is immutab
 a new launch cannot replace it to accept changed preparation output. Verified image
 pins can change reference spelling while the remaining serving inputs stay equal.
 Publication continues to use recorded measurement context, including runtime info.
+
+
+Plans now retain the resolved user-scoped principal through execution even when
+defaults or the nested cluster definition change after preview. Credential rotation
+remains independent of identity. New local jobs resolve implicit users and record
+them for stop/log/liveness recovery; unverifiable old records remain conservative.
+
+Raw telemetry and live monitors now share status's per-key transport override
+contract, including omitted context and explicit clears. A monitor with a failed
+peer executor preserves known workloads but reports incomplete observation and
+zero confirmed free slots.
+
+Benchmark baseline recording consumes the same normalized deployment evidence as
+resume validation. API-only run results retain their image-equivalence evidence
+without requiring a private launch handle or a redundant image field in metadata.

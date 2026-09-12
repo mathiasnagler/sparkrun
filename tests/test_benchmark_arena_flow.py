@@ -111,7 +111,9 @@ def arena_env(bench_env, monkeypatch):
         lambda *a, **kw: {
             "hosts": ["localhost"],
             "port": 8000,
-            "overrides": {},
+            "overrides": dict(env.launch.overrides),
+            "recipe_state": env.launch.recipe.__getstate__(),
+            "effective_container_image": env.launch.container_image,
         },
     )
     monkeypatch.setattr("sparkrun.orchestration.job_metadata.check_job_running", lambda **kw: SimpleNamespace(running=True))

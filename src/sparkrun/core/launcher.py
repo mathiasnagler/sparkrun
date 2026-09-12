@@ -1570,6 +1570,22 @@ def launch_inference(
         v=v,
     )
 
+    # Direct launcher callers need the same recoverable destination as api.plan.
+    # Resolve implicit users before submission and retain the chosen principal
+    # in both runtime transport and metadata; never mutate the caller's config.
+    from sparkrun.core._executor_destination import resolve_destination_user
+
+    target = executor.resolve_target(dry_run=dry_run)
+    if target.user_scoped:
+        from dataclasses import replace
+
+        job_ssh_user = resolve_destination_user(target, host_list, ssh_kwargs)
+        ssh_kwargs = {**ssh_kwargs, "ssh_user": job_ssh_user}
+        config = copy.copy(config)
+        config.ssh_user = job_ssh_user
+        if cluster is not None:
+            cluster = replace(cluster, user=job_ssh_user)
+
     def record_launch_metadata(runtime_info=None):
         if not dry_run:
             save_job_metadata(

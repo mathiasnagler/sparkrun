@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from sparkrun.orchestration.executor import ExecutorTarget
     from sparkrun.core.cluster_manager import ClusterDefinition, ClusterStatusResult
+    from sparkrun.core._executor_destination import ExecutorDestination
     from sparkrun.core.recipe import Recipe
     from sparkrun.core.scheduler import RankAssignment
 
@@ -204,7 +205,9 @@ class RunPlan:
     cluster: "ClusterDefinition"
     """Resolved cluster, after transport preparation.  For provider-backed
     transports this carries the refreshed connection details, so ``run``
-    must reuse it rather than preparing again."""
+    must reuse it rather than preparing again. Namespace-relevant SSH identity
+    is also retained independently of this mutable cluster object; key rotation
+    does not change the planned principal."""
 
     candidate_hosts: tuple[str, ...]
     """Every host placement was allowed to choose from.
@@ -246,6 +249,7 @@ class RunPlan:
     """``sparkrun_<intent_id>_<placement_token>`` — the id the launch will
     use, so a renderer can show it (and ``--ensure`` can look it up) before
     anything starts."""
+    _destination: "ExecutorDestination | None" = field(default=None, repr=False, kw_only=True)
     executor_target: "ExecutorTarget | None" = None
     """Resolved executor destination and connection snapshot.
 

@@ -5,6 +5,7 @@ what actually ran, and must be saved before commands or publication can fail.
 """
 
 from datetime import datetime, timezone
+from copy import deepcopy
 
 from sparkrun.benchmarking.metadata import public_benchmark_data
 
@@ -85,6 +86,8 @@ def capture_launch_context(execution, launch=None, metadata=None, *, container_i
     provenance. A current deployment supplies validation evidence, never a new
     attribution for rows already measured. Digest references can establish image
     equivalence; different mutable references require an explicit fresh run.
+    Returns the normalized candidate for baseline recording, so callers must
+    not reload metadata and discard evidence supplied by the launch result.
     """
     if launch is not None:
         image = launch.container_image or None
@@ -103,28 +106,30 @@ def capture_launch_context(execution, launch=None, metadata=None, *, container_i
     else:
         image = container_image or None
         recipe, overrides, runtime_info = execution.recipe, execution.overrides, execution.runtime_info
+    candidate = {**metadata, "effective_container_image": image} if metadata is not None else None
+    if launch is not None:
+        candidate = {
+            "hosts": list(launch.host_list),
+            "model": recipe.model,
+            "runtime": recipe.runtime,
+            "recipe_state": recipe.__getstate__(),
+            "overrides": dict(overrides or {}),
+            "effective_container_image": image,
+        }
+    candidate = deepcopy(candidate)
     if execution.resumed:
         validate_image_references((execution.container_image, execution.container_image_sha, execution.longterm_image_ref), image)
         if state is not None:
             from sparkrun.benchmarking._specification import validate_job_specification
 
-            candidate = {**metadata, "effective_container_image": image} if metadata is not None else None
-            if launch is not None:
-                candidate = {
-                    "hosts": launch.host_list,
-                    "model": recipe.model,
-                    "runtime": recipe.runtime,
-                    "recipe_state": recipe.__getstate__(),
-                    "overrides": overrides,
-                    "effective_container_image": image,
-                }
             validate_job_specification(state, candidate)
         # Legacy absence is now an explicit unknown, including automatic
         # resumes with a new LaunchResult that must not supply a fallback.
         execution.image_context_known = True
-        return
+        return candidate
     execution.container_image = image
     execution.recipe, execution.overrides, execution.runtime_info = recipe, overrides, runtime_info
     execution.container_image_sha = execution.longterm_image_ref = None
     execution.container_image_sha_pinned = execution.longterm_image_pinned = False
     execution.image_context_known = True
+    return candidate

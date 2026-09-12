@@ -232,7 +232,8 @@ def test_resume_rejects_changed_measurement_or_running_job_before_hooks(schedule
 def test_effective_job_configuration_can_rotate_credentials(scheduled_env, monkeypatch):
     env = scheduled_env
     env.recipe.defaults["api_key"] = "old-job-secret"
-    meta = {"hosts": ["localhost"], "port": 8000, "recipe_state": env.recipe.__getstate__(), "overrides": {"platform_default": True}}
+    env.launch.overrides = {"platform_default": True}
+    meta = {"hosts": ["localhost"], "port": 8000, "recipe_state": env.recipe.__getstate__(), "overrides": dict(env.launch.overrides)}
     monkeypatch.setattr("sparkrun.orchestration.job_metadata.load_job_metadata", lambda *a, **kw: meta)
     monkeypatch.setattr(env.launch.runtime, "resolve_api_key", lambda recipe, overrides: recipe.defaults.get("api_key"))
     path = _interrupt_measurement(env)

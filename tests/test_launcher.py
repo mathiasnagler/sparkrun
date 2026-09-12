@@ -14,6 +14,7 @@ from sparkrun.core.launcher import (
 )
 from sparkrun.core.recipe import Recipe
 from sparkrun.orchestration.collectives import NcclBackend, RcclBackend
+from sparkrun.orchestration.executors._base import ExecutorTarget
 
 
 def _nvidia_hw() -> HostHardware:
@@ -308,7 +309,9 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path)
     monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
     monkeypatch.setattr(
         "sparkrun.orchestration.executor.resolve_executor",
-        lambda **kw: type("Ex", (), {"prepare_launch": lambda self, **kw: None})(),
+        lambda **kw: type(
+            "Ex", (), {"prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")}
+        )(),
     )
 
     # Fake config
@@ -629,7 +632,9 @@ def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tm
     monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
     monkeypatch.setattr(
         "sparkrun.orchestration.executor.resolve_executor",
-        lambda **kw: type("Ex", (), {"prepare_launch": lambda self, **kw: None})(),
+        lambda **kw: type(
+            "Ex", (), {"prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")}
+        )(),
     )
 
     # Build a host with a GB10 accelerator but WITHOUT RoCEv2 — DgxSparkPlatform
@@ -955,7 +960,10 @@ def test_launch_inference_metadata_failure_aborts_before_submission(monkeypatch,
     monkeypatch.setattr(launcher, "resolve_effective_cache_dir", lambda *a, **kw: str(tmp_path))
     monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
     monkeypatch.setattr(
-        "sparkrun.orchestration.executor.resolve_executor", lambda **kw: type("Ex", (), {"prepare_launch": lambda self, **kw: None})()
+        "sparkrun.orchestration.executor.resolve_executor",
+        lambda **kw: type(
+            "Ex", (), {"prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")}
+        )(),
     )
     # Tuning sync/distribute are best-effort too; stub them to no-ops.
     monkeypatch.setattr("sparkrun.tuning.sync.sync_registry_tuning", lambda *a, **kw: 0)
@@ -1059,7 +1067,10 @@ def test_launch_inference_records_cluster_and_ssh_user(monkeypatch, tmp_path):
     monkeypatch.setattr(launcher, "resolve_effective_cache_dir", lambda *a, **kw: str(tmp_path))
     monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
     monkeypatch.setattr(
-        "sparkrun.orchestration.executor.resolve_executor", lambda **kw: type("Ex", (), {"prepare_launch": lambda self, **kw: None})()
+        "sparkrun.orchestration.executor.resolve_executor",
+        lambda **kw: type(
+            "Ex", (), {"prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")}
+        )(),
     )
     monkeypatch.setattr("sparkrun.tuning.sync.sync_registry_tuning", lambda *a, **kw: 0)
     monkeypatch.setattr("sparkrun.tuning.distribute.distribute_tuning_to_hosts", lambda *a, **kw: [])

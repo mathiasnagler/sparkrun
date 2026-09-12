@@ -10,6 +10,8 @@ See ``.slop/runtime-cache-design.md``.
 
 from __future__ import annotations
 
+from sparkrun.orchestration.executors._base import ExecutorTarget
+
 from types import SimpleNamespace
 
 import pytest
@@ -721,7 +723,10 @@ def _launch(monkeypatch, tmp_path, **launch_kw):
     monkeypatch.setattr(launcher, "resolve_effective_runtime_cache_dir", lambda *a, **kw: str(tmp_path / "sparkrun"))
     monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
     monkeypatch.setattr(
-        "sparkrun.orchestration.executor.resolve_executor", lambda **kw: type("Ex", (), {"prepare_launch": lambda self, **kw: None})()
+        "sparkrun.orchestration.executor.resolve_executor",
+        lambda **kw: type(
+            "Ex", (), {"prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")}
+        )(),
     )
 
     class _Cfg:

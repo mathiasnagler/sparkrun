@@ -12,7 +12,7 @@ from sparkrun.orchestration.primitives import check_tcp_reachability, find_avail
 # ---------------------------------------------------------------------------
 
 
-@patch.dict("os.environ", {"USER": "drew"})
+@patch("sparkrun.orchestration.ssh._local_user", new=lambda: "drew")
 def test_should_run_locally_local_no_user():
     """Local host with no ssh_user → True."""
     assert should_run_locally("127.0.0.1") is True
@@ -20,14 +20,14 @@ def test_should_run_locally_local_no_user():
     assert should_run_locally("") is True
 
 
-@patch.dict("os.environ", {"USER": "drew"})
+@patch("sparkrun.orchestration.ssh._local_user", new=lambda: "drew")
 def test_should_run_locally_local_same_user():
     """Local host with ssh_user matching OS user → True."""
     assert should_run_locally("127.0.0.1", "drew") is True
     assert should_run_locally("localhost", "drew") is True
 
 
-@patch.dict("os.environ", {"USER": "drew"})
+@patch("sparkrun.orchestration.ssh._local_user", new=lambda: "drew")
 def test_should_run_locally_local_different_user():
     """Local host with different ssh_user → False (needs SSH)."""
     assert should_run_locally("127.0.0.1", "dgxuser") is False
@@ -41,7 +41,7 @@ def test_should_run_locally_remote_host():
     assert should_run_locally("10.0.0.1", None) is False
 
 
-@patch.dict("os.environ", {"USER": "drew"})
+@patch("sparkrun.orchestration.ssh._local_user", new=lambda: "drew")
 def test_should_run_locally_none_user_explicit():
     """Explicit None ssh_user on local host → True."""
     assert should_run_locally("127.0.0.1", None) is True
@@ -54,7 +54,7 @@ def test_should_run_locally_none_user_explicit():
 
 @patch("sparkrun.orchestration.primitives.run_remote_script")
 @patch("sparkrun.orchestration.primitives.run_local_script")
-@patch.dict("os.environ", {"USER": "drew"})
+@patch("sparkrun.orchestration.ssh._local_user", new=lambda: "drew")
 def test_run_script_on_host_local_different_user_uses_ssh(mock_local, mock_remote):
     """localhost with different ssh_user dispatches to SSH, not local."""
     from sparkrun.orchestration.primitives import run_script_on_host
@@ -71,7 +71,7 @@ def test_run_script_on_host_local_different_user_uses_ssh(mock_local, mock_remot
 
 @patch("sparkrun.orchestration.primitives.run_remote_script")
 @patch("sparkrun.orchestration.primitives.run_local_script")
-@patch.dict("os.environ", {"USER": "drew"})
+@patch("sparkrun.orchestration.ssh._local_user", new=lambda: "drew")
 def test_run_script_on_host_local_same_user_runs_locally(mock_local, mock_remote):
     """localhost with same ssh_user dispatches locally."""
     from sparkrun.orchestration.primitives import run_script_on_host
@@ -86,7 +86,7 @@ def test_run_script_on_host_local_same_user_runs_locally(mock_local, mock_remote
 
 @patch("sparkrun.orchestration.primitives.run_remote_script_streaming")
 @patch("sparkrun.orchestration.primitives.run_local_script_streaming")
-@patch.dict("os.environ", {"USER": "drew"})
+@patch("sparkrun.orchestration.ssh._local_user", new=lambda: "drew")
 def test_run_script_on_host_streaming_dispatches_local(mock_local, mock_remote):
     from sparkrun.orchestration.primitives import run_script_on_host_streaming
 
@@ -99,7 +99,7 @@ def test_run_script_on_host_streaming_dispatches_local(mock_local, mock_remote):
 
 @patch("sparkrun.orchestration.primitives.run_remote_script_streaming")
 @patch("sparkrun.orchestration.primitives.run_local_script_streaming")
-@patch.dict("os.environ", {"USER": "drew"})
+@patch("sparkrun.orchestration.ssh._local_user", new=lambda: "drew")
 def test_run_script_on_host_streaming_dispatches_cross_user_over_ssh(mock_local, mock_remote):
     from sparkrun.orchestration.primitives import run_script_on_host_streaming
 
@@ -126,7 +126,7 @@ def test_run_script_on_host_streaming_dispatches_cross_user_over_ssh(mock_local,
 
 @patch("sparkrun.orchestration.primitives.run_remote_command")
 @patch("sparkrun.orchestration.primitives.run_local_script")
-@patch.dict("os.environ", {"USER": "drew"})
+@patch("sparkrun.orchestration.ssh._local_user", new=lambda: "drew")
 def test_run_command_on_host_local_different_user_uses_ssh(mock_local, mock_remote):
     """localhost with different ssh_user dispatches to SSH."""
     from sparkrun.orchestration.primitives import run_command_on_host

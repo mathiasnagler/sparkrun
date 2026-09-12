@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sparkrun.orchestration.executors._base import ExecutorTarget
+
 import pytest
 
 from sparkrun.core.cluster_manager import ClusterDefinition
@@ -241,7 +243,9 @@ def _make_launch_monkeypatches(monkeypatch, tmp_path):
     monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
     monkeypatch.setattr(
         "sparkrun.orchestration.executor.resolve_executor",
-        lambda **kw: type("Ex", (), {"prepare_launch": lambda self, **kw: None})(),
+        lambda **kw: type(
+            "Ex", (), {"prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")}
+        )(),
     )
 
 

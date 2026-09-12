@@ -102,7 +102,14 @@ def test_incomplete_native_resume_rejects_host_endpoint_before_query(scheduled_e
     assert not state.completed_indices
     monkeypatch.setattr(
         "sparkrun.orchestration.job_metadata.load_job_metadata",
-        lambda *a, **kw: {"hosts": ["localhost"], "port": 8000, "executor": "k8s", "native_resource": {"kind": "JobSet", "name": "test"}},
+        lambda *a, **kw: {
+            "hosts": ["localhost"],
+            "port": 8000,
+            "executor": "k8s",
+            "native_resource": {"kind": "JobSet", "name": "test"},
+            "recipe_state": env.launch.recipe.__getstate__(),
+            "overrides": dict(env.launch.overrides),
+        },
     )
     query = Mock(side_effect=AssertionError("must reject before endpoint discovery"))
     monkeypatch.setattr("sparkrun.orchestration.job_metadata.check_job_running", query)

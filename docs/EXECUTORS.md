@@ -545,3 +545,31 @@ user is rejected; a missing recorded principal requires fresh status discovery
 before teardown. Legacy local records with a known user retain this protection.
 The principal is checked again after transport preparation, which can refresh
 connection settings. No additional controller identity is introduced.
+
+
+New user-scoped launches materialize the effective SSH principal before submission.
+Local dispatch uses the current OS account; remote aliases/defaults are resolved
+through OpenSSH's local `-G` configuration evaluation, including `ssh.options`.
+This opens no SSH session. Clusters with different implicit users must select
+one explicit `cluster.user` or `ssh.user`; unresolved identity fails before launch.
+Use those user fields rather than embedding `user@` in host addresses. Conflicting
+`User` SSH options fail instead of silently overriding an explicit principal.
+
+`api.plan()` retains that resolved principal independently of mutable defaults and
+its cluster object. Reusing the plan keeps discovery, replacement, and submission
+in that namespace. Authentication keys may rotate without changing the ID. Direct
+launcher calls apply the same principal resolution before submission and metadata
+recording. An unknown user on an older record remains insufficient evidence for
+automatic teardown; this fallback is not used to create new unmanaged workloads.
+
+`api.open_telemetry()` and `api.open_live_monitor()` use the same operation-local
+transport resolution as `api.status()`: prepare transport, apply cluster settings,
+then overlay explicit SSH kwargs per key. Omitted contexts are initialized normally;
+explicit None/empty values clear the corresponding configured key. Monitor frames
+retain successfully observed workloads but expose incomplete peer coverage through
+`status_error` and report zero confirmed free slots until observation succeeds.
+
+A failed monitor poll also retains last-known workloads with an explicit error
+and zero confirmed free capacity. A successful subsequent poll clears that error.
+When reusing a plan, conflicting SSH `User` options are rejected before ensure
+or handler dispatch, as well as before a direct launcher submission.

@@ -38,7 +38,32 @@ def scheduled_env(bench_env, monkeypatch):
 
     fw.build_benchmark_command.side_effect = command
     monkeypatch.setattr("sparkrun.orchestration.primitives.resolve_image_sha", lambda *a, **kw: None)
-    monkeypatch.setattr("sparkrun.orchestration.job_metadata.load_job_metadata", lambda *a, **kw: {"hosts": ["localhost"], "port": 8000})
+    from copy import deepcopy
+
+    saved_job = {}
+
+    def record_launch(*args, **kwargs):
+        result = env.run.return_value
+        launch = result.launch_result
+        if launch is not None:
+            saved_job.update(
+                deepcopy(
+                    {
+                        "hosts": list(launch.host_list),
+                        "port": launch.serve_port,
+                        "recipe_state": launch.recipe.__getstate__(),
+                        "overrides": launch.overrides,
+                        "effective_container_image": launch.container_image,
+                    }
+                )
+            )
+        return result
+
+    env.run.side_effect = record_launch
+    monkeypatch.setattr(
+        "sparkrun.orchestration.job_metadata.load_job_metadata",
+        lambda *a, **kw: deepcopy(saved_job) or {"hosts": ["localhost"], "port": 8000},
+    )
     monkeypatch.setattr("sparkrun.orchestration.job_metadata.check_job_running", lambda **kw: SimpleNamespace(running=True))
     env.sctx.config.set("defaults.benchmark_output_dir", str(Path(env.options.output_file).parent))
     return env

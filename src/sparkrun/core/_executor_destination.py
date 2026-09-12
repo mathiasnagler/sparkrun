@@ -48,6 +48,16 @@ class ExecutorDestination:
         return result
 
 
+def resolve_destination_user(target, hosts, ssh_kwargs):
+    """Materialize namespace-relevant transport before a new workload starts."""
+    user = (ssh_kwargs or {}).get("ssh_user")
+    if not target.user_scoped:
+        return user
+    from sparkrun.orchestration._ssh_identity import resolve_ssh_user
+
+    return resolve_ssh_user(hosts, **{key: (ssh_kwargs or {}).get(key) for key in ("ssh_user", "ssh_key", "ssh_options")})
+
+
 def metadata_executor_overrides(metadata):
     """Use the same saved executor settings for every lifecycle reader."""
     if not metadata:
