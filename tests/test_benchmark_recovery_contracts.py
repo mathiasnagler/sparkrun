@@ -97,7 +97,7 @@ def test_state_commit_failure_still_stops_owned_inference(scheduled_env, monkeyp
 
 
 def test_export_interrupt_cleans_up_once_and_propagates(bench_env, monkeypatch):
-    monkeypatch.setattr("sparkrun.benchmarking.base.export_results", Mock(side_effect=KeyboardInterrupt()))
+    monkeypatch.setattr("sparkrun.benchmarking.base._write_measurement", Mock(side_effect=KeyboardInterrupt()))
     with pytest.raises(KeyboardInterrupt):
         benchmark(bench_env.options, sctx=bench_env.sctx)
     bench_env.stop.assert_called_once()

@@ -144,7 +144,9 @@ def query_status_for_cluster(
     query degrades to an empty snapshot with a logged warning rather than
     raising.
     """
+    from dataclasses import replace
     from sparkrun.core.cluster_status import ClusterStatus, attribute_executor, empty_status
+    from sparkrun.core.status_observation import ExecutorCoverage
 
     try:
         scope, default_name = _resolve_status_scope(cluster, executor=executor, config=config, v=v)
@@ -167,15 +169,29 @@ def query_status_for_cluster(
 
     snapshots: list[ClusterStatus] = []
     for name in ordered:
+        target = None
         try:
             ex = resolve_executor(cluster=cluster, cli_overrides={"executor": name}, rootless=False, auto_user=False, config=config, v=v)
+            target = ex.resolve_target()
+            # Query exactly the target we record, including an implicit current context.
+            ex = resolve_executor(cluster=cluster, cli_overrides=target.overrides, rootless=False, auto_user=False, config=config, v=v)
             snapshot = ex.query_status(list(hosts), ssh_kwargs=ssh_kwargs, host_hardware=host_hardware)
+            covered = frozenset(h.host for h in snapshot.hosts if h.host in hosts and h.host not in snapshot.errors)
+            snapshot = replace(snapshot, coverage=(ExecutorCoverage(target, scope, frozenset(hosts), covered),))
             # Stamp *before* the merge: afterwards a workload can hold
             # containers from two substrates, and teardown has to send each
             # back to the executor that reported it.
             snapshots.append(attribute_executor(snapshot, name))
         except Exception:  # noqa: BLE001 - one backend failing never breaks status
             logger.debug("Status query via executor %r failed; skipping", name, exc_info=True)
+            if target is not None:
+                snapshots.append(
+                    ClusterStatus(
+                        executor=name,
+                        errors={host: "executor query failed: " + name for host in hosts},
+                        coverage=(ExecutorCoverage(target, scope, frozenset(hosts), frozenset()),),
+                    )
+                )
 
     if not snapshots:
         return empty_status(list(hosts))

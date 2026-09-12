@@ -8,7 +8,10 @@ back to recipe-name completion when no jobs are cached.
 
 from __future__ import annotations
 
+from _status_fixtures import host_snapshot
+
 from pathlib import Path
+from _status_fixtures import observed_status
 
 import pytest
 from unittest import mock
@@ -32,6 +35,8 @@ def _write_job_meta(jobs_dir: Path, digest: str, **fields) -> Path:
         "cluster_id": f"sparkrun_{digest}",
         "recipe": "test-recipe",
         "runtime": "vllm",
+        "executor": "docker",
+        "executor_destination_key": "",
         "hosts": ["h1"],
         **fields,
     }
@@ -294,7 +299,7 @@ def test_running_snapshot_filters_dead_jobs(jobs_cache: Path, default_cluster):
 
     _write_job_meta(jobs_cache, "aaaaaaaaaaaa", recipe="alive", hosts=["h1"])
     _write_job_meta(jobs_cache, "bbbbbbbbbbbb", recipe="dead", hosts=["h1"])
-    save_running_snapshot({"sparkrun_aaaaaaaaaaaa"}, ["h1", "h2"], cache_dir=str(jobs_cache.parent))
+    save_running_snapshot(host_snapshot({"sparkrun_aaaaaaaaaaaa"}, ["h1", "h2"]), cache_dir=str(jobs_cache.parent))
 
     values = {i.value for i in _complete_targets("")}
     assert values == {"alive"}
@@ -306,7 +311,7 @@ def test_stale_snapshot_hides_nothing(jobs_cache: Path, default_cluster):
 
     _write_job_meta(jobs_cache, "aaaaaaaaaaaa", recipe="alive", hosts=["h1"])
     _write_job_meta(jobs_cache, "bbbbbbbbbbbb", recipe="dead", hosts=["h1"])
-    save_running_snapshot({"sparkrun_aaaaaaaaaaaa"}, ["h1"], cache_dir=str(jobs_cache.parent))
+    save_running_snapshot(host_snapshot({"sparkrun_aaaaaaaaaaaa"}, ["h1"]), cache_dir=str(jobs_cache.parent))
 
     with mock.patch("sparkrun.orchestration.job_metadata.RUNNING_SNAPSHOT_MAX_AGE_S", -1):
         values = {i.value for i in _complete_targets("")}
@@ -324,7 +329,7 @@ def test_uncovered_hosts_are_unknown_not_dead(jobs_cache: Path, default_cluster)
     _write_job_meta(jobs_cache, "aaaaaaaaaaaa", recipe="onh1", hosts=["h1"])
     _write_job_meta(jobs_cache, "bbbbbbbbbbbb", recipe="onh2", hosts=["h2"])
     # Only h1 was swept, and nothing was running there.
-    save_running_snapshot(set(), ["h1"], cache_dir=str(jobs_cache.parent))
+    save_running_snapshot(host_snapshot(set(), ["h1"]), cache_dir=str(jobs_cache.parent))
 
     values = {i.value for i in _complete_targets("")}
     assert values == {"onh2"}, "the unswept host's job must survive; the swept host's must not"
@@ -413,7 +418,7 @@ class TestLiveStatusCompletion:
         )
 
         def _install(running, errors=None):
-            from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, RunningWorkload
+            from sparkrun.core.cluster_status import HostOccupancy, RunningWorkload
 
             errors = errors or {}
             hosts = tuple(
@@ -425,7 +430,7 @@ class TestLiveStatusCompletion:
 
             def _fake_status(hosts_arg, **kwargs):
                 calls.append(kwargs)
-                return ClusterStatus(hosts=hosts, executor="docker", errors=dict(errors))
+                return observed_status(hosts=hosts, executor="docker", errors=dict(errors))
 
             monkeypatch.setattr("sparkrun.api.status", _fake_status)
             return calls
@@ -480,7 +485,7 @@ class TestLiveStatusCompletion:
 
         _write_job_meta(jobs_cache, "aaaaaaaaaaaa", recipe="alive", hosts=["h1"])
         _write_job_meta(jobs_cache, "bbbbbbbbbbbb", recipe="dead", hosts=["h1"])
-        save_running_snapshot({"sparkrun_aaaaaaaaaaaa"}, ["h1"], cache_dir=str(jobs_cache.parent))
+        save_running_snapshot(host_snapshot({"sparkrun_aaaaaaaaaaaa"}, ["h1"]), cache_dir=str(jobs_cache.parent))
 
         assert {i.value for i in _complete_targets("")} == {"alive"}
 
@@ -538,7 +543,7 @@ def test_offcluster_jobs_are_hidden_once_the_cluster_answers(jobs_cache: Path, m
     entries.  They are reachable by naming their cluster, which sweeps it.
     """
     from sparkrun.core.cluster_manager import ClusterDefinition
-    from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, RunningWorkload
+    from sparkrun.core.cluster_status import HostOccupancy, RunningWorkload
 
     monkeypatch.setattr("sparkrun.cli._common._completion_status_timeout", lambda: 5.0)
     monkeypatch.setattr(
@@ -547,7 +552,7 @@ def test_offcluster_jobs_are_hidden_once_the_cluster_answers(jobs_cache: Path, m
     )
     monkeypatch.setattr(
         "sparkrun.api.status",
-        lambda hosts, **kw: ClusterStatus(
+        lambda hosts, **kw: observed_status(
             hosts=(HostOccupancy(host="h1", workloads=(RunningWorkload(cluster_id="sparkrun_aaaaaaaaaaaa"),)),),
             executor="docker",
         ),
@@ -580,13 +585,13 @@ class TestCompletionSnapshotReuse:
         )
 
     def _spy_status(self, monkeypatch):
-        from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, RunningWorkload
+        from sparkrun.core.cluster_status import HostOccupancy, RunningWorkload
 
         calls: list = []
 
         def _fake(hosts, **kwargs):
             calls.append(hosts)
-            return ClusterStatus(
+            return observed_status(
                 hosts=(
                     HostOccupancy(host="h1", workloads=(RunningWorkload(cluster_id="sparkrun_aaaaaaaaaaaa"),)),
                     HostOccupancy(host="h2"),
@@ -602,7 +607,7 @@ class TestCompletionSnapshotReuse:
 
         _write_job_meta(jobs_cache, "aaaaaaaaaaaa", recipe="alive", hosts=["h1"])
         _write_job_meta(jobs_cache, "bbbbbbbbbbbb", recipe="dead", hosts=["h1"])
-        save_running_snapshot({"sparkrun_aaaaaaaaaaaa"}, ["h1", "h2"], cache_dir=str(jobs_cache.parent))
+        save_running_snapshot(host_snapshot({"sparkrun_aaaaaaaaaaaa"}, ["h1", "h2"]), cache_dir=str(jobs_cache.parent))
         calls = self._spy_status(monkeypatch)
 
         assert {i.value for i in _complete_targets("")} == {"alive"}
@@ -617,7 +622,7 @@ class TestCompletionSnapshotReuse:
         from sparkrun.orchestration.job_metadata import save_running_snapshot
 
         _write_job_meta(jobs_cache, "aaaaaaaaaaaa", recipe="alive", hosts=["h1"])
-        save_running_snapshot({"sparkrun_zzzz"}, ["other-host"], cache_dir=str(jobs_cache.parent))
+        save_running_snapshot(host_snapshot({"sparkrun_zzzz"}, ["other-host"]), cache_dir=str(jobs_cache.parent))
         calls = self._spy_status(monkeypatch)
 
         _complete_targets("")
@@ -628,7 +633,7 @@ class TestCompletionSnapshotReuse:
         from sparkrun.orchestration.job_metadata import save_running_snapshot
 
         _write_job_meta(jobs_cache, "aaaaaaaaaaaa", recipe="alive", hosts=["h1"])
-        save_running_snapshot({"sparkrun_aaaaaaaaaaaa"}, ["h1"], cache_dir=str(jobs_cache.parent))
+        save_running_snapshot(host_snapshot({"sparkrun_aaaaaaaaaaaa"}, ["h1"]), cache_dir=str(jobs_cache.parent))
         calls = self._spy_status(monkeypatch)
 
         _complete_targets("")
@@ -639,7 +644,7 @@ class TestCompletionSnapshotReuse:
         from sparkrun.orchestration.job_metadata import save_running_snapshot
 
         _write_job_meta(jobs_cache, "aaaaaaaaaaaa", recipe="alive", hosts=["h1"])
-        save_running_snapshot({"sparkrun_aaaaaaaaaaaa"}, ["h1", "h2"], cache_dir=str(jobs_cache.parent))
+        save_running_snapshot(host_snapshot({"sparkrun_aaaaaaaaaaaa"}, ["h1", "h2"]), cache_dir=str(jobs_cache.parent))
         monkeypatch.setattr("sparkrun.cli._common._completion_cache_ttl", lambda: 0.0)
         calls = self._spy_status(monkeypatch)
 
@@ -672,7 +677,8 @@ def test_status_records_the_snapshot_for_completion(tmp_path, monkeypatch):
     ):
         api.status(["h1", "h2"], cluster=ClusterDefinition(name="c", hosts=["h1", "h2"]))
 
-    running, covered = load_running_snapshot(cache_dir=str(tmp_path))
+    snapshot = load_running_snapshot(cache_dir=str(tmp_path))
+    running, covered = snapshot.cluster_ids, snapshot.coverage[0].hosts
     assert "sparkrun_aaaaaaaaaaaaaaaa_111111111111" in running
     # h2 failed, so it is not claimed as observed — otherwise a reader would
     # conclude "nothing running there" about a host nobody could reach.

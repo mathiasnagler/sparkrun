@@ -74,11 +74,11 @@ def status(
         config=config,
         v=v,
     )
-    _record_running_snapshot(snapshot, hosts, sctx)
+    _record_running_snapshot(snapshot, sctx)
     return snapshot
 
 
-def _record_running_snapshot(snapshot: "ClusterStatus", hosts: list[str], sctx) -> None:
+def _record_running_snapshot(snapshot: "ClusterStatus", sctx) -> None:
     """Leave the sweep's answer behind for shell completion to read.
 
     Completion cannot sweep for itself — it runs on every TAB, and a host that
@@ -86,16 +86,13 @@ def _record_running_snapshot(snapshot: "ClusterStatus", hosts: list[str], sctx) 
     place every occupancy sweep passes through, means completion gets a live
     view without ever opening a connection.
 
-    Only *reachable* hosts are recorded as covered: a host in
-    ``ClusterStatus.errors`` was not observed, and claiming otherwise would let
-    a reader conclude "not running" about a workload nobody looked at.
+    The observation retains successful coverage per executor/destination.
+    A successful peer backend cannot erase another backend's missing coverage.
     """
     try:
         from sparkrun.orchestration.job_metadata import save_running_snapshot
 
-        cluster_ids = {w.cluster_id for entry in snapshot.hosts for w in entry.workloads if w.cluster_id}
-        covered = [h for h in hosts if h not in snapshot.errors]
-        save_running_snapshot(cluster_ids, covered, sctx=sctx)
+        save_running_snapshot(snapshot.observation, sctx=sctx)
     except Exception:
         logger.debug("Could not record running snapshot", exc_info=True)
 

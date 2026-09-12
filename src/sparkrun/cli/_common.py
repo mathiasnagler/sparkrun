@@ -1075,7 +1075,13 @@ def _complete_targets(incomplete: str, ctx=None):
                 recipe = None
             # A recipe name resolves only against the target cluster, so only
             # offer it for jobs that actually live there.
-            if recipe and target_hosts and set(job.hosts) <= target_hosts and recipe not in seen_recipes:
+            if (
+                recipe
+                and target_hosts
+                and set(job.hosts) <= target_hosts
+                and recipe not in seen_recipes
+                and (snapshot is None or snapshot.matches_job(job))
+            ):
                 seen_recipes.add(recipe)
                 if recipe.startswith(incomplete):
                     items.append(click.shell_completion.CompletionItem(recipe, help=_describe_job(job)))
@@ -1091,7 +1097,7 @@ def _complete_targets(incomplete: str, ctx=None):
         # metadata for — launched from another machine, or pruned — is still
         # addressable by id, and is exactly what the user is reaching for.
         if snapshot is not None:
-            for cid in sorted(snapshot[0] - offered_ids):
+            for cid in sorted(snapshot.cluster_ids - offered_ids):
                 digest = cid.removeprefix(resource_name("_"))
                 if cid.startswith(incomplete) or digest.startswith(incomplete):
                     items.append(click.shell_completion.CompletionItem(cid))
@@ -1121,43 +1127,46 @@ def _completion_running(cluster_def):
     whole path exists to eliminate.  The longer window is still honoured as a
     *fallback* when a live sweep fails: stale information beats none.
 
-    Returns ``(running_cluster_ids, hosts_covered)``, or ``None`` for "could
+    Returns a scoped ``RunningSnapshot``, or ``None`` for "could
     not establish", which callers must treat as "show everything".  Hosts the
     sweep failed to reach are excluded from the covered set, so a workload on
     an unreachable host reads as unknown rather than dead.
     """
     from sparkrun.orchestration.job_metadata import load_running_snapshot
 
-    target = set(getattr(cluster_def, "hosts", ()) or ())
+    from sparkrun.orchestration.executor import resolve_executor_target
+    from sparkrun.core.config import SparkrunConfig
+
+    hosts = list(getattr(cluster_def, "hosts", ()) or ())
+    try:
+        config = SparkrunConfig()
+        target = resolve_executor_target(cluster=cluster_def, config=config)
+    except Exception:
+        return None
     cached = load_running_snapshot(max_age_s=_completion_cache_ttl())
-    if cached is not None and target and target <= cached[1]:
+    if cached is not None and cached.covers(target, hosts):
         return cached
 
     timeout = _completion_status_timeout()
     if cluster_def is not None and timeout > 0:
         try:
             from sparkrun import api
-            from sparkrun.core.config import SparkrunConfig
             from sparkrun.orchestration.primitives import build_ssh_kwargs
+            from dataclasses import replace
 
-            config = SparkrunConfig()
             if getattr(cluster_def, "user", None):
                 config.ssh_user = cluster_def.user
             ssh_kwargs = build_ssh_kwargs(config)
-            # The one hard bound on how long a TAB can take: a per-host
-            # subprocess timeout, with the hosts swept in parallel.
             ssh_kwargs["timeout"] = timeout
-
-            hosts = list(cluster_def.hosts)
-            status = api.status(hosts, cluster=cluster_def, ssh_kwargs=ssh_kwargs)
-            running = {w.cluster_id for entry in status.hosts for w in entry.workloads if w.cluster_id}
-            covered = frozenset(h for h in hosts if h not in status.errors)
-            return frozenset(running), covered
+            scoped = replace(cluster_def, executor=target.executor, executor_config=dict(target.overrides))
+            status = api.status(hosts, cluster=scoped, ssh_kwargs=ssh_kwargs)
+            if status.coverage:
+                return status.observation
         except Exception:
-            logger.debug("Completion status query failed; falling back to the cached snapshot", exc_info=True)
+            logger.debug("Completion status query failed; falling back to scoped cache", exc_info=True)
 
-    # Live sweep unavailable or failed: a stale snapshot beats none.
-    return load_running_snapshot()
+    cached = load_running_snapshot()
+    return cached if cached is not None and cached.for_target(target) else None
 
 
 def _completion_cache_ttl() -> float:
@@ -1215,13 +1224,12 @@ def _job_is_live(job, snapshot, target_hosts: "set[str] | None" = None) -> bool:
     """
     if snapshot is None:
         return True
-    running, covered = snapshot
-    if job.cluster_id in running:
+    if job.cluster_id in snapshot.cluster_ids:
         return True
     hosts = set(job.hosts or ())
     if target_hosts and hosts and not (hosts & target_hosts):
         return False
-    return not (hosts and hosts <= covered)
+    return not snapshot.confirms_absent(job)
 
 
 def _completion_cluster(ctx=None):

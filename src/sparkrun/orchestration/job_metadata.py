@@ -47,11 +47,11 @@ from typing import Any, TYPE_CHECKING, Optional
 
 import yaml
 
-from sparkrun.utils.fs import open_private_write
 from sparkrun.core.application_profile import get_application_profile, resource_name
 from sparkrun.core.ownership import owns_metadata, assert_resource_namespace
 
 if TYPE_CHECKING:
+    from sparkrun.core.status_observation import RunningSnapshot
     from sparkrun.orchestration.executors._base import Executor
     from sparkrun.core.backend_select import BackendBundle
     from sparkrun.core.context import SparkrunContext
@@ -727,6 +727,7 @@ def save_job_metadata(
 
         meta["executor"] = executor.executor_name
         meta["executor_config"] = asdict(executor.config)
+        meta["executor_destination_key"] = executor.resolve_target(dry_run=True).destination_key
     if native_resource is not None:
         meta["native_resource"] = dict(native_resource)
 
@@ -780,78 +781,46 @@ RUNNING_SNAPSHOT_MAX_AGE_S = 600
 
 
 def save_running_snapshot(
-    cluster_ids: "set[str] | frozenset[str] | tuple[str, ...] | list[str]",
-    hosts: "list[str] | tuple[str, ...]",
+    observation: "RunningSnapshot",
     *,
     cache_dir: str | None = None,
     sctx: "SparkrunContext | None" = None,
 ) -> None:
-    """Record which workloads were observed running, and where we looked.
-
-    Shell completion cannot afford an SSH sweep — it runs on every TAB, and a
-    host that no longer resolves would hang the terminal with no way to signal
-    what it is waiting on.  But several commands (``run``, ``status``,
-    ``stop``) already pay for a sweep, so they can leave the answer behind for
-    completion to read for free.
-
-    *hosts* is recorded alongside because a sweep is frequently **partial** —
-    placement queries a candidate subset, not the whole cluster.  Without it a
-    reader cannot distinguish "not running" from "not looked at", and would
-    silently hide a live workload on an unswept host.
-
-    Best-effort and silent on failure: this is a convenience cache, and no
-    command should fail because it could not be written.
-    """
+    """Atomically record one observation; hosts alone cannot prove absence."""
     import json
+    from sparkrun.utils.fs import atomic_private_write
 
     cache_dir = _resolve_cache_dir(cache_dir, sctx)
     payload = {
+        **observation.to_dict(),
         "distribution": get_application_profile().id,
         "at": time.time(),
-        "cluster_ids": sorted(str(c) for c in cluster_ids if c),
-        "hosts": sorted(str(h) for h in hosts if h),
     }
     try:
         path = Path(cache_dir)
         path.mkdir(parents=True, exist_ok=True)
         filename = RUNNING_SNAPSHOT_FILE if get_application_profile().id == "sparkrun" else resource_name("-running.json")
-        fd = open_private_write(path / filename)
-        with os.fdopen(fd, "w") as f:
-            json.dump(payload, f)
+        atomic_private_write(path / filename, json.dumps(payload))
     except Exception:
         logger.debug("Could not write running snapshot", exc_info=True)
 
 
-def load_running_snapshot(
-    *,
-    cache_dir: str | None = None,
-    max_age_s: float | None = None,
-    sctx: "SparkrunContext | None" = None,
-) -> "tuple[frozenset[str], frozenset[str]] | None":
-    """Read the last observed occupancy snapshot.
-
-    Returns ``(cluster_ids, hosts_covered)``, or ``None`` when there is no
-    snapshot or it is older than *max_age_s* — in which case callers must fall
-    back to showing everything rather than hiding what they cannot vouch for.
-
-    *max_age_s* resolves to :data:`RUNNING_SNAPSHOT_MAX_AGE_S` at call time
-    rather than binding it as a default, so the module constant is a real knob
-    instead of a value frozen when this function was defined.
-    """
+def load_running_snapshot(*, cache_dir=None, max_age_s=None, sctx=None) -> "RunningSnapshot | None":
+    """Read a RunningSnapshot; old unscoped files and malformed data are unknown."""
     import json
+    from sparkrun.core.status_observation import RunningSnapshot
 
     if max_age_s is None:
         max_age_s = RUNNING_SNAPSHOT_MAX_AGE_S
     cache_dir = _resolve_cache_dir(cache_dir, sctx)
     try:
         filename = RUNNING_SNAPSHOT_FILE if get_application_profile().id == "sparkrun" else resource_name("-running.json")
-        with open(Path(cache_dir) / filename) as f:
-            data = json.load(f)
+        data = json.loads((Path(cache_dir) / filename).read_text())
         if data.get("distribution", "sparkrun") != get_application_profile().id:
             return None
-        if time.time() - float(data["at"]) > max_age_s:
+        if not 0 <= time.time() - float(data["at"]) <= max_age_s:
             return None
-        return frozenset(data.get("cluster_ids") or ()), frozenset(data.get("hosts") or ())
+        return RunningSnapshot.from_dict(data)
     except Exception:
         return None
 
@@ -869,6 +838,7 @@ def prune_job_metadata(
     max_age_days: int = PRUNE_MAX_AGE_DAYS,
     keep_per_intent: int = PRUNE_KEEP_PER_INTENT,
     protected_cluster_ids: "set[str] | frozenset[str] | tuple[str, ...] | None" = None,
+    observation: "RunningSnapshot | None" = None,
     dry_run: bool = False,
     sctx: "SparkrunContext | None" = None,
 ) -> list[str]:
@@ -892,12 +862,11 @@ def prune_job_metadata(
     window rather than a global count on purpose: a global "keep newest N"
     would silently drop every trace of an intent you run rarely.
 
-    ``protected_cluster_ids`` is never deleted regardless of age. Callers pass
-    the cluster_ids they have just observed **running**, which is what makes
-    this safe to run automatically: a live workload's metadata is load-bearing
-    for ``stop`` / ``logs`` / proxy discovery, and deleting it would strand the
-    deployment. Age alone is not a sufficient guard — a long-lived server can
-    easily outlive the cutoff.
+    ``protected_cluster_ids`` is never deleted regardless of age. Automatic
+    callers must also pass an ``observation``: only jobs confirmed absent in
+    that executor/destination/host coverage are eligible. Unobserved jobs do
+    not consume the observed scope's per-intent retention window. Without an
+    observation this is deliberate age-based cleanup, for explicit user action.
 
     Best-effort: an unreadable or undeletable file is skipped, never raised.
 
@@ -929,6 +898,8 @@ def prune_job_metadata(
     # walks newest-first and the first `keep_per_intent` entries it sees for
     # an intent are exactly the ones to keep.
     for job in jobs:
+        if observation is not None and not observation.confirms_absent(job):
+            continue
         intent = job.intent_id or job.cluster_id
         rank = seen_per_intent.get(intent, 0)
         seen_per_intent[intent] = rank + 1

@@ -20,17 +20,11 @@ from sparkrun.core.timing import Timeline
 
 
 def _recipe() -> MagicMock:
-    recipe = MagicMock()
-    recipe.name = "r"
-    recipe.qualified_name = "@reg/r"
-    recipe.container = "img:latest"
-    recipe.model = "org/model"
-    recipe.runtime = "vllm-distributed"
-    recipe.metadata = {}
-    recipe.model_revision = None
+    from sparkrun.core.recipe import Recipe
+
+    recipe = Recipe({"name": "r", "container": "img:latest", "model": "org/model", "runtime": "vllm-distributed"})
     recipe.source_registry = "reg"
     recipe.source_registry_url = ""
-    recipe.export.return_value = "model: org/model\nruntime: vllm-distributed\n"
     return recipe
 
 

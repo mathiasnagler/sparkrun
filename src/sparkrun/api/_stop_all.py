@@ -84,7 +84,8 @@ def stop_all(
         )
 
     executor_names = set(result.container_executors.values())
-    executors = {name: _resolve_teardown_executor(name, cluster, host_list, sctx) for name in executor_names}
+    targets = {c.target.executor: c.target for c in result.coverage}
+    executors = {name: _resolve_teardown_executor(name, cluster, host_list, sctx, target=targets.get(name)) for name in executor_names}
     native = any(group.meta.get("native_resource") is not None for group in result.groups.values()) or any(
         entry.meta.get("native_resource") is not None for entry in result.solo_entries
     )
@@ -178,11 +179,24 @@ def _stop_discovered_workloads(discovered, *, cluster, cache_dir, dry_run, sctx)
             hosts_stopped=all_hosts,
             discovery_errors=dict(discovered.errors),
         )
+    # A supplied discovery result owns its provider target even if defaults
+    # changed or local job metadata disappeared after the query.
+    native_targets = [c.target for c in discovered.coverage if c.status_scope != "host"]
+    if len(native_targets) == 1:
+        from dataclasses import replace
+        from sparkrun.api._resolve import resolve_cluster
+
+        target = native_targets[0]
+        cluster = replace(resolve_cluster(cluster, all_hosts, sctx=sctx), executor=target.executor, executor_config=target.overrides)
+    elif len(native_targets) > 1:
+        raise ValueError("Native bulk teardown requires a single discovery destination")
     jobs_stopped = removed = 0
     failures = {}
     for cid, hosts in jobs.items():
         try:
-            outcome = stop(cluster_id=cid, hosts=hosts, cluster=cluster, cache_dir=cache_dir, sctx=sctx)
+            # An unscoped legacy snapshot cannot supply a provider destination.
+            # With no explicit cluster, require stop-by-ID's authoritative metadata.
+            outcome = stop(cluster_id=cid, hosts=hosts if cluster is not None else None, cluster=cluster, cache_dir=cache_dir, sctx=sctx)
         except Exception as exc:
             failures.update({host: str(exc) for host in hosts})
             continue
@@ -238,6 +252,8 @@ def _resolve_teardown_executor(
     cluster: "str | ClusterDefinition | None",
     hosts: list[str],
     sctx: "SparkrunContext | None",
+    *,
+    target=None,
 ):
     """Build the :class:`Executor` that tears down *executor_name*'s workloads.
 
@@ -262,7 +278,7 @@ def _resolve_teardown_executor(
         cluster_def = resolve_cluster(cluster, hosts, sctx=sctx)
         return resolve_executor(
             cluster=cluster_def,
-            cli_overrides={"executor": executor_name},
+            cli_overrides=target.overrides if target is not None else {"executor": executor_name},
             rootless=False,
             auto_user=False,
             config=sctx.config if sctx is not None else None,

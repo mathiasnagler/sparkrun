@@ -14,6 +14,7 @@ through ``sparkrun.api.status`` → ``executor.query_status``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from sparkrun.core.status_observation import ExecutorCoverage, RunningSnapshot
 
 
 @dataclass(frozen=True)
@@ -187,6 +188,13 @@ class ClusterStatus:
     :meth:`merged_with`).
     """
 
+    coverage: tuple[ExecutorCoverage, ...] = ()
+    """Successful coverage per executor; absent for unscoped/legacy snapshots."""
+
+    @property
+    def observation(self) -> RunningSnapshot:
+        return RunningSnapshot(frozenset(self.running_cluster_ids()), self.coverage)
+
     def for_host(self, host: str) -> HostOccupancy | None:
         """Return the :class:`HostOccupancy` for *host*, or ``None`` if absent."""
         for entry in self.hosts:
@@ -304,7 +312,13 @@ class ClusterStatus:
             if host in reachable or host in merged_errors:
                 continue
             merged_errors[host] = msg
-        return ClusterStatus(hosts=tuple(merged), queried_at=self.queried_at, executor=self.executor, errors=merged_errors)
+        return ClusterStatus(
+            hosts=tuple(merged),
+            queried_at=self.queried_at,
+            executor=self.executor,
+            errors=merged_errors,
+            coverage=self.coverage + other.coverage,
+        )
 
 
 def attribute_executor(status: "ClusterStatus", executor_name: str) -> "ClusterStatus":

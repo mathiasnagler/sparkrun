@@ -163,19 +163,11 @@ def test_longterm_ref_persists_in_state_extras(tmp_path: Path):
 
 
 def _make_minimal_recipe(container: str = "myimage:latest") -> MagicMock:
-    """Minimal recipe mock for generate_metadata."""
-    recipe = MagicMock()
-    recipe.name = "my-recipe"
-    recipe.qualified_name = "@registry/my-recipe"
-    recipe.container = container
-    recipe.model = "org/model"
-    recipe.runtime = "vllm-distributed"
-    recipe.metadata = {}
-    recipe.model_revision = None
-    recipe.source_registry = "registry"
-    recipe.source_registry_url = "https://github.com/example/registry"
-    recipe.export.return_value = "model: org/model\nruntime: vllm-distributed\n"
-    recipe.build_config_chain.return_value = {}
+    from sparkrun.core.recipe import Recipe
+
+    recipe = Recipe({"name": "r", "container": container, "model": "org/model", "runtime": "vllm-distributed"})
+    recipe.source_registry = "reg"
+    recipe.source_registry_url = ""
     return recipe
 
 

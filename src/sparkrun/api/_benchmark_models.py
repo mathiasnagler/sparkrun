@@ -256,6 +256,10 @@ class BenchmarkResult:
 
     state_dir: str | None = None
     """Directory where benchmark state was persisted, when applicable."""
+    measured_at: str | None = None
+    """Start of the recorded measurement interval, retained through recovery."""
+    completed_at: str | None = None
+    """Completion of the recorded measurement interval, independent of publication."""
     resumed: bool = False
     """``True`` when this run resumed from a prior checkpoint."""
     already_complete: bool = False

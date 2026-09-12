@@ -3,6 +3,8 @@ plus identifier-model coverage (intent_id / placement_token split)."""
 
 from __future__ import annotations
 
+from _status_fixtures import host_snapshot
+
 import yaml
 
 import time
@@ -765,10 +767,10 @@ class TestRunningSnapshot:
     def test_round_trip(self, tmp_path):
         from sparkrun.orchestration.job_metadata import load_running_snapshot, save_running_snapshot
 
-        save_running_snapshot({"sparkrun_a_b"}, ["h1", "h2"], cache_dir=str(tmp_path))
-        running, covered = load_running_snapshot(cache_dir=str(tmp_path))
-        assert running == {"sparkrun_a_b"}
-        assert covered == {"h1", "h2"}
+        save_running_snapshot(host_snapshot({"sparkrun_a_b"}, ["h1", "h2"]), cache_dir=str(tmp_path))
+        snapshot = load_running_snapshot(cache_dir=str(tmp_path))
+        assert snapshot.cluster_ids == {"sparkrun_a_b"}
+        assert snapshot.coverage[0].hosts == {"h1", "h2"}
 
     def test_absent_snapshot_is_none(self, tmp_path):
         from sparkrun.orchestration.job_metadata import load_running_snapshot
@@ -779,7 +781,7 @@ class TestRunningSnapshot:
         """Used to *hide* things, so it must expire rather than mislead."""
         from sparkrun.orchestration.job_metadata import load_running_snapshot, save_running_snapshot
 
-        save_running_snapshot({"sparkrun_a_b"}, ["h1"], cache_dir=str(tmp_path))
+        save_running_snapshot(host_snapshot({"sparkrun_a_b"}, ["h1"]), cache_dir=str(tmp_path))
         assert load_running_snapshot(cache_dir=str(tmp_path), max_age_s=-1) is None
 
     def test_corrupt_snapshot_is_none(self, tmp_path):

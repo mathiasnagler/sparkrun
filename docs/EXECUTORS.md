@@ -454,7 +454,7 @@ it for occupancy, ensure, and replacement. Native handlers receive options with
 the same target at caller precedence; they must not choose a new target. Native
 Kubernetes keys include the canonical kubeconfig path, context, and namespace.
 Separate destinations have separate deterministic workload IDs and saved lifecycle
-records. Host-only executors retain their existing deterministic IDs.
+records. Default host destinations retain their existing deterministic IDs.
 
 A destination key does not change application/controller identity: one canonical
 configuration directory still has one controller. It also does not describe a
@@ -467,3 +467,36 @@ after preparation and its replacement callback succeed, immediately before
 submission. Writes atomically replace an owner-only file. An initial persistence
 failure aborts submission; an interrupted submission retains the saved record for
 recovery. Later version-info updates preserve the same target and IP mappings.
+
+### Status observation coverage
+
+`query_status_for_cluster()` pins each executor's target before querying it.
+`ClusterStatus.coverage` contains immutable `ExecutorCoverage` values: the
+`ExecutorTarget`, status scope, requested hosts, and successfully observed hosts.
+Failures remain unobserved even if another executor answers for the same host.
+`ClusterStatus.observation` combines that coverage with running IDs in a
+`RunningSnapshot`. Both models live in `sparkrun.core.status_observation`.
+
+Automatic metadata pruning and shell completion use the same absence test.
+A job is confirmed absent only when its executor, destination, and complete host
+set were successfully inspected. An old timestamp is insufficient. Metadata
+without an executor selector or a destination key,
+is unknown and is preserved by automatic cleanup. Explicit age-based cleanup
+remains available through the setup command.
+
+The local executor pins its PID/log directories. A custom PID directory is a
+separate destination; changing only the log directory preserves identity.
+Default local paths and Docker retain their existing deterministic IDs. Remote
+paths are not expanded against the controller's home directory.
+
+`status_report()` retains coverage on its typed `ClusterStatusResult`.
+`stop_all(discovered=result)` uses its recorded executor targets, including for
+native teardown after defaults change or job metadata disappears. A legacy
+manually constructed result without coverage still requires the matching
+`cluster`/transport context or authoritative saved job metadata. `to_dict()` is
+presentation output, not a serialization format for replaying lifecycle actions.
+
+The completion cache stores the same observation model. Both normal cache reuse
+and stale fallback require a matching destination. Old host-only cache files
+are ignored and replaced by the next observation. Failed or missing coverage
+never authorizes hiding a job.

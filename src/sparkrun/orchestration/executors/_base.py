@@ -273,9 +273,16 @@ class ExecutorTarget:
     def __post_init__(self):
         from sparkrun.utils.data import freeze, normalize_data
 
+        if not isinstance(self.executor, str) or not self.executor or not isinstance(self.destination_key, str):
+            raise ValueError("ExecutorTarget requires an executor name and a string destination key")
         if not isinstance(self.config, Mapping):
             raise TypeError("ExecutorTarget.config must be a mapping")
         object.__setattr__(self, "config", freeze(normalize_data(self.config, path="ExecutorTarget.config")))
+
+    def to_dict(self) -> dict:
+        from sparkrun.utils.data import thaw
+
+        return {"executor": self.executor, "config": thaw(self.config), "destination_key": self.destination_key}
 
     @property
     def overrides(self) -> dict:

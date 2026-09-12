@@ -387,3 +387,24 @@ failures. Legacy records retain their documented timestamp fallback. The private
 `BenchmarkExecution` record uses `outputs` exclusively; the unused
 `output_csv`/`output_json`/`output_yaml` aliases are removed. Public
 `BenchmarkResult` is unchanged.
+
+### Scoped observations and effective measurement context
+
+Low-level `load_running_snapshot()` now returns `RunningSnapshot | None`, with
+`cluster_ids` and per-executor `coverage`, instead of an `(ids, hosts)` tuple.
+`save_running_snapshot(observation, ...)` accepts that same value; use
+`ClusterStatus.observation` from a real status query. Do not reconstruct absence
+coverage from hostnames alone. Existing unscoped cache files are ignored.
+`prune_job_metadata(observation=...)` restricts pruning to confirmed absences;
+omitting it is deliberate age-based cleanup and is unsuitable for automatic use.
+
+Custom local PID directories now contribute to destination identity and therefore
+to deterministic workload IDs. Default local/Docker IDs are unchanged. Existing
+jobs remain addressable using their saved IDs and executor configuration.
+
+Benchmark results add `measured_at` and `completed_at`. Runtime-default and
+builder-selected images now survive interrupted result processing. Exports use
+the same effective image/recipe projection as integrations; raw declarations are
+retained separately. Exported `recipe.hash` remains a hash of exported text,
+with `declared_hash` added for declared inputs. See the
+[provenance contract](BENCHMARK_API.md#effective-measurement-provenance).

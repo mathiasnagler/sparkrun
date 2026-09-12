@@ -236,6 +236,11 @@ def test_status_merges_local_workloads_into_docker(monkeypatch):
             self.executor_name = name
             self._snap = snap
 
+        def resolve_target(self, **kwargs):
+            from sparkrun.orchestration.executor import ExecutorTarget
+
+            return ExecutorTarget(self.executor_name)
+
         def query_status(self, hosts, *, ssh_kwargs=None, host_hardware=None):
             return self._snap
 
@@ -257,7 +262,7 @@ def test_status_merges_local_workloads_into_docker(monkeypatch):
 
 def test_status_local_unavailable_returns_primary_unchanged(monkeypatch):
     """When the local executor is gated off (ExecutorUnavailableError), status
-    returns the primary docker snapshot byte-identical."""
+    preserves primary Docker occupancy and records its query coverage."""
     from sparkrun.core.cluster_status import HostOccupancy
     from sparkrun.orchestration.executor import ExecutorUnavailableError
 
@@ -270,6 +275,11 @@ def test_status_local_unavailable_returns_primary_unchanged(monkeypatch):
     class _Fake:
         executor_name = "docker"
 
+        def resolve_target(self, **kwargs):
+            from sparkrun.orchestration.executor import ExecutorTarget
+
+            return ExecutorTarget(self.executor_name)
+
         def query_status(self, hosts, *, ssh_kwargs=None, host_hardware=None):
             return docker_snap
 
@@ -281,7 +291,8 @@ def test_status_local_unavailable_returns_primary_unchanged(monkeypatch):
     monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", fake_resolve)
     snapshot = api.status(["host-a"])
 
-    assert snapshot is docker_snap
+    assert snapshot.hosts == docker_snap.hosts
+    assert snapshot.coverage[0].target.executor == "docker"
     assert snapshot.executor == "docker"
 
 

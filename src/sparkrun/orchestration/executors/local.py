@@ -31,7 +31,7 @@ import re
 import time
 from typing import Mapping, TYPE_CHECKING
 
-from sparkrun.orchestration.executors._base import Executor
+from sparkrun.orchestration.executors._base import Executor, ExecutorTarget
 from sparkrun.orchestration.job_metadata import INTENT_ID_LEN, PLACEMENT_TOKEN_LEN
 from sparkrun.utils.shell import quote
 
@@ -107,6 +107,17 @@ class LocalExecutor(Executor):
     # ------------------------------------------------------------------
     # Path resolution helpers
     # ------------------------------------------------------------------
+
+    def resolve_target(self, *, dry_run=False) -> ExecutorTarget:
+        # Remote paths stay remote; never expand the controller's home directory.
+        import posixpath
+
+        pid_dir = posixpath.normpath(self.config.pid_dir or default_pid_dir())
+        return ExecutorTarget(
+            self.executor_name,
+            {"pid_dir": pid_dir, "log_dir": self.config.log_dir or default_log_dir()},
+            destination_key=pid_dir if pid_dir != posixpath.normpath(default_pid_dir()) else "",
+        )
 
     def _resolve_pid_file(self, container_name: str) -> str:
         """Return the pidfile path for *container_name* (single workload)."""

@@ -10,7 +10,7 @@ from __future__ import annotations
 from sparkrun.core.registration import enlist_registry_state, register_unique
 
 from copy import deepcopy
-from sparkrun.benchmarking.metadata import public_benchmark_data, public_recipe_text
+from sparkrun.benchmarking.metadata import public_benchmark_data
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, TYPE_CHECKING, Protocol, Mapping
@@ -86,10 +86,7 @@ def _measurement_snapshot(execution: BenchmarkExecution) -> BenchmarkMeasurement
         # Arbitrary launch span attributes are local diagnostics, not part of
         # the public plugin provenance contract.
         provenance.get("timing", {}).pop("launch", None)
-        launch = execution.launch_result
-        recipe = launch.recipe if launch else execution.recipe
-        overrides = launch.overrides if launch else execution.overrides
-        recipe_yaml = public_recipe_text(recipe.export(overrides=overrides, container_image=provenance["recipe"]["container"]))
+        recipe_yaml = provenance["recipe"].pop("text")
     return BenchmarkMeasurement(
         benchmark_id=execution.benchmark_id,
         success=execution.success,

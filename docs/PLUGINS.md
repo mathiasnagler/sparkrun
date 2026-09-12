@@ -725,3 +725,14 @@ Docker uses it to freeze local seccomp policies and embeds those contents in
 all generated node scripts. `apply_runtime_adjustments(..., defaults=...)`
 receives the lower-priority `Variables` chain as read-only input; its returned
 mapping retains its existing position in the resolution chain.
+
+### Effective benchmark provenance
+
+Benchmark checkpoints now capture effective image, serving options, runtime
+information, and recipe state before commands run. Exported YAML and integration
+snapshots share the effective recipe projection; `recipe_yaml` corresponds to
+`provenance.recipe.effective_hash`, while `provenance.recipe.hash` retains its
+meaning as the declared-input hash. `raw_container` preserves the declaration.
+A missing historical image remains unknown during processing-only recovery.
+Publication-only retry payloads remain the integration's responsibility in
+`context.data`, as described above.

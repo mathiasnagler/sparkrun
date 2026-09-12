@@ -11,6 +11,7 @@ from typing import Any, TYPE_CHECKING
 import yaml
 
 from sparkrun.core.hardware import HostHardware, resolve_fallback_hardware
+from sparkrun.core.status_observation import ExecutorCoverage
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -518,6 +519,9 @@ class ClusterStatusResult:
     """
     pending_by_host: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     """``host`` → the entries of :attr:`pending_ops` targeting it."""
+
+    coverage: tuple[ExecutorCoverage, ...] = ()
+    """Pinned discovery targets and observed hosts for subsequent lifecycle actions."""
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the result to a JSON-serializable dictionary."""
@@ -1155,6 +1159,11 @@ def classify_cluster_status(
 
     # Unreachable hosts (absent from the snapshot's hosts) surfaced as errors.
     errors = dict(snapshot.errors)
+    # A merged host response does not prove that every enabled backend was
+    # inspected. Bulk-stop callers must see incomplete discovery as an error.
+    for coverage in snapshot.coverage:
+        for host in coverage.requested_hosts - coverage.hosts:
+            errors.setdefault(host, "%s status was not observed" % coverage.target.executor)
 
     # Pending operations, attributed to the hosts they will occupy.
     relevant_ops, pending_by_host = _classify_pending_ops(list_pending_ops(cache_dir=cache_dir), host_list)
@@ -1178,6 +1187,7 @@ def classify_cluster_status(
         total_containers=total_containers,
         host_count=len(host_list),
         container_executors=container_executors,
+        coverage=snapshot.coverage,
         preparing_hosts=preparing_hosts,
         pending_by_host=pending_by_host,
     )

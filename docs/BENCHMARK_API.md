@@ -338,3 +338,35 @@ accepted artifacts or retry publication without a live inference endpoint.
 The private orchestration record is `BenchmarkExecution`, with one `outputs`
 mapping. Its former `output_csv`, `output_json`, and `output_yaml` properties
 have been removed; public `BenchmarkResult.outputs` is unchanged.
+
+## Effective measurement provenance
+
+The execution path records the actual launch image, available digest/archival
+reference, effective serving overrides, runtime information, and effective
+recipe before measurement commands run. Skip-run uses the selected deployment's
+saved effective image. Requested recipe specifications continue to determine
+measurement identity; resolved launch values describe what was measured.
+
+One private context serializer/restorer owns these values together with category
+and measurement timestamps. Context version 2 preserves an intentionally unknown
+image without substituting the recipe declaration. Legacy processing-only state
+with no image evidence returns an empty public `container_image` and a null image
+in exported/plugin provenance. It does not need live inference to finish parsing.
+
+`BenchmarkResult.measured_at` and `completed_at` expose the recorded measurement
+interval, matching the integration snapshot. Publication retries do not advance
+these timestamps. Partial recovery retains the initial start and updates completion
+when the remaining tasks finish.
+
+YAML exports and integration provenance share one effective recipe projection.
+Its image preference is recorded archival reference, digest, then actual launch
+reference. `raw_container` preserves the declaration. Exported recipe text includes
+the effective image and serving overrides without modifying the original Recipe.
+The YAML recipe `hash` describes that text, and `declared_hash` describes the
+unmodified declared input. Integration provenance retains its existing declared
+`recipe.hash` and adds `recipe.effective_hash` for its separate `recipe_yaml`.
+The exported benchmark mapping also includes category and the measurement interval.
+
+Additional core-reserved state extras are `container_image_sha_pinned`,
+`measurement_runtime_info`, `measurement_overrides`, and `measurement_recipe_state`.
+These are private persistence details, not an integration extension interface.

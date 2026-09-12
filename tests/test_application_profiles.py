@@ -1,6 +1,8 @@
 """Application profile, composition and coexistence contracts."""
 
 from dataclasses import FrozenInstanceError
+
+from _status_fixtures import host_snapshot
 import json
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
@@ -502,9 +504,9 @@ def test_running_snapshot_preserves_other_distribution_in_shared_cache(tmp_path)
     legacy = tmp_path / "running.json"
     legacy.write_text("preserve this other product's snapshot")
     alternate()
-    save_running_snapshot(["alternate-test_example"], ["host"], cache_dir=str(tmp_path))
+    save_running_snapshot(host_snapshot(["alternate-test_example"], ["host"]), cache_dir=str(tmp_path))
     assert legacy.read_text() == "preserve this other product's snapshot"
-    assert load_running_snapshot(cache_dir=str(tmp_path)) == (frozenset({"alternate-test_example"}), frozenset({"host"}))
+    assert load_running_snapshot(cache_dir=str(tmp_path)) == host_snapshot({"alternate-test_example"}, ["host"])
 
 
 def test_application_feature_channel_defaults_are_frozen_and_validated():

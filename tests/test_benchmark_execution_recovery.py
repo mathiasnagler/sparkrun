@@ -42,8 +42,11 @@ def _assert_dead(pid_file):
     # A grandchild may briefly remain as an init-owned zombie after group kill.
     for _ in range(100):
         path = Path("/proc") / str(pid) / "stat"
-        if not path.exists() or path.read_text().split()[2] == "Z":
-            return
+        try:
+            if path.read_text().split()[2] == "Z":
+                return
+        except FileNotFoundError:
+            return  # the process may exit between existence check and read
         time.sleep(0.01)
     pytest.fail("benchmark worker is still running")
 
@@ -152,6 +155,7 @@ def test_saved_recipe_preserves_in_memory_inputs_and_actual_job_id(scheduled_env
     env.recipe.model = "edited/original-model"
     env.recipe.metadata["model_dtype"] = "bfloat16"
     env.recipe.defaults["custom_arg"] = 42
+    env.launch.overrides = {"max_model_len": 4096}  # fixture launch reflects requested serving options
     path = _interrupt_measurement(env, recipe=env.recipe, overrides={"max_model_len": 4096})
     state = BenchmarkRunState.load(path.parent.name, str(env.sctx.config.cache_dir), strict=True)
     assert state.cluster_id == env.run.return_value.cluster_id

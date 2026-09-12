@@ -6,6 +6,12 @@ Terminal presentation is supplied by the CLI adapter.
 
 from __future__ import annotations
 
+from sparkrun.benchmarking._measurement import (
+    capture_launch_context,
+    persist_measurement_context,
+    restore_measurement_context as _restore_measurement_context,
+)
+
 from sparkrun.core.application_profile import remote_cache_path
 from sparkrun.benchmarking._credentials import BenchmarkCredentials, resolve_credentials
 from sparkrun.benchmarking.metadata import public_benchmark_data, benchmark_recipe_fingerprint
@@ -1027,6 +1033,13 @@ def _execute_benchmark(
             # Establish ownership before invoking any frontend/plugin callback.
             launched = not getattr(run_result, "already_running", False)
             bench_result.launch_result = launch_result
+            capture_launch_context(bench_result, launch=launch_result)
+            if launch_result is None:
+                bench_result.container_image = getattr(run_result, "container_image", None) or None
+            container_image = bench_result.container_image
+            if state is not None and not dry_run:
+                persist_measurement_context(bench_result, state)
+                state.save(cache_dir)
 
             if run_result.serve_command:
                 logger.info("Serve command:")
@@ -1035,7 +1048,7 @@ def _execute_benchmark(
                 emitter.info("")
 
             if tasks is not None:
-                if "container_image_sha" not in state.extras:
+                if not state.extras.get("container_image_sha") and container_image:
                     from sparkrun.orchestration.primitives import resolve_image_sha as _resolve_image_sha
 
                     sha = _resolve_image_sha(container_image, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
@@ -1052,7 +1065,7 @@ def _execute_benchmark(
                             container_image,
                         )
 
-                if "container_image_longterm_ref" not in state.extras and launch_result is not None and launch_result.builder is not None:
+                if not state.extras.get("container_image_longterm_ref") and launch_result is not None and launch_result.builder is not None:
                     try:
                         lt_ref, lt_pinned = launch_result.builder.resolve_long_term_image(
                             container_image=launch_result.container_image,
@@ -1070,6 +1083,9 @@ def _execute_benchmark(
                         logger.debug("Long-term image resolution failed during pin", exc_info=True)
         else:
             logger.log(_PROGRESS_LEVEL, "Step 1/3: Skipping inference launch (--skip-run)")
+            from sparkrun.orchestration.job_metadata import load_job_metadata
+
+            capture_launch_context(bench_result, metadata=load_job_metadata(cluster_id, cache_dir=cache_dir))
 
         # -----------------------------------------------------------------------
         # 7. Wait for readiness and build target URL
@@ -1165,6 +1181,7 @@ def _execute_benchmark(
         if state is not None and not dry_run:
             state.begin_measurement(bench_result.category, bench_result.start_time.isoformat())
             bench_result.measured_at = state.extras["measurement_started_at"]
+            persist_measurement_context(bench_result, state)
             state.save(cache_dir)
         integrations.checkpoint()
 
@@ -1432,20 +1449,6 @@ def _complete_integrations(integrations) -> None:
         integrations.complete()
 
 
-def _restore_measurement_context(state, *, category=""):
-    """Restore one measurement context; pin inference only for legacy records."""
-    if state.completed_indices and not state.extras.get("measurement_context_version"):
-        fallback = state.updated_at or state.created_at or datetime.now(timezone.utc).isoformat()
-        state.extras.setdefault("measurement_started_at", fallback)
-        if state.is_complete(len(state.schedule)):
-            state.extras.setdefault("measurement_completed_at", fallback)
-    return {
-        "category": state.extras.get("benchmark_category") or category,
-        "measured_at": state.extras.get("measurement_started_at"),
-        "measurement_completed_at": state.extras.get("measurement_completed_at"),
-    }
-
-
 @contextlib.contextmanager
 def _finalization_errors(execution, stage):
     try:
@@ -1477,12 +1480,7 @@ def _finalize_measurement(execution, integrations, state, cache_dir, *, dry_run=
     try:
         with _integration_completion_errors(integrations):
             if state is not None and not dry_run:
-                state.extras.update(
-                    benchmark_category=execution.category,
-                    container_image=str(execution.container_image or ""),
-                    measurement_started_at=execution.measured_at,
-                    measurement_completed_at=execution.measurement_completed_at,
-                )
+                persist_measurement_context(execution, state)
                 _save_completed_results(state, execution.results, cache_dir)
         if export is not None:
             with _finalization_errors(execution, "export"):
@@ -1510,7 +1508,7 @@ def _finalize_measurement(execution, integrations, state, cache_dir, *, dry_run=
 
 def _export_measurement(execution, *, config, tp, pp, output_file, emitter):
     """One export implementation for initial and resumed measurements."""
-    from sparkrun.benchmarking.base import export_results
+    from sparkrun.benchmarking.base import _write_measurement
 
     if not output_file:
         profile_slug = execution.profile.replace("/", "_").replace("@", "") if execution.profile else "default"
@@ -1519,22 +1517,7 @@ def _export_measurement(execution, *, config, tp, pp, output_file, emitter):
             config.default_benchmark_output_dir
             / ("benchmark_%s_%s_tp%d%s.yaml" % (execution.recipe.name.replace("/", "_"), profile_slug, tp, pp_suffix))
         )
-    export_results(
-        recipe=execution.recipe,
-        hosts=execution.host_list,
-        tp=tp,
-        cluster_id=execution.cluster_id,
-        framework_name=execution.framework_name,
-        profile_name=execution.profile,
-        args=execution.benchmark_args,
-        results=execution.results,
-        output_path=output_file,
-        runtime_info=execution.launch_result.runtime_info if execution.launch_result else None,
-        resumed=execution.resumed,
-        measured_at=execution.measured_at,
-        readiness=execution.readiness,
-        overrides=execution.launch_result.overrides if execution.launch_result else execution.overrides,
-    )
+    _write_measurement(execution, tp=tp, output_path=output_file)
     if execution.outputs is None:
         execution.outputs = {}
     execution.outputs["yaml"] = str(output_file)
@@ -1740,11 +1723,6 @@ def _saved_execution(state, cache_dir):
         framework_name=state.framework,
         host_list=state.host_list,
         outputs=state.extras.get("benchmark_outputs", {}),
-        container_image=state.extras.get("container_image_sha") or state.extras.get("container_image"),
-        container_image_sha=state.extras.get("container_image_sha"),
-        container_image_sha_pinned=bool(state.extras.get("container_image_sha")),
-        longterm_image_ref=state.extras.get("container_image_longterm_ref"),
-        longterm_image_pinned=bool(state.extras.get("container_image_longterm_pinned")),
         state_dir=str(state.state_dir(cache_dir)),
         recipe_name=state.recipe_qualified_name,
         cluster_id=state.cluster_id,
@@ -1831,10 +1809,15 @@ def _resume_locked(
     processing_only = state.is_complete(len(state.schedule)) and state.measurement_spec is not None
     meta = None if processing_only else load_job_metadata(state.cluster_id, cache_dir=cache_dir)
     recipe, saved_overrides = restore_measurement_specification(state, meta, config=config)
-    result.recipe = recipe
+    from sparkrun.core.recipe import Recipe
+
+    saved_recipe = state.extras.get("measurement_recipe_state")
+    result.recipe = Recipe._deserialize(saved_recipe) if saved_recipe else recipe
     result.host_list = state.host_list
-    result.container_image = result.container_image or recipe.container
-    result.overrides = saved_overrides
+    if result.overrides is None:
+        result.overrides = saved_overrides
+    if not result.image_context_known and meta:
+        capture_launch_context(result, metadata=meta)
     if dry_run:
         integrations.bind(result, state, resumed=True)
         emitter.info(
@@ -1869,10 +1852,6 @@ def _resume_locked(
         record_job_specification(state, meta)
     result.framework = fw
     result.category = result.category or fw.primary_category
-    result.overrides = saved_overrides
-    result.container_image = result.container_image or (meta or {}).get("container_image") or recipe.container
-    result.longterm_image_ref = state.extras.get("container_image_longterm_ref")
-    result.longterm_image_pinned = bool(state.extras.get("container_image_longterm_pinned"))
 
     if state.is_complete(len(tasks)):
         from sparkrun.benchmarking.scheduler import _collect_completed_results
@@ -1949,10 +1928,11 @@ def _resume_locked(
     config = sctx.config
     integrations.use_context(sctx)
     result.host_list = hosts
+    capture_launch_context(result, metadata=meta)
 
     # Check if inference is currently running
     ssh_kwargs = build_ssh_kwargs(config)
-    job_status = check_job_running(cluster_id=state.cluster_id, hosts=hosts, ssh_kwargs=ssh_kwargs)
+    job_status = check_job_running(cluster_id=state.cluster_id, hosts=hosts, ssh_kwargs=ssh_kwargs, cache_dir=cache_dir)
     if not job_status.running:
         raise NoResumableState(
             "inference cluster %r is not currently running.\n"
@@ -1993,6 +1973,7 @@ def _resume_locked(
 
     state.begin_measurement(result.category, datetime.now(timezone.utc).isoformat())
     result.measured_at = state.extras["measurement_started_at"]
+    persist_measurement_context(result, state)
     state.save(cache_dir)
     try:
         with emitter.schedule_progress(total_tasks=len(tasks), benchmark_id=benchmark_id, fw=fw, title=title) as pui:
@@ -2124,6 +2105,8 @@ def _build_result(execution: BenchmarkExecution) -> BenchmarkResult:
         },
         state_dir=execution.state_dir,
         resumed=execution.resumed,
+        measured_at=execution.measured_at,
+        completed_at=execution.measurement_completed_at,
         already_complete=execution.already_complete,
         integration_results=deepcopy(execution.integration_results or {}),
         integration_errors=dict(execution.integration_errors),

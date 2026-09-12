@@ -29,6 +29,8 @@ Invalid programmatic inputs may raise ValueError/TypeError; interrupts propagate
 
 from __future__ import annotations
 
+from sparkrun.core.status_observation import RunningSnapshot
+
 import logging
 from contextlib import contextmanager
 from dataclasses import replace
@@ -406,16 +408,16 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     # distribution left the cluster with neither the old deployment nor the
     # new one.  By the time the hook fires, the only remaining step is
     # starting containers.
-    # Every cluster_id the eviction sweep saw running, or ``None`` when no
+    # The scoped observation from the eviction sweep, or ``None`` when no
     # sweep happened (dry run, or the status query failed).  Consumed after the
     # launch by the metadata prune, which must never delete a live workload's
     # metadata and so refuses to run at all without a trustworthy snapshot.
-    observed_running: dict[str, set[str] | None] = {"ids": None}
+    observed_running: RunningSnapshot | None = None
 
     replacement_attempted = False
 
     def _evict_before_start(*, executor=None) -> None:
-        nonlocal replacement_attempted
+        nonlocal replacement_attempted, observed_running
         if replacement_attempted:
             return
         replacement_attempted = True
@@ -434,7 +436,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
             sctx=sctx,
             **({"strict": True, "include_current": True} if executor is not None else {}),
         )
-        observed_running["ids"] = running
+        observed_running = running
 
     # An enabled executor plugin can own its API launch path. Core supplies
     # the resolved context and preserves deployment replacement semantics.
@@ -557,7 +559,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     run_result = _complete_run_result(run_result, plan=plan, options=options, sctx=sctx, started_at=started_at)
     _prune_stale_job_metadata(
         config,
-        observed_running=observed_running["ids"],
+        observed_running=observed_running,
         keep=(run_result.cluster_id,),
         sctx=sctx,
     )
@@ -596,7 +598,7 @@ def _complete_run_result(result: RunResult, *, plan: RunPlan, options: RunOption
     )
 
 
-def _prune_stale_job_metadata(config, *, observed_running: "set[str] | None", keep: tuple[str, ...], sctx) -> None:
+def _prune_stale_job_metadata(config, *, observed_running: "RunningSnapshot | None", keep: tuple[str, ...], sctx) -> None:
     """Drop stale job metadata, using the snapshot the launch already took.
 
     The cache is append-only — only an explicit ``stop`` removes an entry — so
@@ -616,7 +618,7 @@ def _prune_stale_job_metadata(config, *, observed_running: "set[str] | None", ke
     would strand it (``stop`` / ``logs`` / proxy discovery all read this).
     Without a snapshot to check against, doing nothing is the only safe move.
     """
-    if observed_running is None:
+    if not isinstance(observed_running, RunningSnapshot) or not observed_running.coverage:
         return
     try:
         if not config.jobs_autoprune:
@@ -629,7 +631,8 @@ def _prune_stale_job_metadata(config, *, observed_running: "set[str] | None", ke
         from sparkrun.orchestration.job_metadata import prune_job_metadata
 
         removed = prune_job_metadata(
-            protected_cluster_ids=set(observed_running) | set(keep),
+            protected_cluster_ids=set(keep),
+            observation=observed_running,
             sctx=sctx,
         )
         if removed:
@@ -699,7 +702,7 @@ def _evict_superseded_deployments(
     sctx: "SparkrunContext | None",
     strict: bool = False,
     include_current: bool = False,
-) -> "tuple[list[str], set[str] | None]":
+) -> "tuple[list[str], RunningSnapshot | None]":
     """Stop this intent's earlier deployments that sit on the hosts we're about to use.
 
     A launch's ``cluster_id`` is ``sparkrun_<intent_id>_<placement_token>``.
@@ -736,9 +739,9 @@ def _evict_superseded_deployments(
     with the earlier workload.
 
     Returns:
-        ``(evicted, observed_running)`` — the cluster_ids torn down (empty when
-        there was nothing to do), and **every** cluster_id the sweep saw
-        running, or ``None`` when the sweep itself failed.  The second element
+        ``(evicted, observation)`` — the cluster_ids torn down (empty when
+        there was nothing to do), and a ``RunningSnapshot`` with explicit
+        executor/destination coverage, or ``None`` when the query failed.  The second element
         exists so the post-launch metadata prune can reuse this snapshot
         instead of paying for a second one; ``None`` vs. an empty set is the
         difference between "couldn't look" and "looked, nothing there", and
@@ -764,7 +767,6 @@ def _evict_superseded_deployments(
 
     if strict and getattr(status, "errors", None):
         raise RuntimeError("could not query cluster status before workload replacement: %s" % status.errors)
-    observed_running = {w.cluster_id for entry in status.hosts for w in entry.workloads if w.cluster_id}
 
     prefix = "sparkrun_%s_" % intent_id
     target = set(target_hosts)
@@ -807,7 +809,7 @@ def _evict_superseded_deployments(
                 ", ".join(result.hosts_failed),
             )
         evicted.append(cid)
-    return evicted, observed_running
+    return evicted, status.observation
 
 
 def _resolve_scheduler_name(effective_scheduler, sctx):

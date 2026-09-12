@@ -444,6 +444,8 @@ class BenchmarkExecution:
     cluster_id: Optional[str] = None
     host_list: Optional[list[str]] = None
     container_image: Optional[str] = None
+    image_context_known: bool = False
+    runtime_info: dict[str, Any] = field(default_factory=dict)
 
     benchmark_id: str = ""
     state_dir: Optional[str] = None
@@ -513,6 +515,54 @@ class BenchmarkExecution:
             meta["launch"] = timeline.export()
         return meta
 
+    def recipe_provenance(self, *, resolve_image=False):
+        """One effective recipe projection; hashes distinguish declared/effective input."""
+        launch_result = self.launch_result
+        recipe = self.recipe or (launch_result.recipe if launch_result else None)
+        overrides = self.overrides if self.overrides is not None else (launch_result.overrides if launch_result else {})
+        container_image = self.container_image
+        if not self.image_context_known and launch_result:
+            container_image = launch_result.container_image
+        # Resolve container image to a pinned long-term reference when possible
+        container_pinned = False
+        recipe_container = container_image
+        if not recipe_container and not self.resumed and not self.image_context_known:
+            recipe_container = recipe.container
+        if self.longterm_image_ref:
+            # Pre-resolved (and persisted) on first launch of this resumable run.
+            recipe_container = self.longterm_image_ref
+            container_pinned = self.longterm_image_pinned
+        elif self.container_image_sha:
+            recipe_container = self.container_image_sha
+            container_pinned = self.container_image_sha_pinned
+        elif resolve_image and launch_result and launch_result.builder:
+            try:
+                resolved_image, pinned = launch_result.builder.resolve_long_term_image(
+                    container_image=launch_result.container_image,
+                    runtime_info=launch_result.runtime_info,
+                    recipe=recipe,
+                )
+                if pinned:
+                    recipe_container = resolved_image
+                    container_pinned = True
+                    logger.info("Pinned container image: %s", recipe_container)
+            except Exception:
+                logger.debug("Long-term image resolution failed", exc_info=True)
+
+        declared_text = public_recipe_text(recipe.export(overrides=None))
+        effective = recipe.to_dict(overrides=overrides)
+        # None is explicit unknown here; Recipe.export(None) would reuse the declaration.
+        effective["container"] = recipe_container
+        text = public_recipe_text(yaml.safe_dump(effective, sort_keys=False))
+        return {
+            "raw_container": recipe.container,
+            "container": recipe_container,
+            "container_pinned": container_pinned,
+            "text": text,
+            "hash": hashlib.sha256(declared_text.encode("utf-8")).hexdigest(),
+            "effective_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        }
+
     def generate_metadata(self, *, redact_hosts: bool = True, resolve_image: bool = True):
         """Build the provenance mapping for this result.
 
@@ -534,43 +584,19 @@ class BenchmarkExecution:
             overrides = launch_result.overrides
             cluster_id = launch_result.cluster_id
             host_list = launch_result.host_list
-            container_image = launch_result.container_image
             runtime_info = launch_result.runtime_info
         else:
             recipe = self.recipe
             overrides = self.overrides or {}
             cluster_id = self.cluster_id
             host_list = self.host_list or []
-            container_image = self.container_image
-            runtime_info = {}
+            runtime_info = self.runtime_info
 
         framework = self.framework
         profile = self.profile
         benchmark_args = self.benchmark_args
 
-        # Resolve container image to a pinned long-term reference when possible
-        container_pinned = False
-        recipe_container = container_image or recipe.container
-        if self.longterm_image_ref:
-            # Pre-resolved (and persisted) on first launch of this resumable run.
-            recipe_container = self.longterm_image_ref
-            container_pinned = self.longterm_image_pinned
-        elif resolve_image and launch_result and launch_result.builder:
-            try:
-                resolved_image, pinned = launch_result.builder.resolve_long_term_image(
-                    container_image=launch_result.container_image,
-                    runtime_info=launch_result.runtime_info,
-                    recipe=recipe,
-                )
-                if pinned:
-                    recipe_container = resolved_image
-                    container_pinned = True
-                    logger.info("Pinned container image: %s", recipe_container)
-            except Exception:
-                logger.debug("Long-term image resolution failed", exc_info=True)
-
-        recipe_hash = hashlib.sha256(public_recipe_text(recipe.export(overrides=None)).encode("utf-8")).hexdigest()
-
+        recipe_projection = self.recipe_provenance(resolve_image=resolve_image)
         hf_model = parse_gguf_model_spec(recipe.model)[0]
         model_meta = model_metadata(recipe)
 
@@ -581,14 +607,11 @@ class BenchmarkExecution:
                 "type": "sparkrun",
                 "model": recipe.model,  # will include quant if applicable
                 "hf_model": hf_model,  # will exclude quant if applicable
-                "raw_container": recipe.container,
-                "container": recipe_container,
-                "container_pinned": container_pinned,
+                **recipe_projection,
                 "runtime": _RUNTIME_DISPLAY.get(recipe.runtime, recipe.runtime),
                 "runtime_full": recipe.runtime,
                 "registry": recipe.source_registry,
                 "registry_git": recipe.source_registry_url or "",
-                "hash": recipe_hash,
             },
             "timing": {
                 "start": self.start_time.isoformat() if self.start_time else None,
@@ -598,11 +621,13 @@ class BenchmarkExecution:
             },
             "cluster": _build_cluster_meta(recipe, overrides, cluster_id, host_list, redact=redact_hosts),
             "benchmark": {
-                "framework": framework.framework_name if framework else "unknown",
+                "framework": self.framework_name or (framework.framework_name if framework else "unknown"),
                 "profile": profile,
                 "args": benchmark_args,
                 "resumed": bool(self.resumed),
                 **({"measured_at": self.measured_at} if self.measured_at else {}),
+                **({"completed_at": self.measurement_completed_at} if self.measurement_completed_at else {}),
+                "category": self.category,
             },
             "model": model_meta,
             "runtime_info": runtime_info,
@@ -675,55 +700,52 @@ def export_results(
     Returns:
         Path to the written file.
     """
+    execution = BenchmarkExecution(
+        recipe=recipe,
+        host_list=hosts,
+        cluster_id=cluster_id,
+        framework_name=framework_name,
+        profile=profile_name,
+        benchmark_args=args,
+        results=results,
+        runtime_info=runtime_info or {},
+        resumed=resumed,
+        measured_at=measured_at,
+        readiness=readiness,
+        overrides=overrides,
+        container_image=recipe.container,
+    )
+    return _write_measurement(execution, tp=tp, output_path=output_path)
+
+
+def _write_measurement(execution: BenchmarkExecution, *, tp: int, output_path: str | Path) -> Path:
+    """Write the same effective description supplied to integration snapshots."""
     output_path = Path(output_path)
-    # noinspection PyProtectedMember
-    recipe_text = public_recipe_text(recipe.export(path=None, overrides=overrides))
-    recipe_hash = hashlib.sha256(recipe_text.encode("utf-8")).hexdigest()
-
-    # Build model metadata from recipe metadata (includes auto-detected
-    # values written back by Recipe.estimate_vram).
-    model_meta = model_metadata(recipe)
-
+    metadata = execution.generate_metadata(resolve_image=False)
+    recipe = dict(metadata["recipe"])
+    recipe["declared_hash"] = recipe["hash"]
+    recipe["hash"] = recipe.pop("effective_hash")
+    recipe["runtime"] = recipe.pop("runtime_full")
     data = {
         "sparkrun_benchmark": {
             "version": "1",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "recipe": {
-                "name": recipe.name,
-                "qualified_name": recipe.qualified_name,
-                "type": "sparkrun",
-                "model": recipe.model,
-                "container": recipe.container,
-                "runtime": recipe.runtime,
-                "registry": recipe.source_registry,
-                "registry_git": recipe.source_registry_url or "",
-                "text": recipe_text,
-                "hash": recipe_hash,
-            },
-            "model": model_meta,
+            "recipe": recipe,
+            "model": metadata["model"],
             "cluster": {
                 "tp": tp,
-                "cluster_id": cluster_id,
-                **host_meta(hosts, redact=True),
-                "runtime_info": runtime_info or {},
+                "cluster_id": execution.cluster_id,
+                **host_meta(execution.host_list or [], redact=True),
+                "runtime_info": metadata["runtime_info"],
             },
-            "benchmark": {
-                "framework": framework_name,
-                "profile": profile_name,
-                "args": args,
-                "resumed": bool(resumed),
-                **({"measured_at": measured_at} if measured_at else {}),
-            },
-            "results": results,
+            "benchmark": {**metadata["benchmark"], "framework": execution.framework_name},
+            "results": execution.results,
         },
     }
-
-    if startup := startup_timing_metadata(readiness, resumed=resumed):
+    if startup := startup_timing_metadata(execution.readiness, resumed=execution.resumed):
         data["sparkrun_benchmark"]["timing"] = {"startup": startup}
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
         yaml.dump(public_benchmark_data(data), f, default_flow_style=False, sort_keys=False, indent=2)
-
     logger.info("Results exported to %s", output_path)
     return output_path
