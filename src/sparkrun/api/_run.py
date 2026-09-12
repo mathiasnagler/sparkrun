@@ -398,19 +398,25 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
 
     replacement_attempted = False
 
-    def _evict_before_start() -> None:
+    def _evict_before_start(*, executor=None) -> None:
         nonlocal replacement_attempted
         if replacement_attempted:
             return
         replacement_attempted = True
+        replacement_cluster = cluster_def
+        if executor is not None:
+            from dataclasses import asdict
+
+            replacement_cluster = replace(cluster_def, executor=executor.executor_name, executor_config=asdict(executor.config))
         _, running = _evict_superseded_deployments(
             intent_id=intent_id,
             cluster_id_for_launch=cluster_id_for_launch,
             candidate_hosts=hosts,
             target_hosts=host_list,
-            cluster_def=cluster_def,
+            cluster_def=replacement_cluster,
             config=config,
             sctx=sctx,
+            **({"strict": True, "include_current": True} if executor is not None else {}),
         )
         observed_running["ids"] = running
 
@@ -550,8 +556,8 @@ def _complete_run_result(result: RunResult, *, plan: RunPlan, options: RunOption
     """Populate shared launch metadata once, for core and native handlers.
 
     The actual substrate identity/hosts/command remain the launcher's outcome.
-    Ensure hits bypass this helper: a new plan cannot describe the existing
-    deployment's fingerprint or claim a new launch timeline.
+    Reuse preserves verified existing metadata: a proposed plan cannot describe
+    the existing deployment's fingerprint or claim a new launch timeline.
     """
     from sparkrun.orchestration.job_metadata import parse_cluster_id
 
@@ -560,13 +566,15 @@ def _complete_run_result(result: RunResult, *, plan: RunPlan, options: RunOption
     try:
         intent_id, placement_token = parse_cluster_id(result.cluster_id)
     except ValueError:
-        intent_id, placement_token = plan.intent_id, plan.placement_token
+        intent_id, placement_token = (
+            (result.intent_id, result.placement_token) if result.already_running else (plan.intent_id, plan.placement_token)
+        )
     return replace(
         result,
         intent_id=intent_id,
         placement_token=placement_token,
-        recipe_fingerprint=plan.recipe_fingerprint,
-        timeline=result.timeline if result.timeline is not None else sctx.timing,
+        recipe_fingerprint=result.recipe_fingerprint if result.already_running else plan.recipe_fingerprint,
+        timeline=result.timeline if result.already_running or result.timeline is not None else sctx.timing,
         started_at=started_at,
         dry_run=options.dry_run,
     )
@@ -670,6 +678,7 @@ def _evict_superseded_deployments(
     config,
     sctx: "SparkrunContext | None",
     strict: bool = False,
+    include_current: bool = False,
 ) -> "tuple[list[str], set[str] | None]":
     """Stop this intent's earlier deployments that sit on the hosts we're about to use.
 
@@ -733,6 +742,8 @@ def _evict_superseded_deployments(
         logger.debug("Could not query cluster status for eviction; skipping: %s", e)
         return [], None
 
+    if strict and getattr(status, "errors", None):
+        raise RuntimeError("could not query cluster status before workload replacement: %s" % status.errors)
     observed_running = {w.cluster_id for entry in status.hosts for w in entry.workloads if w.cluster_id}
 
     prefix = "sparkrun_%s_" % intent_id
@@ -743,7 +754,7 @@ def _evict_superseded_deployments(
     for entry in status.hosts:
         for workload in entry.workloads:
             cid = workload.cluster_id
-            if cid == cluster_id_for_launch:
+            if cid == cluster_id_for_launch and not include_current:
                 continue
             if workload.intent_id != intent_id and not cid.startswith(prefix):
                 continue

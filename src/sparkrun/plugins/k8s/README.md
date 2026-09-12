@@ -129,3 +129,28 @@ executor remains experimental and does not support Ray clusters.
 
 Tests use mocked Kubernetes calls and dry-run manifests; they do not provision a
 cluster or establish physical-device compatibility.
+
+## Shared native lifecycle
+
+Native `api.run()` saves its portable ID, JobSet reference, controller provenance,
+and resolved executor target before submitting. `api.stop(cluster_id=...)` uses
+that record after process restart and after defaults change. Stop deletes the
+JobSet with foreground cascading and confirms it is gone before removing local
+metadata. Ownership, connection, deletion, and confirmation failures preserve the
+record and return an unsuccessful `StopResult`.
+
+`api.status(hosts, executor="k8s")` reports submitted JobSets (including queued
+ones) using their annotated portable IDs and launch host scopes. These hosts are
+control-plane invocation scopes, not inferred GPU-node placements. Shared intent
+queries, ensure, replacement, bulk `stop_all()`, and benchmark cleanup consume the same identity.
+A failed control-plane query produces status errors, not an empty healthy result.
+
+Native launch pins one explicit kubeconfig path and context, using current-context
+when no context was supplied. Merged `KUBECONFIG` file lists must be reduced to
+one explicitly selected file. Changing credentials inside that selected file is
+still possible. Launch remains submission-only; it does not create an externally
+reachable inference endpoint or assert server readiness.
+
+Use the plugin log API with the returned `k8s_jobset` reference. Common `api.logs()`
+rejects recorded native resources with a diagnostic rather than guessing child
+Pod names. Direct Pod-command launching remains a separate experimental path.

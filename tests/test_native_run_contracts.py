@@ -29,14 +29,15 @@ def native_env(run_env, monkeypatch):
         "sparkrun.plugins.k8s.orchestration.inventory.probe_nodes", lambda *a, **kw: _nodes_for([("s0", _SPARK_LABELS, 1, 1, False)])
     )
     env.submitted = []
-    original = k8s.launch_jobset
+    monkeypatch.setattr("sparkrun.plugins.k8s.executor.K8sExecutor._client", lambda self: env.client)
+    original = k8s._ops._launch_jobset
 
     def launch(*args, **kwargs):
         result = original(*args, **kwargs)
         env.submitted.append(result)
         return result
 
-    monkeypatch.setattr(k8s, "launch_jobset", launch)
+    monkeypatch.setattr(k8s._ops, "_launch_jobset", launch)
     return env
 
 
@@ -123,3 +124,37 @@ def test_portable_id_projection_is_bounded_and_distinguishes_normalization_colli
     assert len(set(names)) == len(ids)
     assert names == [native_jobset_name(value, "gb10") for value in ids]
     assert all(len(name + "-gb10-0-0") <= 63 and re.fullmatch(r"[a-z][-a-z0-9]*[a-z0-9]", name) for name in names)
+
+
+@pytest.mark.parametrize("fingerprint", ["known-original-fingerprint", ""])
+def test_handler_reuse_preserves_existing_metadata(run_env, monkeypatch, fingerprint):
+    from dataclasses import replace
+    from sparkrun.orchestration.job_metadata import generate_cluster_id
+
+    env = run_env
+    options = api.RunOptions(recipe=env.recipe, hosts=("localhost",), solo=True, ensure=True)
+    planned = plan(options, sctx=env.sctx)
+    old_id = generate_cluster_id(planned.intent_id, "c" * 12)
+    old = api.RunResult(
+        cluster_id=old_id,
+        host_list=("localhost",),
+        placement=None,
+        scheduler="greedy",
+        runtime=planned.runtime.runtime_name,
+        executor="docker",
+        started_at=123.0,
+        dry_run=False,
+        is_solo=True,
+        already_running=True,
+        recipe_fingerprint=fingerprint,
+    )
+    monkeypatch.setattr("sparkrun.api._intent.find_running_intent", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "sparkrun.core.run_handlers.registered_run_handlers", lambda _: {"docker": RunHandler("docker", lambda *a, **kw: old)}
+    )
+    replacement = Mock(side_effect=AssertionError("reuse must not replace anything"))
+    monkeypatch.setattr("sparkrun.api._run._evict_superseded_deployments", replacement)
+    result = run(options, sctx=env.sctx, plan=planned)
+    assert result == replace(old, started_at=result.started_at, intent_id=planned.intent_id, placement_token="c" * 12)
+    assert result.timeline is None and result.launch_result is None
+    replacement.assert_not_called()

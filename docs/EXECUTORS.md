@@ -6,7 +6,7 @@ How sparkrun selects and configures an executor for a launch. Three are shipped:
 |----------|------------------|--------------|-------------------------------------------------------------------------|
 | `docker` | `DockerExecutor` | Stable       | Default. Used by every previously-released launch path.                 |
 | `local`  | `LocalExecutor`  | Alpha        | Native subprocess (no container). Hand-coded process-group lifecycle.    |
-| `k8s`    | `K8sExecutor`    | Experimental | `kubectl run`-driven. Drops Docker-specific options.                    |
+| `k8s`    | `K8sExecutor`    | Experimental | Native JobSet lifecycle; drops Docker-specific options.                    |
 
 ## Resolution chain
 
@@ -19,7 +19,9 @@ point. It layers (highest priority first):
 3. **Cluster** — `cluster.executor` (selector) + `cluster.executor_config` (dict).
 4. **Runtime executor selector** — `runtime.default_executor()` (`None` by default; runtimes can force a non-Docker executor).
 5. **Per-executor adjustments** — `cls.apply_runtime_adjustments(rootless=,
-   auto_user=)`. Docker reads these here; Local/K8s ignore.
+   auto_user=, defaults=)`. Docker reads these here; Local/K8s ignore.
+   `defaults` contains the lower-priority configuration layers, allowing Docker
+   to retain their security options while adding `no-new-privileges`.
 6. **Runtime executor-config defaults** — `runtime.default_executor_config()` (`{}` by default; runtimes can set overridable executor defaults).
 7. **`SparkrunConfig`** — `config.default_executor` + `config.executor_config`.
 8. **Platform** — `platform.default_executor_config(<name>)` for the platform
@@ -85,7 +87,7 @@ lists. Falsy values fall through to the dataclass defaults.
 | `shm_size`            | str         | Docker              | `"32gb"`      | `--shm-size`. Only applies when `ipc` is not `host` (Docker ignores it otherwise). K8s drops.  |
 | `network`             | str         | Docker              | `"host"`      | `--network`. K8s drops.                                                                        |
 | `user`                | str?        | Docker              | `None`        | `--user`. Sentinel `"$SHELL_USER"` expands to `$(id -u):$(id -g)` + bind-mounts passwd/group.  |
-| `security_opt`        | list[str]?  | Docker              | `None`        | Repeated `--security-opt`. Defaults to `["no-new-privileges"]` in rootless mode.               |
+| `security_opt`        | list[str]?  | Docker              | `None`        | Repeated `--security-opt`. Docker adds the io_uring profile; rootless mode also defaults to `no-new-privileges`.               |
 | `cap_add`             | list[str]?  | Docker              | `None`        | Repeated `--cap-add`.                                                                          |
 | `ulimit`              | list[str]?  | Docker              | `None`        | Repeated `--ulimit`. Rootless mode sets `memlock=-1:-1`, `stack=67108864`.                     |
 | `devices`             | list[str]?  | Docker              | `None`        | Repeated `--device`. Rootless mode adds `/dev/infiniband`.                                     |
@@ -381,3 +383,53 @@ are released by the OS when the operation exits. Lock files stay in place so
 concurrent operations continue to lock the same inode. Explicitly shared PID
 paths reject another application's owner even if its claim appeared after solo
 preflight. A launch also refuses to replace a PID that is still running.
+
+
+## Docker seccomp profiles (0.4)
+
+The Docker executor defaults to `seccomp=io-uring`: a bundled, pinned copy of
+[Moby's default profile](https://github.com/moby/profiles/blob/61eaf32614c7c71b60bd8927d3e6a4ffc8ff1f31/seccomp/default.json)
+with an allow rule for `io_uring_setup`, `io_uring_enter`, and
+`io_uring_register`. The default deny action, architecture mappings, and other
+rules remain intact. Atlas uses this shared policy and no longer adds
+`seccomp=unconfined` itself. Docker's treatment of explicitly privileged
+containers still applies; normal sparkrun launches default to non-privileged.
+
+Use the existing `executor_config.security_opt` in application configuration,
+a cluster, a recipe, or API overrides to select a locally defined profile:
+
+```yaml
+executor_config:
+  security_opt:
+    - no-new-privileges
+    - seccomp=/home/operator/policies/inference.json
+```
+
+The path is on the controller running sparkrun. `~` expands to that user's
+home; relative paths resolve against its working directory. sparkrun validates
+basic JSON/profile structure and snapshots the policy before replacing the
+running workload. Docker validates target-specific syscall/architecture support
+when creating the container. A custom policy is used as supplied: sparkrun does
+not add io_uring permissions to it.
+
+The policy contents travel with every generated Docker launch script, including
+head and worker scripts. Bash process substitution gives Docker a readable
+file descriptor on the node invoking its CLI. No shared directory, persistent
+remote policy cache, or manual copy to the nodes is required. This follows
+[Docker's client-side profile loading](https://docs.docker.com/engine/security/seccomp/).
+The source file can change or disappear after preparation without changing the
+policy used by later workers in the same launch. Preview generation reads and
+validates the local policy but performs no remote writes.
+
+An explicit `seccomp=builtin` selects Docker's own default profile, and
+`seccomp=unconfined` explicitly disables filtering. If no seccomp option is
+specified, including an empty security-options list, sparkrun supplies
+`io-uring`. Other security options remain in force. Raw `extra_docker_opts`
+seccomp flags use the same local-file delivery and override the configured
+policy; duplicate policies within either list are rejected.
+
+Executors may implement `prepare_launch(extra_opts=...)` to validate and snapshot
+local inputs. The shared runtime launcher calls it before replacement, including
+previews; it must not start workloads or mutate remote state. Direct command
+and script generation also works without prior preparation. Generated Docker
+commands require Bash, as do the existing host launch scripts.

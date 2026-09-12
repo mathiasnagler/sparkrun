@@ -51,12 +51,13 @@ def test_k8s_handler_preserves_resolved_target(monkeypatch, source, caller):
     probe = Mock(return_value="gb10")
     submit = Mock(return_value=SimpleNamespace(name="review", feasible=True))
     monkeypatch.setattr(handler_module, "_resolve_single_gpu_class", probe)
-    monkeypatch.setattr("sparkrun.plugins.k8s.api.launch_jobset", submit)
+    monkeypatch.setattr("sparkrun.plugins.k8s.api._ops._launch_jobset", submit)
     run(RunOptions(recipe=plan.recipe, cluster=cluster, solo=True, dry_run=True, executor_config=caller), sctx=sctx, plan=plan)
-    assert submit.call_args.kwargs["context"] == "lab-context"
-    assert submit.call_args.kwargs["namespace"] == ("caller-ns" if caller else "lab-namespace")
-    assert submit.call_args.kwargs["kubeconfig"] == target["kubeconfig"]
-    assert probe.call_args.kwargs == {"context": "lab-context", "kubeconfig": target["kubeconfig"]}
+    client = submit.call_args.args[0]
+    assert client.context == "lab-context"
+    assert client.namespace == submit.call_args.kwargs["namespace"] == ("caller-ns" if caller else "lab-namespace")
+    assert client.kubeconfig == target["kubeconfig"]
+    assert probe.call_args.args == (client,)
 
 
 @pytest.mark.parametrize("failure", [PermissionError("Cannot read control-plane credentials"), KeyboardInterrupt(), SystemExit(2)])
@@ -246,7 +247,7 @@ def test_k8s_invalid_launch_keeps_previous_deployment(monkeypatch, dry_run, fail
     )
     stop, submit = Mock(return_value=SimpleNamespace(hosts_failed=[])), Mock()
     monkeypatch.setattr("sparkrun.api.stop", stop)
-    monkeypatch.setattr("sparkrun.plugins.k8s.api.launch_jobset", submit)
+    monkeypatch.setattr("sparkrun.plugins.k8s.api._ops._launch_jobset", submit)
     with pytest.raises(SparkrunError, match="single-pod" if failure == "topology" else "invalid kubeconfig"):
         run(RunOptions(recipe=plan.recipe, cluster=cluster, dry_run=dry_run), sctx=sctx, plan=plan)
     stop.assert_not_called()

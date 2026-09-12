@@ -193,7 +193,7 @@ def test_gap_analysis_no_gaps_with_stub_fw():
     tasks = [_make_task(0, depth=0, concurrency=1), _make_task(1, depth=4096, concurrency=2)]
     consolidated = {"runs": [{"a": 1}, {"a": 2}]}
     fw = _FakeFW()
-    gaps = gap_analysis(tasks, consolidated, fw)
+    gaps = gap_analysis(tasks, consolidated, fw, completed_indices=[task.index for task in tasks])
     assert gaps == []
 
 
@@ -202,7 +202,7 @@ def test_gap_analysis_detects_missing_with_stub_fw():
     tasks = [_make_task(0, depth=0, concurrency=1), _make_task(1, depth=4096, concurrency=2)]
     consolidated = {"runs": [{"a": 1}]}  # only index 0 covered
     fw = _FakeFW()
-    gaps = gap_analysis(tasks, consolidated, fw)
+    gaps = gap_analysis(tasks, consolidated, fw, completed_indices=[task.index for task in tasks])
     assert len(gaps) == 1
     assert gaps[0].index == 1
 
@@ -219,7 +219,7 @@ def test_gap_analysis_no_gaps_with_llama_benchy():
             {"context_size": 4096, "concurrency": 2},
         ],
     }
-    gaps = gap_analysis(tasks, consolidated, fw)
+    gaps = gap_analysis(tasks, consolidated, fw, completed_indices=[task.index for task in tasks])
     assert gaps == []
 
 
@@ -232,7 +232,7 @@ def test_gap_analysis_detects_missing_with_llama_benchy():
         "max_concurrency": 1,
         "benchmarks": [{"context_size": 0, "concurrency": 1}],
     }
-    gaps = gap_analysis(tasks, consolidated, fw)
+    gaps = gap_analysis(tasks, consolidated, fw, completed_indices=[task.index for task in tasks])
     assert len(gaps) == 1
     assert gaps[0].index == 1
 
@@ -244,7 +244,7 @@ def test_gap_analysis_tasks_missing_run_args_flagged(caplog):
     consolidated = {"model": "org/model", "max_concurrency": 0, "benchmarks": []}
 
     with caplog.at_level(logging.WARNING, logger="sparkrun.benchmarking.aggregator"):
-        gaps = gap_analysis(tasks, consolidated, fw)
+        gaps = gap_analysis(tasks, consolidated, fw, completed_indices=[task.index for task in tasks])
 
     assert len(gaps) == 1
     assert gaps[0].index == 0

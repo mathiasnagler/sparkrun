@@ -287,12 +287,16 @@ class BenchmarkingPlugin(Plugin):
         """
         return task.index
 
-    def consolidated_coverage_keys(self, consolidated: dict[str, Any]) -> set[Any]:
+    def consolidated_coverage_keys(self, consolidated: dict[str, Any]) -> set[Any] | None:
         """Return the set of coverage keys present in the consolidated dict.
 
-        Default: indices ``[0, len(consolidated["runs"]))``.
+        Default: ``None`` — successful task artifacts provide coverage. The
+        scheduler retains their original indices even when failures leave gaps.
+        Override together with ``task_coverage_key`` to require framework-specific
+        measurements in addition to successful task execution. An empty set means
+        no measurements are covered, whereas ``None`` adds no semantic check.
         """
-        return set(range(len(consolidated.get("runs") or [])))
+        return None
 
     def progress_table_spec(self) -> ProgressTableSpec:
         """Return the column spec / row generator the progress UI uses for live display.

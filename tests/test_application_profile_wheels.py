@@ -375,3 +375,31 @@ print(json.dumps(context.controller_identity.to_dict()))
     assert {item["application"]["id"] for item in identities} == {"sparkrun", "profile-test-app"}
     assert len({item["controller_id"] for item in identities}) == 2
     assert len(list(tmp_path.glob(".controllers/*.id"))) == 2
+
+
+def test_wheel_includes_default_seccomp_policy_and_provenance(wheels, tmp_path):
+    _, _, python = wheels
+    result = subprocess.run(
+        [
+            str(python),
+            "-I",
+            "-c",
+            """
+import json
+from importlib.resources import files
+from sparkrun.orchestration.executors._seccomp import io_uring_profile
+root = files("sparkrun.orchestration.executors").joinpath("seccomp")
+assert "Apache License" in root.joinpath("LICENSE").read_text()
+assert "61eaf32614c7c71b60bd8927d3e6a4ffc8ff1f31" in root.joinpath("README.md").read_text()
+upstream = json.loads(root.joinpath("default.json").read_text())
+profile = json.loads(io_uring_profile())
+assert profile["syscalls"].pop()["names"] == ["io_uring_enter", "io_uring_register", "io_uring_setup"]
+assert profile == upstream
+""",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

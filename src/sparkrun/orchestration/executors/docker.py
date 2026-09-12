@@ -23,6 +23,7 @@ from sparkrun.orchestration.executors._base import (
     LABEL_RUNTIME,
     Executor,
 )
+from sparkrun.orchestration.executors._seccomp import IO_URING_PROFILE, profile_option, split_options
 from sparkrun.core.application_profile import get_application_profile
 from sparkrun.core.ownership import OWNER_LABEL, owns_resource, docker_owner_guard
 from sparkrun.core.log_source import MODE_FILE, SERVE_LOG_PATH
@@ -267,7 +268,7 @@ DOCKER_DEFAULTS = {
     "shm_size": "32gb",
     "network": "host",
     "user": None,
-    "security_opt": None,
+    "security_opt": ["seccomp=" + IO_URING_PROFILE],
     "cap_add": None,
     "ulimit": ["nofile=65535:65535"],
     "devices": None,
@@ -299,10 +300,12 @@ class DockerExecutor(Executor):
     @classmethod
     def default_config(cls) -> dict:
         """Docker-flavoured defaults — shm_size, ipc=shareable, network=host, ...."""
-        return dict(DOCKER_DEFAULTS)
+        from copy import deepcopy
+
+        return deepcopy(DOCKER_DEFAULTS)
 
     @classmethod
-    def apply_runtime_adjustments(cls, *, rootless: bool = True, auto_user: bool = True, **kwargs) -> dict:
+    def apply_runtime_adjustments(cls, *, rootless: bool = True, auto_user: bool = True, defaults=None, **kwargs) -> dict:
         """Docker reads ``rootless`` and ``auto_user`` here.
 
         Sits above SparkrunConfig and below recipe overrides in the
@@ -312,7 +315,12 @@ class DockerExecutor(Executor):
         adjustments: dict = {}
         if rootless:
             adjustments["privileged"] = False
-            adjustments["security_opt"] = ["no-new-privileges"]
+            # Preserve lower-layer policies while supplying the rootless default.
+            security = defaults.get("security_opt") if defaults is not None else ["seccomp=" + IO_URING_PROFILE]
+            security = [security] if isinstance(security, str) else list(security or [])
+            if not any(opt.split("=", 1)[0] == "no-new-privileges" for opt in security):
+                security.insert(0, "no-new-privileges")
+            adjustments["security_opt"] = security
             # NOTE: deliberately no ``cap_add`` entry.  Docker grants no extra
             # capabilities unless asked, so ``[]`` here would be identical to
             # ``None`` in the emitted flags — it hardened nothing.  All it did
@@ -339,6 +347,15 @@ class DockerExecutor(Executor):
         if auto_user:
             adjustments["user"] = "$SHELL_USER"  # auto hint to use ssh user+group
         return adjustments
+
+    def __init__(self, config=None):
+        super().__init__(config)
+        self._seccomp_snapshots: dict[str, str] = {}
+
+    def prepare_launch(self, *, extra_opts: list[str] | None = None) -> None:
+        """Validate and snapshot the selected local policy before replacement."""
+        _, _, policy = split_options(self.config.security_opt, extra_opts)
+        profile_option(policy, self._seccomp_snapshots)
 
     # --- Internal command-string builders ---
 
@@ -378,7 +395,7 @@ class DockerExecutor(Executor):
         )
         return []
 
-    def _build_default_opts(self) -> list[str]:
+    def _build_default_opts(self, *, security_opt: list[str]) -> list[str]:
         """Build the default ``docker run`` option list from config."""
         cfg = self.config
         opts: list[str] = []
@@ -405,8 +422,8 @@ class DockerExecutor(Executor):
                 opts.extend(["-e", "HOME=/tmp"])
             else:
                 opts.extend(["--user", quote(cfg.user)])
-        if cfg.security_opt:
-            for opt in cfg.security_opt:
+        if security_opt:
+            for opt in security_opt:
                 opts.extend(["--security-opt", quote(opt)])
         if cfg.cap_add:
             for cap in cfg.cap_add:
@@ -467,7 +484,9 @@ class DockerExecutor(Executor):
         if detach:
             parts.append("-d")
 
-        parts.extend(self._build_default_opts())
+        security, extra_tokens, policy = split_options(cfg.security_opt, extra_opts)
+        parts.extend(self._build_default_opts(security_opt=security))
+        parts.extend(["--security-opt", profile_option(policy, self._seccomp_snapshots)])
 
         if cfg.auto_remove:
             parts.append("--rm")
@@ -493,11 +512,7 @@ class DockerExecutor(Executor):
             for host_path, container_path in sorted(volumes.items()):
                 parts.extend(["-v", quote("%s:%s" % (host_path, container_path))])
 
-        if extra_opts:
-            from shlex import split as shlex_split
-
-            for opt in extra_opts:
-                parts.extend(quote(token) for token in shlex_split(opt))
+        parts.extend(quote(token) for token in extra_tokens)
 
         parts.append(quote(image))
 

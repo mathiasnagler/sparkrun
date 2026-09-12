@@ -6,6 +6,6 @@ printf "Cleaning up existing container: %s\n" {container_name}
 
 printf "Launching container: %s\n" {container_name}
 printf "Image: %s\n" {image}
-{run_cmd}
+{run_cmd} || exit $?
 
 printf "Container %s launched successfully\n" {container_name}

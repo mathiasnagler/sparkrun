@@ -382,16 +382,32 @@ class Executor(Plugin):
         return {}
 
     @classmethod
-    def apply_runtime_adjustments(cls, *, rootless: bool = True, auto_user: bool = True, **kwargs) -> dict:
+    def apply_runtime_adjustments(
+        cls, *, rootless: bool = True, auto_user: bool = True, defaults: Variables | None = None, **kwargs
+    ) -> dict:
         """Runtime-driven adjustments — sits above SparkrunConfig.
 
         Only executors that care about a given knob need to consume
         it.  Docker reads ``rootless``/``auto_user`` to flip
         ``privileged`` and inject ``--user $SHELL_USER``; Local and
-        K8s ignore both.  ``**kwargs`` is accepted for forward
+        K8s ignore both. ``defaults`` is the configuration chain containing
+        lower-priority layers (runtime, application, platform, executor).
+        Treat it as read-only; it lets an adjustment preserve an existing
+        policy while adding defaults. ``**kwargs`` is accepted for forward
         compatibility (future signals like ``cluster=…``).
         """
         return {}
+
+    def prepare_launch(self, *, extra_opts: list[str] | None = None) -> None:
+        """Validate and snapshot local inputs needed by generated commands.
+
+        The shared launcher calls this on its resolved executor before the
+        replacement barrier, including previews. Implementations must not
+        launch workloads or mutate remote state. Docker snapshots seccomp
+        policies here and carries them inside each node's launch script.
+        Direct script-generation callers may call this to freeze inputs ahead
+        of time; command generation must also work without it.
+        """
 
     # --- Low-level command generators (abstract) ---
 
@@ -566,6 +582,18 @@ class Executor(Plugin):
 
     # --- Status introspection ---
 
+    def stop_workload(self, cluster_id: str, *, metadata: dict | None = None) -> int | None:
+        """Stop a controller-managed workload; return the number removed.
+
+        Called once per portable workload, before per-host container teardown.
+        Raise on ownership, connection, or unconfirmed deletion errors. ``None``
+        delegates to container teardown; zero confirms an already absent workload.
+        Executor-owned ``native_resource`` metadata must never silently fall back.
+        """
+        if metadata and metadata.get("native_resource") is not None:
+            raise NotImplementedError("Executor %r cannot stop the recorded native workload" % self.executor_name)
+        return None
+
     def query_status(
         self,
         hosts: list[str],
@@ -577,9 +605,9 @@ class Executor(Plugin):
 
         Default implementation returns a zero-occupancy snapshot — every
         host is treated as fully free with no running workloads.  This
-        is a safe degradation for executors that don't yet implement
-        introspection (e.g. the K8sExecutor draft); they satisfy the
-        contract without lying about state they can't see.
+        is the fallback for executors without introspection. Executors with
+        native lifecycle support must override it and report connection failures
+        as errors, separately from a confirmed empty cluster.
 
         Concrete executors override to query their backend
         (``docker ps``, ``kubectl get pods``, local process state).
@@ -1085,7 +1113,7 @@ class Executor(Plugin):
             "%(cleanup)s\n"
             "\n"
             "printf 'Launching %%s: %%s\\n' %(label)s %(name)s\n"
-            "%(run_cmd)s\n"
+            "%(run_cmd)s || exit $?\n"
             "\n"
             "# Verify container started\n"
             "sleep 1\n"

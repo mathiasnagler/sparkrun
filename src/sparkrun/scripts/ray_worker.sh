@@ -21,6 +21,6 @@ echo "Detected Node IP: $NODE_IP"
 
 # Launch Ray worker
 echo "Launching Ray worker, connecting to {head_ip}:{ray_port}..."
-{run_cmd}
+{run_cmd} || exit $?
 
 echo "Ray worker started on $NODE_IP, connected to {head_ip}:{ray_port}"

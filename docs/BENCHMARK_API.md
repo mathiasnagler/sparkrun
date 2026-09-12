@@ -270,6 +270,20 @@ aggregation, in schedule order; failed/interrupted output and unrelated files in
 `runs/` cannot satisfy coverage. Previously completed tasks with usable artifacts
 are preserved. Saved successes whose artifacts are missing or unusable are retried
 when measurement resumes. Successful publication requires the complete schedule.
+The default framework coverage uses stable task identity, so failed tasks cannot
+shift the identity of surviving rows. Frameworks may add semantic coverage checks.
+
+A completed schedule whose result processing was interrupted is resumable too.
+Resume restores the saved specification and finishes consolidation, parsing,
+validation, and commit from accepted artifacts without a running inference server,
+inference credentials, or command prerequisites. Publication runs only after that commit.
+If artifacts are missing or invalid, only the affected tasks need measurement;
+successful artifacts remain intact. This path is shared by resume-by-ID and
+`benchmark()` reuse of an existing checkpoint.
+
+Session warmup is independent of inference ownership. The first successful task
+of a resumed measurement session still gets warmup; `BenchmarkOptions.skip_run`
+controls inference launch, not scheduler warmup.
 
 For single-call frameworks, any nonzero exit raises `BenchmarkFailed`, regardless
 of `exit_on_first_fail`, even if the command emitted valid partial measurements.

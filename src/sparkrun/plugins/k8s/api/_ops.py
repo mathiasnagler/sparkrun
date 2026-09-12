@@ -388,14 +388,49 @@ def launch_jobset(
     aborts submission. Preview never invokes it. Returns after submission;
     consume logs separately through :func:`sparkrun.plugins.k8s.api.logs`.
     """
+    sctx = resolve_sctx(sctx)
+    ns = namespace or resource_name("")
+    client = make_client(sctx, kubeconfig=kubeconfig, context=context, namespace=ns)
+    return _launch_jobset(
+        client,
+        name=name,
+        rank_models=rank_models,
+        image=image,
+        serve_command=serve_command,
+        env=env,
+        annotations=annotations,
+        gpus_per_pod=gpus_per_pod,
+        transport=transport,
+        namespace=ns,
+        precheck=precheck,
+        dry_run=dry_run,
+        before_start=before_start,
+    )
+
+
+def _launch_jobset(
+    client,
+    *,
+    name,
+    rank_models,
+    image,
+    serve_command,
+    env=None,
+    annotations=None,
+    labels=None,
+    gpus_per_pod=1,
+    transport="tcp",
+    namespace,
+    precheck=True,
+    dry_run=False,
+    before_start=None,
+):
+    """Shared preparation/submission using an already resolved client."""
     from sparkrun.plugins.k8s.orchestration import launch as _launch
     from sparkrun.plugins.k8s.orchestration.inventory import probe_nodes as _probe_nodes
     from sparkrun.plugins.k8s.orchestration.jobset import node_selectors_from_nodes
 
-    sctx = resolve_sctx(sctx)
-    ns = namespace or resource_name("")
-    client = make_client(sctx, kubeconfig=kubeconfig, context=context, namespace=ns)
-
+    ns = namespace
     try:
         nodes = _probe_nodes(client, gpu_only=True)
     except K8sError as exc:
@@ -411,6 +446,7 @@ def launch_jobset(
             gpus_per_pod=gpus_per_pod,
             env=env,
             annotations=annotations,
+            labels=labels,
             transport=transport,
             namespace=ns,
         )

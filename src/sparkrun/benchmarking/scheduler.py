@@ -59,6 +59,28 @@ class ScheduleRunResult:
     consolidated: dict[str, Any]
 
 
+def _task_result_path(fw, task, state, cache_dir) -> Path:
+    return state.runs_dir(cache_dir) / ("%03d%s.json" % (task.index, fw.result_filename_suffix(task)))
+
+
+def _collect_completed_results(fw, tasks, state, cache_dir) -> dict[str, Any]:
+    """Restore accepted artifacts, marking only missing/invalid successes pending.
+
+    Shared by scheduling and result-processing recovery. The caller persists
+    any state changes; this function never runs commands or scans stray files.
+    """
+    paths = []
+    for task in tasks:
+        if task.index not in state.completed_indices:
+            continue
+        path = _task_result_path(fw, task, state, cache_dir)
+        if read_task_result(path) is None:
+            state.mark_failed(task.index, "missing or invalid result artifact")
+        else:
+            paths.append(path)
+    return consolidate_results(paths, fw)
+
+
 def run_schedule(
     fw: "BenchmarkingPlugin",
     tasks: list[BenchTask],
@@ -70,7 +92,6 @@ def run_schedule(
     progress_ui: "BenchmarkProgress",
     cache_dir: str | None = None,
     exit_on_first_fail: bool = False,
-    skip_run: bool = False,
     credentials: BenchmarkCredentials | None = None,
 ) -> ScheduleRunResult:
     """Iterate pending tasks. Returns when the schedule is complete or aborts.
@@ -88,25 +109,19 @@ def run_schedule(
         exit_on_first_fail: Stop immediately after the first task failure.
             Otherwise attempt the remaining tasks, skipping failures for this
             invocation. A later resume can retry those failed tasks.
-        skip_run: When ``True``, the warmup/coherence steps are suppressed even
-            for the first task of the session.
 
     Returns:
         :class:`ScheduleRunResult` describing the outcome.
     """
+    # Warmup is per measurement session, independent of inference ownership.
     credentials = credentials or BenchmarkCredentials()
     total = len(tasks)
-    result_files = [state.runs_dir(cache_dir) / ("%03d%s.json" % (idx, fw.result_filename_suffix(task))) for idx, task in enumerate(tasks)]
+    result_files = [_task_result_path(fw, task, state, cache_dir) for task in tasks]
 
     def _consolidate() -> dict[str, Any]:
         return consolidate_results((path for idx, path in enumerate(result_files) if idx in state.completed_indices), fw)
 
-    # Saved successes need usable artifacts too. Failed/interrupted artifacts
-    # and unrelated files in runs/ never contribute to measurement coverage.
-    for idx in tuple(state.completed_indices):
-        if read_task_result(result_files[idx]) is None:
-            state.mark_failed(idx, "missing or invalid result artifact")
-    consolidated = _consolidate()
+    consolidated = _collect_completed_results(fw, tasks, state, cache_dir)
 
     # Session bookkeeping — mark this execution session.
     state.mark_session_started()
@@ -216,7 +231,7 @@ def run_schedule(
             )
 
         # Post-loop gap analysis — done at most once.
-        gaps = gap_analysis(tasks, consolidated, fw)
+        gaps = gap_analysis(tasks, consolidated, fw, completed_indices=state.completed_indices)
         if gaps:
             progress_ui.log("Found %d gap(s); re-queueing" % len(gaps))
             for gap_task in gaps:
@@ -241,7 +256,7 @@ def run_schedule(
         # A bounded gap pass may still leave successful commands without the
         # requested measurements. Persist those gaps as failures for resume.
         consolidated = _consolidate()
-        for task in gap_analysis(tasks, consolidated, fw):
+        for task in gap_analysis(tasks, consolidated, fw, completed_indices=state.completed_indices):
             if task.index in state.completed_indices:
                 state.mark_failed(task.index, "missing measurement coverage")
         consolidated = _consolidate()

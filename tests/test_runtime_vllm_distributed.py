@@ -377,12 +377,12 @@ class TestVllmDistributedDPRankMath:
 
 
 def test_vllm_distributed_cluster_env():
-    """Returns NCCL_CUMEM_ENABLE and OMP_NUM_THREADS (no Ray vars)."""
+    """Returns NCCL defaults without overriding the runtime's thread count."""
     runtime = VllmDistributedRuntime()
     env = runtime.get_cluster_env(head_ip="192.168.1.100", num_nodes=2)
 
     assert env["NCCL_CUMEM_ENABLE"] == "0"
-    assert env["OMP_NUM_THREADS"] == "4"
+    assert "OMP_NUM_THREADS" not in env
     assert "RAY_memory_monitor_refresh_ms" not in env
 
 
@@ -533,3 +533,14 @@ def test_vllm_prepare_malformed_spec_config_is_noop():
     before = [e.name for e in recipe.distribution_config.models.entries]
     runtime.prepare(recipe, hosts=["10.0.0.1"])
     assert [e.name for e in recipe.distribution_config.models.entries] == before
+
+
+def test_vllm_distributed_cluster_context_leaves_thread_count_to_runtime_or_recipe():
+    from sparkrun.runtimes._cluster_ops import ClusterContext
+
+    runtime = VllmDistributedRuntime()
+    kwargs = dict(runtime=runtime, hosts=["h1", "h2"], image="image", cluster_id="test", cache_dir="/cache", config=None, dry_run=True)
+    default = ClusterContext.build(**kwargs, env={})
+    assert "OMP_NUM_THREADS" not in default.all_env
+    explicit = ClusterContext.build(**kwargs, env={"OMP_NUM_THREADS": "12"})
+    assert explicit.all_env["OMP_NUM_THREADS"] == "12"

@@ -52,6 +52,7 @@ from sparkrun.core.application_profile import get_application_profile, resource_
 from sparkrun.core.ownership import owns_metadata, assert_resource_namespace
 
 if TYPE_CHECKING:
+    from sparkrun.orchestration.executors._base import Executor
     from sparkrun.core.backend_select import BackendBundle
     from sparkrun.core.context import SparkrunContext
     from sparkrun.core.recipe import Recipe
@@ -519,6 +520,8 @@ def save_job_metadata(
     owner: str | None = None,
     cluster_name: str | None = None,
     ssh_user: str | None = None,
+    executor: "Executor | None" = None,
+    native_resource: dict | None = None,
     sctx: "SparkrunContext | None" = None,
 ) -> None:
     """Persist job metadata so ``cluster status`` can display recipe info.
@@ -528,6 +531,10 @@ def save_job_metadata(
     prefix.
 
     Args:
+        executor: Resolved executor, including its effective connection settings.
+            When supplied, takes precedence over recipe executor settings.
+        native_resource: Executor-owned reference for controller-managed workloads.
+            Persisted separately from portable identity; interpreted only by the executor.
         backends: Per-host backend bundles resolved by the launcher.
             Persisted as ``{host: {vendor, backend}}`` so ``stop``/``logs``
             can recover the collective backend without re-probing.
@@ -711,6 +718,14 @@ def save_job_metadata(
     recipe_exec_cfg = recipe.executor_config
     if isinstance(recipe_exec_cfg, dict) and recipe_exec_cfg:
         meta["executor_config"] = dict(recipe_exec_cfg)
+
+    if executor is not None:
+        from dataclasses import asdict
+
+        meta["executor"] = executor.executor_name
+        meta["executor_config"] = asdict(executor.config)
+    if native_resource is not None:
+        meta["native_resource"] = dict(native_resource)
 
     # Full overrides dict for export reconstruction
     if overrides:

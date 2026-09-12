@@ -256,6 +256,9 @@ class _StubRuntime:
     def get_head_container_name(self, cluster_id, is_solo=False):
         return "%s_solo" % cluster_id
 
+    def get_extra_docker_opts(self):
+        return []
+
     def generate_command(self, **kwargs):
         return "echo serve"
 
@@ -305,7 +308,7 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path)
     monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
     monkeypatch.setattr(
         "sparkrun.orchestration.executor.resolve_executor",
-        lambda **kw: type("Ex", (), {})(),
+        lambda **kw: type("Ex", (), {"prepare_launch": lambda self, **kw: None})(),
     )
 
     # Fake config
@@ -626,7 +629,7 @@ def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tm
     monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
     monkeypatch.setattr(
         "sparkrun.orchestration.executor.resolve_executor",
-        lambda **kw: type("Ex", (), {})(),
+        lambda **kw: type("Ex", (), {"prepare_launch": lambda self, **kw: None})(),
     )
 
     # Build a host with a GB10 accelerator but WITHOUT RoCEv2 — DgxSparkPlatform
@@ -957,7 +960,9 @@ def test_launch_inference_save_job_metadata_failure_is_best_effort(monkeypatch, 
     monkeypatch.setattr("sparkrun.orchestration.primitives.build_ssh_kwargs", lambda *a, **kw: {})
     monkeypatch.setattr(launcher, "resolve_effective_cache_dir", lambda *a, **kw: str(tmp_path))
     monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
-    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: type("Ex", (), {})())
+    monkeypatch.setattr(
+        "sparkrun.orchestration.executor.resolve_executor", lambda **kw: type("Ex", (), {"prepare_launch": lambda self, **kw: None})()
+    )
     # Tuning sync/distribute are best-effort too; stub them to no-ops.
     monkeypatch.setattr("sparkrun.tuning.sync.sync_registry_tuning", lambda *a, **kw: 0)
     monkeypatch.setattr("sparkrun.tuning.distribute.distribute_tuning_to_hosts", lambda *a, **kw: [])
@@ -1057,7 +1062,9 @@ def test_launch_inference_records_cluster_and_ssh_user(monkeypatch, tmp_path):
     monkeypatch.setattr("sparkrun.orchestration.primitives.build_ssh_kwargs", lambda *a, **kw: {})
     monkeypatch.setattr(launcher, "resolve_effective_cache_dir", lambda *a, **kw: str(tmp_path))
     monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
-    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: type("Ex", (), {})())
+    monkeypatch.setattr(
+        "sparkrun.orchestration.executor.resolve_executor", lambda **kw: type("Ex", (), {"prepare_launch": lambda self, **kw: None})()
+    )
     monkeypatch.setattr("sparkrun.tuning.sync.sync_registry_tuning", lambda *a, **kw: 0)
     monkeypatch.setattr("sparkrun.tuning.distribute.distribute_tuning_to_hosts", lambda *a, **kw: [])
 

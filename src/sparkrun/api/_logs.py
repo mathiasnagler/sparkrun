@@ -141,6 +141,12 @@ def logs(
         cluster_def = resolve_cluster_for_job(cluster, target_hosts, meta=meta, sctx=sctx)
         prepare_transport(cluster_def)
 
+    if meta and meta.get("native_resource") is not None:
+        raise SparkrunError(
+            "Native workload %r uses a controller resource; read its logs through the %r plugin API with reference %r"
+            % (cluster_id, meta.get("executor"), meta["native_resource"])
+        )
+
     runtime = _resolve_runtime_for_job(meta, cluster_id, recipe=resolved_recipe, sctx=sctx)
     executor = resolve_executor(
         cluster=cluster_def,

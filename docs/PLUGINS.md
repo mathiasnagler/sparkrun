@@ -565,12 +565,17 @@ Plugins with a native control-plane launch may register a
 The plan is the existing resolved recipe/cluster/placement/identity decision;
 handlers must not independently repeat placement. Core enforces execution-strategy
 compatibility before dispatch. For real launches, `before_start` is an idempotent
-zero-argument callback owned by core. Call it after validation and staging succeed,
-immediately before starting/submitting the new workload. Let any callback failure
+callback owned by core. Call it after validation and staging succeed,
+immediately before starting/submitting the new workload. Controller-native handlers
+call `before_start(executor=resolved_executor)` so replacement uses the exact
+connection settings, includes a prior deployment with the same ID, and requires
+confirmed teardown. Container launchers call it without arguments and retain
+their own per-container cleanup. Let any callback failure
 abort submission. During dry-run it is `None`; no replacement or submission occurs.
 Core does not stop the previous deployment merely by dispatching a handler.
-Kubernetes passes this callback through `launch_jobset()`, which invokes it after
-manifest construction and feasibility checks and before submission. A submission
+Kubernetes uses the same private preparation/submission implementation as
+`launch_jobset()`. It invokes the callback after manifest construction and
+feasibility checks, then saves the resource reference before submission. A submission
 failure after replacement can still leave the old deployment stopped.
 Both default and plugin
 launches preserve typed `SparkrunError` errors and translate other exceptions with
@@ -582,7 +587,20 @@ for both launch paths: identity components from the returned portable cluster ID
 preview flag, and an operation timeline when the handler omits one. Handlers supply
 actual substrate outcomes such as hosts, command, image, and configured serve port.
 Ensure hits describe an existing deployment and keep unavailable fields empty;
-they do not inherit the new plan's fingerprint or a launch timeline.
+they do not inherit the new plan's fingerprint or a launch timeline. This also
+applies when the handler discovers reuse: return `already_running=True`, preserve
+verified existing metadata, and do not invoke the replacement callback.
+
+Native handlers persist `save_job_metadata(..., executor=resolved_executor,
+native_resource={...})` before submission. The executor owns the reference schema;
+core stores it separately from the portable ID. Implement
+`Executor.stop_workload(cluster_id, *, metadata=None)` to confirm controller deletion
+and return a removed-resource count (zero when already absent). Raise on errors;
+return `None` only to select ordinary container teardown. A recorded native
+reference cannot fall back silently. Implement `query_status()` with the same
+portable IDs so shared discovery, ensure, and replacement see the workloads.
+Common `api.logs()` currently rejects recorded native resources; provide a plugin
+log API rather than addressing controller children with container-style names.
 Benchmarking rejects nonzero real
 launch status before endpoint waits, checkpoint hooks, or measurement.
 The Kubernetes plugin uses the same
@@ -667,3 +685,30 @@ unselected phases remain recorded. Unresolved dependents block prerequisite
 undo on the same host, even through transitive or filtered dependencies.
 Built-in and plugin undo run through the
 same console-free API. See [shared setup](SETUP_STEPS.md).
+
+### Scheduled artifact coverage and processing recovery
+
+The host tracks successful artifacts by stable task index, including sparse
+successes. `consolidated_coverage_keys()` defaults to `None`, meaning no additional
+semantic check; override it together with `task_coverage_key()` to verify requested
+measurements. An empty set means no measurement coverage. Framework result data
+remains framework-owned; the host does not insert bookkeeping into it.
+The internal `gap_analysis()` receives `completed_indices` explicitly.
+
+Completed commands and committed measurements are distinct recovery stages.
+After interrupted consolidation, parsing, or result persistence, resume rebuilds
+results from accepted artifacts using the saved framework/specification, without
+inference or command prerequisites. Missing/invalid artifacts make only those
+tasks pending again. Publication requires validated, committed measurements.
+`run_schedule()` no longer accepts the unused `skip_run` argument. Session warmup
+is independent of whether the caller launched inference; public
+`BenchmarkOptions.skip_run` still controls inference launch.
+
+
+Executor launch preparation may validate/snapshot local inputs through
+`prepare_launch(extra_opts=...)` before core's replacement barrier. The hook is
+also called for previews and must not launch workloads or mutate remote state.
+Docker uses it to freeze local seccomp policies and embeds those contents in
+all generated node scripts. `apply_runtime_adjustments(..., defaults=...)`
+receives the lower-priority `Variables` chain as read-only input; its returned
+mapping retains its existing position in the resolution chain.

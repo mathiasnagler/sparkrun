@@ -665,6 +665,9 @@ class _StubRuntime:
     requires_capability: frozenset = frozenset()
     last_kwargs: dict = {}
 
+    def get_extra_docker_opts(self):
+        return []
+
     def get_family(self):
         return "vllm"
 
@@ -717,7 +720,9 @@ def _launch(monkeypatch, tmp_path, **launch_kw):
     monkeypatch.setattr(launcher, "resolve_effective_cache_dir", lambda *a, **kw: str(tmp_path / "hf"))
     monkeypatch.setattr(launcher, "resolve_effective_runtime_cache_dir", lambda *a, **kw: str(tmp_path / "sparkrun"))
     monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
-    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: type("Ex", (), {})())
+    monkeypatch.setattr(
+        "sparkrun.orchestration.executor.resolve_executor", lambda **kw: type("Ex", (), {"prepare_launch": lambda self, **kw: None})()
+    )
 
     class _Cfg:
         hf_cache_dir = tmp_path / "hf"

@@ -1,4 +1,8 @@
-"""Experimental Kubernetes executor (draft).
+"""Experimental Kubernetes executor and native JobSet lifecycle adapter.
+
+Native API launches use the manifest path in ``run.py``. This executor handles
+portable-ID JobSet discovery and confirmed controller teardown for those launches.
+The remaining command generators below implement the older direct-Pod path:
 
 :class:`K8sExecutor` launches workloads as Kubernetes Pods via the
 ``kubectl`` CLI instead of running Docker containers directly on each
@@ -92,7 +96,8 @@ class K8sExecutorConfig(ExecutorConfig):
 class K8sExecutor(Executor):
     """``kubectl``-driven executor (experimental draft).
 
-    Generates Pod-level lifecycle commands.  The user is expected to
+    Provides JobSet status/teardown and direct-Pod command generators.
+    The user is expected to
     have ``kubectl`` on PATH and a current context that points at a
     cluster reachable from the script's execution host.
     """
@@ -118,7 +123,7 @@ class K8sExecutor(Executor):
     # ------------------------------------------------------------------
 
     def finalize_config(self, *, config=None, v=None) -> None:
-        """Resolve sparkrun's managed kubectl binary into ``K8sSettings(config).kubectl_path``.
+        """Resolve the target and an available kubectl binary into executor config.
 
         Only an *already-available* binary is used (an explicit config
         path, a cached download, or ``kubectl`` on PATH) — launch-time
@@ -128,10 +133,22 @@ class K8sExecutor(Executor):
         commands fall back to a bare ``kubectl`` (PATH lookup on the
         execution host).
         """
-        if self.config.kubectl_path or config is None:
-            return
         from sparkrun.core.config import SparkrunConfig
 
+        if isinstance(config, SparkrunConfig):
+            from .orchestration.context import resolve_kube_target
+
+            target = resolve_kube_target(
+                config,
+                kubeconfig=self.config.kubeconfig,
+                context=self.config.k8s_context,
+                namespace=self.config.k8s_namespace,
+            )
+            self.config.kubeconfig = target.kubeconfig
+            self.config.k8s_context = target.context
+            self.config.k8s_namespace = target.namespace or resource_name()
+        if self.config.kubectl_path or config is None:
+            return
         # Binary resolution needs the real config surface (cache dir, pins).
         # Partial stand-ins (tests exercising chain ordering) are skipped.
         if not isinstance(config, SparkrunConfig):
@@ -161,6 +178,16 @@ class K8sExecutor(Executor):
             context=cfg.k8s_context,
             namespace=cfg.k8s_namespace or resource_name(),
         )
+
+    def stop_workload(self, cluster_id: str, *, metadata: dict | None = None) -> int | None:
+        from .lifecycle import stop_native_workload
+
+        return stop_native_workload(self._client(), cluster_id, (metadata or {}).get("native_resource"))
+
+    def query_status(self, hosts, *, ssh_kwargs=None, host_hardware=None):
+        from .lifecycle import query_native_status
+
+        return query_native_status(self._client(), hosts)
 
     def _kubectl_prefix(self) -> str:
         """Build ``kubectl [--kubeconfig K] [--context C] [-n NS]`` prefix."""

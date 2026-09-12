@@ -451,8 +451,10 @@ class StopResult:
     hosts_targeted: tuple[str, ...]
     """Hosts the stop command was issued against."""
     containers_removed: int
-    """Count of containers/processes actually removed, as reported by the
-    teardown itself — not an assumption of one per host."""
+    """Count of containers/processes or native controller resources removed.
+    Native controllers are counted once, independently of their child pods.
+    Confirmed absence returns zero; the field name is retained for compatibility.
+    """
     errors: tuple[str, ...] = ()
     """Human-readable error messages for any hosts that failed."""
     hosts_failed: tuple[str, ...] = ()

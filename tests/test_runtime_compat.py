@@ -241,7 +241,7 @@ def _make_launch_monkeypatches(monkeypatch, tmp_path):
     monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
     monkeypatch.setattr(
         "sparkrun.orchestration.executor.resolve_executor",
-        lambda **kw: type("Ex", (), {})(),
+        lambda **kw: type("Ex", (), {"prepare_launch": lambda self, **kw: None})(),
     )
 
 
@@ -251,6 +251,9 @@ class _StubRuntime:
     runtime_name = "stub"
     requires_capability: frozenset = frozenset()
     run_called: bool = False
+
+    def get_extra_docker_opts(self):
+        return []
 
     def is_delegating_runtime(self):
         return False

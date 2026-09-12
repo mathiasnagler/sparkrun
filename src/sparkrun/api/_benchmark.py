@@ -802,7 +802,7 @@ def _execute_benchmark(
             if existing_state is None:
                 if resume_mode == ResumeMode.REQUIRED:
                     raise NoResumableState("ResumeMode.REQUIRED but no benchmark state exists for id %s" % benchmark_id)
-            elif existing_state.is_complete(len(tasks)):
+            elif existing_state.is_complete(len(tasks)) and existing_state.extras.get("measurement_complete"):
                 if _should_remeasure_complete_state(resume_mode, options.decision_callback, existing_state):
                     if not dry_run and state_dir and state_dir.exists():
                         clear_state_dir(benchmark_id, cache_dir)
@@ -835,6 +835,27 @@ def _execute_benchmark(
                             clear_state_dir(benchmark_id, cache_dir)
                             logger.debug("Deleted prior benchmark state at %s (user chose fresh start)", state_dir)
                         existing_state = None
+
+            if existing_state is not None and existing_state.is_complete(len(tasks)):
+                # Processing was interrupted after commands completed. Reuse the
+                # locked resume path without launching inference or taking a second lock.
+                try:
+                    return _resume_locked(
+                        benchmark_id,
+                        dry_run=dry_run,
+                        emitter=emitter,
+                        config=config,
+                        cache_dir=cache_dir,
+                        sctx=sctx,
+                        integration_settings=options.integrations,
+                        export_files=export_results_files,
+                        output_file=output_file,
+                        timeout=effective_timeout,
+                        exit_on_first_fail=exit_on_first_fail,
+                        api_key_env=options.api_key_env,
+                    )
+                finally:
+                    lock_stack.close()
 
             if existing_state is not None:
                 state = existing_state
@@ -1145,7 +1166,6 @@ def _execute_benchmark(
                         progress_ui=pui,
                         cache_dir=cache_dir,
                         exit_on_first_fail=exit_on_first_fail,
-                        skip_run=skip_run,
                         credentials=credentials,
                     )
 
@@ -1236,21 +1256,7 @@ def _execute_benchmark(
         # -----------------------------------------------------------------------
         if not dry_run:
             _parse_result_file = result_file_for_parse if tasks is not None else result_file
-            results = _framework_results(fw.parse_results(stdout_text, stderr_text, result_file=_parse_result_file), fw.framework_name)
-            bench_result.results = results
-
-            # A framework that failed every request but exited 0 must not be
-            # reported as a completed benchmark.  The framework's own output is
-            # already captured per task; name it, because that is where the
-            # cause is (an HTTP status and body, in llama-benchy's case) and
-            # nothing else surfaces it.
-            if fw.measured_nothing(results):
-                where = "%s/runs/" % state_dir_str if tasks is not None else (_parse_result_file or "the benchmark output")
-                raise BenchmarkFailed(
-                    "benchmark produced no measurements — every request appears to have failed. "
-                    "%s exited successfully, so the cause is in its output: %s" % (fw.framework_name, where),
-                    exit_code=1,
-                )
+            bench_result.results = _parse_measurement(fw, stdout_text, stderr_text, _parse_result_file)
 
         else:
             emitter.info("[dry-run] Would parse and export results to: %s" % (output_file or "benchmark_<recipe>_<framework>.yaml"))
@@ -1303,6 +1309,58 @@ def _notify_interrupted(emitter: _ProgressEmitter, *, state_preserved: bool) -> 
         emitter.info("Interrupted. State preserved so that you can resume later." if state_preserved else "Interrupted.")
     except Exception:
         logger.debug("Interrupted benchmark notification failed", exc_info=True)
+
+
+def _parse_measurement(fw, stdout, stderr, result_file):
+    """One decoding/validation boundary for initial execution and recovery."""
+    results = _framework_results(fw.parse_results(stdout, stderr, result_file=result_file), fw.framework_name)
+    if fw.measured_nothing(results):
+        raise BenchmarkFailed(
+            "benchmark produced no measurements — every request appears to have failed. "
+            "%s exited successfully, so the cause is in its output: %s" % (fw.framework_name, result_file or "the benchmark output"),
+            exit_code=1,
+        )
+    return results
+
+
+def _finish_resumed_measurement(
+    result,
+    consolidated,
+    *,
+    state,
+    integrations,
+    cache_dir,
+    config,
+    export_files,
+    output_file,
+    emitter,
+    consolidated_path=None,
+):
+    """Finish resumed tasks or interrupted processing through the same pipeline."""
+    if consolidated_path is None:
+        consolidated_path = _write_consolidated(state.state_dir(cache_dir), consolidated)
+    result.results = _parse_measurement(result.framework, json.dumps(consolidated), "", str(consolidated_path))
+    result.end_time = datetime.now(timezone.utc)
+    config_chain = result.recipe.build_config_chain(result.overrides)
+    _finalize_measurement(
+        result,
+        integrations,
+        state,
+        cache_dir,
+        export=(
+            lambda: _export_measurement(
+                result,
+                config=config,
+                tp=int(config_chain.get("tensor_parallel") or 1),
+                pp=int(config_chain.get("pipeline_parallel") or 1),
+                output_file=output_file,
+                emitter=emitter,
+            )
+        )
+        if export_files
+        else None,
+    )
+    return result
 
 
 def _framework_results(values, framework):
@@ -1600,11 +1658,13 @@ def resume_benchmark(
 
     Progress is silent unless a callback is supplied. Integration decisions use
     decision_callback; absent a handler, each decision uses its stated default.
-    Completed measurements can retry saved integrations without live inference.
+    Completed commands can finish interrupted result processing without live
+    inference. Committed measurements can retry saved integrations directly.
     No pending tasks/integrations returns the saved result with already_complete=True.
     export_files/output_file control exports after resumed measurement; completed
     result loading and publication retries never regenerate optional exports.
-    Resume uses saved timeout/failure policy and a fresh credential lookup.
+    Remaining commands use saved timeout/failure policy and a fresh inference
+    credential lookup; result processing and publication do not need that lookup.
     timeout, exit_on_first_fail and api_key_env override unfinished execution only.
     Invalid/unreadable checkpoints raise SparkrunError without replacement.
     Missing state/inference raises NoResumableState. Publication failures raise
@@ -1720,7 +1780,7 @@ def _resume_locked(
     )
     options = _validated_benchmark_options(options)
     integrations = BenchmarkIntegrationSession(options, sctx=sctx, emitter=emitter)
-    if state.is_complete(len(state.schedule)):
+    if state.is_complete(len(state.schedule)) and state.extras.get("measurement_complete"):
         return _complete_saved_benchmark(state, integrations, cache_dir)
     result = _saved_execution(state, cache_dir)
 
@@ -1733,11 +1793,12 @@ def _resume_locked(
     recipe_name = state.recipe_qualified_name
     from sparkrun.benchmarking._specification import restore_measurement_specification
 
-    meta = load_job_metadata(state.cluster_id, cache_dir=cache_dir)
+    processing_only = state.is_complete(len(state.schedule)) and state.measurement_spec is not None
+    meta = None if processing_only else load_job_metadata(state.cluster_id, cache_dir=cache_dir)
     recipe, saved_overrides = restore_measurement_specification(state, meta, config=config)
     result.recipe = recipe
     result.host_list = state.host_list
-    result.container_image = state.extras.get("container_image_sha") or recipe.container
+    result.container_image = result.container_image or recipe.container
     result.overrides = saved_overrides
     if dry_run:
         integrations.bind(result, state, resumed=True)
@@ -1758,6 +1819,56 @@ def _resume_locked(
     except ValueError as e:
         raise BenchmarkFailed("Error: %s" % e, exit_code=1) from e
 
+    # Rebuild tasks from saved state
+    tasks = fw.build_task_list(state.base_args, state.schedule)
+    if tasks is None:
+        raise BenchmarkFailed(
+            "framework %r does not support scheduled execution (build_task_list returned None)" % state.framework,
+            exit_code=1,
+        )
+
+    if state.measurement_spec is None:
+        from sparkrun.benchmarking._specification import measurement_specification, record_job_specification
+
+        state.measurement_spec = measurement_specification(recipe, saved_overrides)
+        record_job_specification(state, meta)
+    result.framework = fw
+    result.category = result.category or fw.primary_category
+    result.overrides = saved_overrides
+    result.container_image = result.container_image or (meta or {}).get("container_image") or recipe.container
+    result.longterm_image_ref = state.extras.get("container_image_longterm_ref")
+    result.longterm_image_pinned = bool(state.extras.get("container_image_longterm_pinned"))
+
+    if state.is_complete(len(tasks)):
+        from sparkrun.benchmarking.scheduler import _collect_completed_results
+        from sparkrun.benchmarking.aggregator import gap_analysis
+
+        consolidated = _collect_completed_results(fw, tasks, state, cache_dir)
+        for task in gap_analysis(tasks, consolidated, fw, completed_indices=state.completed_indices):
+            if task.index in state.completed_indices:
+                state.mark_failed(task.index, "missing measurement coverage")
+        state.save(cache_dir)
+        if state.is_complete(len(tasks)):
+            # Commands already succeeded. Finish decoding/commit without live
+            # inference, command prerequisites, credentials, or another session.
+            integrations.bind(result, state, resumed=True)
+            return _finish_resumed_measurement(
+                result,
+                consolidated,
+                state=state,
+                integrations=integrations,
+                cache_dir=cache_dir,
+                config=config,
+                export_files=export_files,
+                output_file=output_file,
+                emitter=emitter,
+            )
+
+    # An artifact gap can turn result recovery into measurement execution.
+    # Revalidate the running job before using it for the remaining tasks.
+    if processing_only:
+        meta = load_job_metadata(state.cluster_id, cache_dir=cache_dir)
+        restore_measurement_specification(state, meta, config=config)
     _check_measurement_prerequisites(fw, emitter)
 
     effective_timeout = timeout if timeout is not None else (state.timeout or DEFAULT_BENCHMARK_TIMEOUT)
@@ -1793,6 +1904,7 @@ def _resume_locked(
     sctx = sctx.for_cluster(cluster)
     config = sctx.config
     integrations.use_context(sctx)
+    result.host_list = hosts
 
     # Check if inference is currently running
     ssh_kwargs = build_ssh_kwargs(config)
@@ -1819,28 +1931,7 @@ def _resume_locked(
 
     base_url = "http://%s:%d/v1" % (target_ip, serve_port)
 
-    # Rebuild tasks from saved state
-    tasks = fw.build_task_list(state.base_args, state.schedule)
-    if tasks is None:
-        raise BenchmarkFailed(
-            "framework %r does not support scheduled execution (build_task_list returned None)" % state.framework,
-            exit_code=1,
-        )
-
-    if state.measurement_spec is None:
-        from sparkrun.benchmarking._specification import measurement_specification, record_job_specification
-
-        state.measurement_spec = measurement_specification(recipe, saved_overrides)
-        record_job_specification(state, meta)
-    result.framework = fw
-    result.category = result.category or fw.primary_category
-    result.host_list = hosts
-    result.overrides = saved_overrides
-    result.container_image = state.extras.get("container_image_sha") or meta.get("container_image") or recipe.container
-    result.longterm_image_ref = state.extras.get("container_image_longterm_ref")
-    result.longterm_image_pinned = bool(state.extras.get("container_image_longterm_pinned"))
     integrations.bind(result, state, resumed=True)
-
     emitter.banner("=" * 60)
     emitter.banner("sparkrun — benchmark resume")
     emitter.banner("=" * 60)
@@ -1869,7 +1960,6 @@ def _resume_locked(
                 cache_dir=cache_dir,
                 exit_on_first_fail=effective_fail_fast,
                 credentials=credentials,
-                skip_run=True,  # inference already running; treat first task as needing warmup by session logic
             )
 
         consolidated = sched_result.consolidated
@@ -1885,37 +1975,18 @@ def _resume_locked(
         emitter.info("")
         emitter.info("Benchmark resumed and completed successfully.")
 
-        # Export results
-        stdout_text = json.dumps(consolidated)
-        results = _framework_results(fw.parse_results(stdout_text, "", result_file=str(consolidated_path)), fw.framework_name)
-        if fw.measured_nothing(results):
-            raise BenchmarkFailed("benchmark produced no measurements; upload was skipped", exit_code=1)
-
-        overrides = saved_overrides
-        effective_tp = int(overrides.get("tensor_parallel") or meta.get("tensor_parallel") or 1)
-
-        result.results = results
-        result.end_time = datetime.now(timezone.utc)
-        _finalize_measurement(
+        return _finish_resumed_measurement(
             result,
-            integrations,
-            state,
-            cache_dir,
-            export=lambda: (
-                _export_measurement(
-                    result,
-                    config=config,
-                    tp=effective_tp,
-                    pp=int(overrides.get("pipeline_parallel") or meta.get("pipeline_parallel") or 1),
-                    output_file=output_file,
-                    emitter=emitter,
-                )
-                if export_files
-                else None
-            ),
+            consolidated,
+            state=state,
+            integrations=integrations,
+            cache_dir=cache_dir,
+            config=config,
+            export_files=export_files,
+            output_file=output_file,
+            emitter=emitter,
+            consolidated_path=consolidated_path,
         )
-
-        return result
 
     except KeyboardInterrupt:
         _notify_interrupted(emitter, state_preserved=True)

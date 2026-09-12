@@ -116,6 +116,8 @@ class KubectlClient:
         result = self.run(args, timeout=timeout)
         if not result.success:
             raise K8sError("kubectl %s failed: %s" % (" ".join(args), result.stderr.strip()[:400]))
+        if "--ignore-not-found" in args and not result.stdout.strip():
+            return {}
         try:
             return json.loads(result.stdout)
         except json.JSONDecodeError as exc:

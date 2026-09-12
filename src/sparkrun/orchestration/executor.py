@@ -574,7 +574,7 @@ def resolve_executor(
         3. ``builder.default_env_file()``  *(``env_file`` default only)*
         4. ``cluster.executor`` + ``cluster.executor_config``
         5. ``runtime.default_executor()``  *(name selection only)*
-        6. ``cls.apply_runtime_adjustments(rootless=, auto_user=)``
+        6. ``cls.apply_runtime_adjustments(rootless=, auto_user=, defaults=)``
         7. ``runtime.default_executor_config()``
         8. ``config.default_executor`` + ``config.executor_config``
         9. ``platform.default_executor_config(name)``  *(from* ``host_hardware`` *)*
@@ -612,6 +612,13 @@ def resolve_executor(
     )
     cls = get_executor(name, v)
 
+    default_sources = (
+        _runtime_exec_config_dict(runtime),
+        _config_exec_dict(config),
+        _platform_exec_dict(host_hardware, name),
+        cls.default_config(),
+    )
+    defaults = Variables(sources=default_sources, env_placement=EnvPlacement.IGNORED)
     chain = Variables(
         sources=(
             cli_overrides or {},
@@ -619,11 +626,8 @@ def resolve_executor(
             _builder_exec_dict(recipe, v),
             _cluster_exec_dict(cluster),
             _runtime_exec_dict(runtime),
-            cls.apply_runtime_adjustments(rootless=rootless, auto_user=auto_user),
-            _runtime_exec_config_dict(runtime),
-            _config_exec_dict(config),
-            _platform_exec_dict(host_hardware, name),
-            cls.default_config(),
+            cls.apply_runtime_adjustments(rootless=rootless, auto_user=auto_user, defaults=defaults),
+            *default_sources,
         ),
         env_placement=EnvPlacement.IGNORED,
     )

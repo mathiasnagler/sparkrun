@@ -359,15 +359,13 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
     def get_cluster_env(self, head_ip: str, num_nodes: int) -> dict[str, str]:
         """Return vLLM distributed-specific cluster environment variables.
 
-        Sets ``OMP_NUM_THREADS=4`` by default to avoid thread
-        over-subscription on multi-node clusters.  Recipe ``env`` can
-        override any of these values (runtime defaults are merged first,
-        recipe env wins).
+        Thread counts are left to the image/runtime unless recipe ``env``
+        explicitly defines them. Runtime defaults are merged first; recipe env
+        can override any of these values.
         """
         return {
             **RuntimePlugin.get_cluster_env(self, head_ip, num_nodes),
             "NCCL_CUMEM_ENABLE": "0",
-            "OMP_NUM_THREADS": "4",
         }
 
     # --- Cluster stop ---

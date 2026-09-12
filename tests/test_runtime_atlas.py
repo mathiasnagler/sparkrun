@@ -307,13 +307,13 @@ def test_atlas_cluster_env_includes_rdma():
 
 
 def test_atlas_extra_docker_opts_include_required_capabilities():
-    """IPC_LOCK / SYS_NICE / unconfined seccomp required by NCCL + io_uring paths."""
+    """Runtime capabilities complement the executor-owned seccomp policy."""
     runtime = AtlasRuntime()
     opts = runtime.get_extra_docker_opts()
     joined = " ".join(opts)
     assert "IPC_LOCK" in joined
     assert "SYS_NICE" in joined
-    assert "seccomp=unconfined" in joined
+    assert "seccomp" not in joined
 
 
 def test_atlas_clears_entrypoint_via_executor_config_default():

@@ -21,7 +21,7 @@ echo "Detected Node IP: $NODE_IP"
 
 # Launch Ray head
 echo "Launching Ray head container..."
-{run_cmd}
+{run_cmd} || exit $?
 
 echo "Ray head started on $NODE_IP"
 echo "$NODE_IP"

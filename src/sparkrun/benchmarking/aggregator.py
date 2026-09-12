@@ -41,18 +41,27 @@ def gap_analysis(
     task_list: list["BenchTask"],
     consolidated: dict[str, Any],
     fw: "BenchmarkingPlugin",
+    *,
+    completed_indices: Iterable[int],
 ) -> list["BenchTask"]:
-    """Return tasks whose coverage key is absent from the consolidated dict.
+    """Return unsuccessful tasks and any successful tasks missing measurements.
 
-    Coverage is defined by the framework via ``fw.task_coverage_key`` and
+    Stable task identity comes from accepted artifacts, never result positions.
+    Additional semantic coverage is defined via ``fw.task_coverage_key`` and
     ``fw.consolidated_coverage_keys``.  When a task's coverage key is ``None``
     or missing, it is also flagged as a gap (with a warning) — this preserves
     the "tasks with malformed run_args are surfaced" behavior.
     """
     observed = fw.consolidated_coverage_keys(consolidated)
+    completed = set(completed_indices)
 
     gaps: list[BenchTask] = []
     for task in task_list:
+        if task.index not in completed:
+            gaps.append(task)
+            continue
+        if observed is None:
+            continue
         try:
             key = fw.task_coverage_key(task)
         except Exception:  # pragma: no cover — defensive: don't abort the run on plugin bug

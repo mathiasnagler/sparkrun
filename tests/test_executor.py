@@ -371,7 +371,8 @@ class TestDockerExecutorConfig:
         assert "/etc/passwd" not in cmd
         assert "/etc/group" not in cmd
         assert "HOME=/tmp" not in cmd
-        assert "--security-opt" not in cmd
+        assert "--security-opt no-new-privileges" not in cmd
+        assert "--security-opt seccomp=" in cmd
         assert "--cap-add" not in cmd
         assert "--ulimit" not in cmd
 

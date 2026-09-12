@@ -179,12 +179,12 @@ class TestResolveExecutor:
         assert ex.config.user == "$SHELL_USER"
 
     def test_rootless_false_skips_security_adjustments(self):
-        """Lifecycle paths use rootless=False — Docker config is neutral."""
+        """Rootful configuration keeps the policy without rootless adjustments."""
         ex = resolve_executor(rootless=False, auto_user=False)
         assert isinstance(ex, DockerExecutor)
         assert ex.config.privileged is True
         assert ex.config.user is None
-        assert ex.config.security_opt is None
+        assert ex.config.security_opt == ["seccomp=io-uring"]
 
     def test_cli_overrides_doubles_as_lifecycle_override_dict(self):
         """Lifecycle paths reuse cli_overrides to pass metadata-derived config.
@@ -341,7 +341,7 @@ class TestDockerAdjustmentsApplyOnlyToDocker:
         assert isinstance(ex, DockerExecutor)
         assert ex.config.privileged is False
         assert ex.config.user == "$SHELL_USER"
-        assert ex.config.security_opt == ["no-new-privileges"]
+        assert ex.config.security_opt == ["no-new-privileges", "seccomp=io-uring"]
 
     def test_docker_default_config_propagates(self):
         # DockerExecutor's default_config provides shm_size=32gb; appears
@@ -901,14 +901,15 @@ class TestGoldenEquivalence:
     of leaking Docker adjustments into non-Docker configs and are not
     re-asserted here.
 
-    One field has deliberately diverged from that snapshot since: ``ipc``
+    The ``ipc`` setting has deliberately diverged from that snapshot: it
     moved from ``host`` to ``shareable`` (issue #285 — a host IPC namespace
     lets systemd-logind's ``RemoveIPC`` reap the workload's semaphores once
     the launching SSH session closes).  ``shm_size`` is unchanged but only
     takes effect now, since Docker ignores ``--shm-size`` under ``ipc=host``.
+    Version 0.4 also adds the io_uring seccomp policy.
     """
 
-    def test_default_docker_byte_identical(self):
+    def test_default_docker_configuration(self):
         # The launcher passes rootless=True, auto_user=True for Docker.
         ex = resolve_executor(rootless=True, auto_user=True)
         cfg = asdict(ex.config)
@@ -921,7 +922,7 @@ class TestGoldenEquivalence:
             "shm_size": "32gb",
             "network": "host",
             "user": "$SHELL_USER",
-            "security_opt": ["no-new-privileges"],
+            "security_opt": ["no-new-privileges", "seccomp=io-uring"],
             "cap_add": None,  # rootless sets cap_add=[] → coerced to None
             "ulimit": ["memlock=-1:-1", "stack=67108864", "nofile=65535:65535"],
             "devices": ["/dev/infiniband"],

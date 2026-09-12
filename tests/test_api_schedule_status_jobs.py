@@ -205,10 +205,11 @@ def test_status_empty_host_list_returns_empty():
     assert snapshot.hosts == ()
 
 
-def test_status_k8s_executor_returns_safe_default():
-    """K8sExecutor inherits the empty-status default in Phase 1."""
+def test_status_k8s_executor_reports_confirmed_empty_cluster(monkeypatch):
+    """An empty Kubernetes response, not an unimplemented query, means idle."""
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.client.KubectlClient.run_json", lambda *a, **kw: {"items": []})
     snapshot = api.status(["host-a", "host-b"], executor="k8s")
-    # No SSH was called — default impl returns empty_status directly.
+    assert not snapshot.errors
     assert snapshot.executor == "k8s"
     assert len(snapshot.hosts) == 2
     assert all(h.workloads == () for h in snapshot.hosts)

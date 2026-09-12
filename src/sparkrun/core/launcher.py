@@ -1696,6 +1696,25 @@ def launch_inference(
             timeline=timeline,
         )
 
+    # Resolve one executor for preparation and launch. The head host supplies
+    # the hardware-default tier. Freeze local inputs before replacement so
+    # every worker uses the same policy even if a source file changes later.
+    from sparkrun.orchestration.executor import resolve_executor
+
+    executor = resolve_executor(
+        recipe=recipe,
+        cluster=cluster,
+        runtime=runtime,
+        config=config,
+        cli_overrides=executor_config if isinstance(executor_config, dict) else None,
+        rootless=rootless,
+        auto_user=auto_user,
+        host_hardware=_head_hw,
+        v=v,
+    )
+
+    executor.prepare_launch(extra_opts=(runtime.get_extra_docker_opts() or []) + (extra_docker_opts or []))
+
     # Last point before containers start.  Everything that can fail slowly and
     # cheaply — image distribution, model download, tuning sync — is behind us,
     # so a caller can safely tear down the deployment this launch replaces.
@@ -1719,27 +1738,6 @@ def launch_inference(
         run_kwargs["init_port"] = init_port
     if topology is not None:
         run_kwargs["topology"] = topology
-
-    # Build executor via the unified resolution chain (single source of
-    # truth shared with cli._stop_logs).  Order: CLI → recipe → runtime
-    # → per-executor adjustments (Docker reads rootless/auto_user here)
-    # → SparkrunConfig → platform → per-executor defaults → dataclass field
-    # defaults.  The head host's hardware supplies the platform tier (e.g. DGX
-    # Spark pinning docker's GPU request to --gpus rather than CDI); one
-    # executor is built per launch, so a representative host is the right scope.
-    from sparkrun.orchestration.executor import resolve_executor
-
-    executor = resolve_executor(
-        recipe=recipe,
-        cluster=cluster,
-        runtime=runtime,
-        config=config,
-        cli_overrides=executor_config if isinstance(executor_config, dict) else None,
-        rootless=rootless,
-        auto_user=auto_user,
-        host_hardware=_head_hw,
-        v=v,
-    )
 
     # -- Runtime (compilation / autotune) cache --
     #

@@ -473,3 +473,73 @@ def test_cancellation_survives_notification_failure_and_releases_state(scheduled
     assert BenchmarkRunState.load(state_path.parent.name, str(env.sctx.config.cache_dir)) is not None
     with hold_state_dir(state_path.parent.name, str(env.sctx.config.cache_dir)):
         pass
+
+
+@pytest.mark.parametrize("failure", ["decode", "consolidate", "commit"])
+@pytest.mark.parametrize("via_benchmark", [False, True])
+def test_resume_finishes_interrupted_processing_without_remeasurement(scheduled_env, monkeypatch, failure, via_benchmark):
+    from sparkrun.api import _benchmark, SparkrunError, ResumeMode
+
+    env = scheduled_env
+    publish = Mock()
+    register_benchmark_integration(BenchmarkIntegration("recovery", on_complete=publish))
+    options = replace(env.options, export_files=False, integrations={"recovery": {}})
+    with monkeypatch.context() as failing:
+        if failure == "decode":
+            failing.setattr(env.fw, "parse_results", Mock(side_effect=RuntimeError("temporary decoder failure")))
+        else:
+            failing.setattr(
+                _benchmark,
+                "_write_consolidated" if failure == "consolidate" else "_save_completed_results",
+                Mock(side_effect=KeyboardInterrupt),
+            )
+        with pytest.raises(SparkrunError if failure == "decode" else KeyboardInterrupt):
+            benchmark(options, sctx=env.sctx)
+    publish.assert_not_called()
+    cache_dir = str(env.sctx.config.cache_dir)
+    path = next(env.sctx.config.cache_dir.glob("benchmarks/bench_*/state.yaml"))
+    saved = BenchmarkRunState.load(path.parent.name, cache_dir)
+    assert saved.completed_indices == [0] and not saved.extras.get("measurement_complete")
+    original_artifact = (path.parent / "runs/000.json").read_bytes()
+    commands = env.fw.build_benchmark_command.call_count
+    launches = env.run.call_count
+    # Result recovery works even after cleanup removed inference and its record.
+    monkeypatch.setattr("sparkrun.orchestration.job_metadata.load_job_metadata", lambda *a, **kw: None)
+    live_check = Mock(side_effect=AssertionError("recovery does not need inference"))
+    monkeypatch.setattr("sparkrun.orchestration.job_metadata.check_job_running", live_check)
+    if via_benchmark:
+        result = benchmark(replace(options, resume=ResumeMode.REQUIRED), sctx=env.sctx)
+    else:
+        env.fw.check_prerequisites.side_effect = AssertionError("processing does not need command prerequisites")
+        result = resume_benchmark(path.parent.name, sctx=env.sctx, export_files=False)
+    assert result.success and result.resumed and result.results == {"rows": [env.rows]}
+    assert env.fw.build_benchmark_command.call_count == commands
+    assert env.run.call_count == launches
+    assert (path.parent / "runs/000.json").read_bytes() == original_artifact
+    assert BenchmarkRunState.load(path.parent.name, cache_dir).extras["measurement_complete"]
+    publish.assert_called_once()
+    live_check.assert_not_called()
+
+
+def test_processing_recovery_retries_only_missing_artifacts(scheduled_env, monkeypatch):
+    from sparkrun.api import SparkrunError
+    from sparkrun.benchmarking.scheduler import BenchTask
+
+    env = scheduled_env
+    env.fw.build_task_list.return_value = [BenchTask(0, "first"), BenchTask(1, "second")]
+    env.fw.consolidated_coverage_keys.side_effect = None
+    env.fw.consolidated_coverage_keys.return_value = None
+    with monkeypatch.context() as failing:
+        failing.setattr(env.fw, "parse_results", Mock(side_effect=RuntimeError("decoder unavailable")))
+        with pytest.raises(SparkrunError, match="decoder unavailable"):
+            benchmark(replace(env.options, export_files=False), sctx=env.sctx)
+    path = next(env.sctx.config.cache_dir.glob("benchmarks/bench_*/state.yaml"))
+    survivor = path.parent / "runs/001.json"
+    original = survivor.read_bytes()
+    (path.parent / "runs/000.json").unlink()
+    result = resume_benchmark(path.parent.name, sctx=env.sctx, export_files=False)
+    assert result.success and result.results == {"rows": [env.rows, env.rows]}
+    assert env.fw.build_benchmark_command.call_count == 3
+    assert survivor.read_bytes() == original
+    saved = BenchmarkRunState.load(result.benchmark_id, str(env.sctx.config.cache_dir))
+    assert sorted(saved.completed_indices) == [0, 1] and saved.failed_indices == []

@@ -114,8 +114,9 @@ def test_workload_labels_skips_empty_strings():
 # --------------------------------------------------------------------------
 
 
-def test_k8s_query_status_default_returns_empty_with_executor_name():
-    """K8sExecutor inherits the default empty-status implementation in Phase 1."""
+def test_k8s_query_status_reports_confirmed_empty_with_executor_name(monkeypatch):
+    """Kubernetes status returns zero occupancy after a successful empty query."""
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.client.KubectlClient.run_json", lambda *a, **kw: {"items": []})
     status = K8sExecutor().query_status(["host-a", "host-b"])
     assert isinstance(status, ClusterStatus)
     assert status.executor == "k8s"

@@ -69,7 +69,7 @@ def test_rootless_hardening_otherwise_intact():
     executor = resolve_executor(runtime=SglangRuntime(), rootless=True, auto_user=True)
     cfg = executor.config
     assert cfg.privileged is False
-    assert cfg.security_opt == ["no-new-privileges"]
+    assert cfg.security_opt == ["no-new-privileges", "seccomp=io-uring"]
     assert "memlock=-1:-1" in (cfg.ulimit or [])
     assert cfg.user == "$SHELL_USER"
 

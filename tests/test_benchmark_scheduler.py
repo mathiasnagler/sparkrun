@@ -488,3 +488,19 @@ def test_run_schedule_gap_requeue(tmp_path: Path):
     # Task 1 (the gap) should have been re-dispatched: 2 initial + 1 gap re-run = 3 total
     assert popen_call_count >= 3, "Expected at least 3 Popen calls (2 initial + 1 gap re-run), got %d" % popen_call_count
     assert result.success is True
+
+
+def test_default_coverage_preserves_noncontiguous_successes_across_resume(tmp_path):
+    tasks = _make_tasks(5)
+    state = _make_state(tmp_path, n_tasks=5)
+    first = _run(tasks, state, tmp_path, [7, 0, 7, 0, 0])
+    assert not first.success and state.crash_count == 0
+    assert state.completed_indices == [1, 3, 4] and state.failed_indices == [0, 2]
+    artifacts = {idx: (state.runs_dir(str(tmp_path)) / ("%03d.json" % idx)).read_bytes() for idx in state.completed_indices}
+    # Exactly two pending commands are available; any rerun of a success fails.
+    resumed = _run(tasks, state, tmp_path, [0, 0])
+    assert resumed.success and state.crash_count == 0
+    assert sorted(state.completed_indices) == list(range(5)) and not state.failed_indices
+    assert len(resumed.consolidated["runs"]) == 5
+    for idx, data in artifacts.items():
+        assert (state.runs_dir(str(tmp_path)) / ("%03d.json" % idx)).read_bytes() == data

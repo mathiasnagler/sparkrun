@@ -10,7 +10,7 @@ readme = "README.md"
 # Distribution metadata covers host and plugin; their individual terms remain
 # in the retained license files, including the sparkrun combination permission.
 license = "Apache-2.0 AND AGPL-3.0-only"
-license-files = ["LICENSE", "src/sparkrun/plugins/sparkroute/LICENSE", "src/sparkrun/plugins/sparkroute/LICENSE_EXCEPTION"]
+license-files = ["LICENSE", "src/sparkrun/plugins/sparkroute/LICENSE", "src/sparkrun/plugins/sparkroute/LICENSE_EXCEPTION", "src/sparkrun/orchestration/executors/seccomp/LICENSE"]
 requires-python = ">=3.12"
 authors = [
     { name = "scitrera.ai", email = "open-source-team@scitrera.com" },
@@ -52,6 +52,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "sparkrun.scripts" = ["*.sh"]
+"sparkrun.orchestration.executors" = ["seccomp/*.json", "seccomp/LICENSE", "seccomp/README.md"]
 "sparkrun.plugins.sparkroute" = ["LICENSE", "LICENSE_EXCEPTION", "README.md", "VENDORED.toml"]
 "sparkrun.bin" = ["nv-monitor-*", "prom2json-*"]
 

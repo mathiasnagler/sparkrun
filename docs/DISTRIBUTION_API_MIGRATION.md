@@ -105,8 +105,10 @@ Run-handler callbacks now receive `before_start` as a required keyword argument.
 For real launches call this core-owned, idempotent callback after validation and
 staging, immediately before submission; let failures abort the launch. It is `None`
 in dry-run. Core no longer replaces a running deployment before dispatching to
-the plugin. Kubernetes forwards it to `launch_jobset(before_start=...)` so its
-manifest and feasibility prechecks finish first.
+the plugin. Controller-native handlers pass their resolved executor via
+`before_start(executor=...)`; core uses its exact target for confirmed replacement,
+including a prior deployment with the same portable ID. Kubernetes performs this
+after manifest and feasibility prechecks.
 
 The 0.4.0 `RunOptions` cleanup removes two ineffective fields:
 
@@ -139,8 +141,13 @@ records. Close the iterator when stopping early. `setup k8s launch --follow` and
 `setup k8s run-job --follow` render that iterator in the CLI. Native `run` JobSet
 submission returns without attachment; use the explicit plugin log API.
 Native `RunResult.cluster_id` remains the portable workload ID. Use
-`result.metadata["k8s_jobset"]` for Kubernetes status/stop/logs: it is the bounded
-resource name; the manifest retains the portable ID and fingerprint as annotations.
+`api.stop(cluster_id=result.cluster_id)` for shared teardown; the saved native
+resource reference and resolved Kubernetes target survive a new API session and
+changes to defaults. `api.status(..., executor="k8s")` reports submitted JobSets
+for intent discovery and replacement. Use `result.metadata["k8s_jobset"]` for the
+plugin's direct resource/log API. Common `api.logs()` explicitly rejects native
+resource records until that surface supports controller-owned log sources.
+The manifest retains portable identity, fingerprint, and host scope as annotations.
 Explicit JobSet names and generated suffixes are validated before replacement.
 Kubernetes lifecycle operations consistently translate operational failures into
 `SparkrunError`, while malformed resource arguments remain `ValueError`.
@@ -316,3 +323,38 @@ the unused `gap_analysis(expected_per_task=...)` argument was removed.
 values. Invalid initial mappings fail with `SetupFailed` before callbacks or
 manifest access. Reprobes must satisfy the same invariant and return only requested
 hosts; invalid results stop further actions while retaining changes already recorded.
+
+## Sparse tasks and interrupted result processing
+
+Base framework coverage now defaults to `None` (artifact success), rather than
+reconstructing task indices from consolidated row positions. Frameworks can still
+provide semantic coverage keys. Internal `gap_analysis()` requires
+`completed_indices`, and `run_schedule(skip_run=...)` is removed. The public
+`BenchmarkOptions.skip_run` option remains unchanged; warmup follows measurement
+sessions, including the first task of a resumed session.
+
+Resume distinguishes successful commands from committed measurements. Interrupted
+consolidation/parsing/commit resumes from the saved task artifacts and original
+measurement specification, without live inference, credentials, or command tools.
+Only genuinely missing/invalid artifacts become pending. Committed results still
+use the existing publication-only retry path.
+
+
+### Docker policy and vLLM thread defaults
+
+Docker now uses the bundled `io-uring` seccomp profile. Locally supplied
+`executor_config.security_opt: ["seccomp=/path/policy.json"]` files are
+snapshotted and carried to every Docker execution node in its launch script.
+Explicit `seccomp=builtin` and `seccomp=unconfined` remain available. See
+[executor configuration](EXECUTORS.md#docker-seccomp-profiles-04) for precedence,
+path resolution, and preview behavior. Atlas no longer forces unconfined mode.
+
+`Executor.prepare_launch(extra_opts=...)` is a default no-op hook for local
+input validation before replacement. `apply_runtime_adjustments()` now receives
+`defaults`, a read-only lower-priority `Variables` chain; plugins accepting the
+documented `**kwargs` need no change. Docker uses it to preserve configured
+security policies when adding its rootless defaults.
+
+`vllm-distributed` no longer defines `OMP_NUM_THREADS=4`. The image/runtime can
+choose its own thread count. Explicit `recipe.env.OMP_NUM_THREADS` values still
+pass through unchanged, including clustered runs.

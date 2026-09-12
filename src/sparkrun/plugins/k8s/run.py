@@ -19,7 +19,8 @@ per-rank GPU-class layout).  Kueue + JobSet must be installed first
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import json
+from sparkrun.core.run_handlers import BeforeStart
 from typing import TYPE_CHECKING
 
 from sparkrun.api._errors import SparkrunError
@@ -37,10 +38,10 @@ def run_k8s(
     *,
     plan: RunPlan,
     started_at: float,
-    before_start: Callable[[], None] | None = None,
+    before_start: BeforeStart | None = None,
 ) -> RunResult:
     """Submit a solo k8s JobSet launch and return a :class:`RunResult`."""
-    from . import api
+    from .api._ops import _launch_jobset
 
     recipe, runtime = plan.recipe, plan.runtime
     host_list, placement, is_solo = plan.host_list, plan.placement, plan.is_solo
@@ -73,7 +74,7 @@ def run_k8s(
     # Use the same caller/recipe/cluster/default chain as other executor paths.
     from sparkrun.orchestration.executor import resolve_executor
 
-    exec_cfg = resolve_executor(
+    executor = resolve_executor(
         cli_overrides=options.executor_overrides(),
         recipe=recipe,
         cluster=plan.cluster,
@@ -82,30 +83,78 @@ def run_k8s(
         v=sctx.variables,
         rootless=not options.rootful,
         auto_user=not options.rootful,
-    ).config
-    kubeconfig = exec_cfg.kubeconfig
-    kube_context = exec_cfg.k8s_context
-    namespace = exec_cfg.k8s_namespace
+    )
+    exec_cfg = executor.config
+    client = executor._client()
+    if not options.dry_run:
+        _pin_client_target(client)
+        exec_cfg.kubeconfig, exec_cfg.k8s_context = client.kubeconfig, client.context
+    namespace = client.namespace
 
-    model = _resolve_single_gpu_class(sctx, kubeconfig=kubeconfig, context=kube_context)
+    if options.ensure:
+        from sparkrun.api._intent import find_running_intent
+        from sparkrun.api._run import _already_running_result
+        from sparkrun.orchestration.job_metadata import load_job_metadata
+        from dataclasses import replace
+
+        snapshot = executor.query_status(list(plan.candidate_hosts))
+        if snapshot.errors:
+            raise SparkrunError("Cannot check existing native workloads: %s" % snapshot.errors)
+        match = find_running_intent(plan.intent_id, plan.candidate_hosts, status=snapshot)
+        if match is not None:
+            result = _already_running_result(match, plan=plan, options=options, started_at=started_at, sctx=sctx)
+            saved = load_job_metadata(match.cluster_id, cache_dir=str(sctx.config.cache_dir)) or {}
+            return replace(result, executor="k8s", recipe_fingerprint=saved.get("recipe_fingerprint", ""))
+
+    model = _resolve_single_gpu_class(client)
 
     env = {str(k): str(v) for k, v in (getattr(recipe, "env", {}) or {}).items()}
 
     from .orchestration.names import native_jobset_name
 
-    result = api.launch_jobset(
-        sctx,
-        name=native_jobset_name(cluster_id, model),
-        annotations={"sparkrun.cluster_id": cluster_id, "sparkrun.recipe_fingerprint": plan.recipe_fingerprint},
+    resource = {"kind": "JobSet", "name": native_jobset_name(cluster_id, model)}
+
+    def record_before_start():
+        from sparkrun.orchestration.job_metadata import save_job_metadata
+
+        if before_start is not None:
+            before_start(executor=executor)
+        # Persist before submission: an interrupted/ambiguous apply must still
+        # be recoverable through the common stop API after process restart.
+        save_job_metadata(
+            cluster_id,
+            recipe,
+            list(host_list),
+            overrides=overrides,
+            cache_dir=str(sctx.config.cache_dir),
+            container_image=image,
+            runtime=runtime,
+            recipe_fingerprint=plan.recipe_fingerprint,
+            cluster_name=plan.cluster.name if plan.cluster else None,
+            executor=executor,
+            native_resource=resource,
+            sctx=sctx,
+        )
+
+    result = _launch_jobset(
+        client,
+        name=resource["name"],
+        annotations={
+            "sparkrun.cluster_id": cluster_id,
+            "sparkrun.recipe_fingerprint": plan.recipe_fingerprint,
+            "sparkrun.hosts": json.dumps(list(host_list)),
+            "sparkrun.recipe": getattr(recipe, "qualified_name", "") or "",
+            "sparkrun.runtime": runtime.runtime_name,
+            "sparkrun.container_image": image,
+        },
+        labels=sctx.controller_identity.labels(),
         rank_models=[model],
         image=image,
         serve_command=serve_command,
         env=env,
         namespace=namespace,
-        kubeconfig=kubeconfig,
-        context=kube_context,
         dry_run=options.dry_run,
-        before_start=before_start,
+        before_start=record_before_start,
     )
 
     metadata = {
@@ -134,14 +183,28 @@ def run_k8s(
     )
 
 
-def _resolve_single_gpu_class(sctx, *, kubeconfig, context) -> str:
+def _pin_client_target(client) -> None:
+    """Persist explicit context/path selection instead of mutable shell defaults."""
+    import os
+    from pathlib import Path
+
+    source = client.kubeconfig or os.environ.get("KUBECONFIG") or str(Path.home() / ".kube" / "config")
+    if os.pathsep in source:
+        raise SparkrunError("Native runs require a single kubeconfig file; select kubeconfig explicitly")
+    client.kubeconfig = str(Path(source).expanduser().resolve())
+    if not client.context:
+        result = client.run(["config", "current-context"], check=True)
+        client.context = result.stdout.strip()
+        if not client.context:
+            raise SparkrunError("Native runs require a Kubernetes context")
+
+
+def _resolve_single_gpu_class(client) -> str:
     """Return the cluster's single GPU model, or raise if 0 / >1 classes."""
     from sparkrun.plugins.k8s.api._errors import ClusterUnreachable
-    from sparkrun.plugins.k8s.api._ops import make_client
     from sparkrun.plugins.k8s.orchestration.errors import K8sError
     from sparkrun.plugins.k8s.orchestration.inventory import probe_nodes
 
-    client = make_client(sctx, kubeconfig=kubeconfig, context=context)
     try:
         nodes = probe_nodes(client, gpu_only=True)
     except K8sError as exc:

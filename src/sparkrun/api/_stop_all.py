@@ -83,6 +83,21 @@ def stop_all(
             discovery_errors=discovery_errors,
         )
 
+    executor_names = set(result.container_executors.values())
+    executors = {name: _resolve_teardown_executor(name, cluster, host_list, sctx) for name in executor_names}
+    native = any(group.meta.get("native_resource") is not None for group in result.groups.values()) or any(
+        entry.meta.get("native_resource") is not None for entry in result.solo_entries
+    )
+    control_plane = any(
+        isinstance(getattr(executor, "status_scope", None), str) and executor.status_scope != "host"
+        for executor in executors.values()
+        if executor is not None
+    )
+    if native or control_plane:
+        # Native resources cannot be reconstructed as cluster_id + role. Use
+        # the same portable-ID teardown as individual stops and replacement.
+        return _stop_discovered_workloads(result, cluster=cluster, cache_dir=cache_dir, dry_run=dry_run, sctx=sctx)
+
     host_containers = _containers_by_host(result)
 
     # Discovery is cross-executor (docker + local share the "host" scope), so
@@ -98,7 +113,7 @@ def stop_all(
                 grouped,
                 ssh_kwargs=ssh_kwargs,
                 dry_run=dry_run,
-                executor=_resolve_teardown_executor(executor_name, cluster, host_list, sctx),
+                executor=executors.get(executor_name),
             ),
         )
 
@@ -143,6 +158,47 @@ def stop_all(
         hosts_stopped=tuple(h for h in host_containers if h not in failed_hosts),
         hosts_failed=failed_hosts,
         discovery_errors=discovery_errors,
+    )
+
+
+def _stop_discovered_workloads(discovered, *, cluster, cache_dir, dry_run, sctx):
+    from sparkrun.api._stop import stop
+
+    jobs = {cid: list(dict.fromkeys(member[0] for member in group.members)) for cid, group in discovered.groups.items()}
+    for entry in discovered.solo_entries:
+        hosts = jobs.setdefault(entry.cluster_id, [])
+        if entry.host not in hosts:
+            hosts.append(entry.host)
+    all_hosts = tuple(dict.fromkeys(host for hosts in jobs.values() for host in hosts))
+    if dry_run:
+        return StopAllResult(
+            discovered=discovered,
+            jobs_stopped=len(jobs),
+            containers_removed=discovered.total_containers,
+            hosts_stopped=all_hosts,
+            discovery_errors=dict(discovered.errors),
+        )
+    jobs_stopped = removed = 0
+    failures = {}
+    for cid, hosts in jobs.items():
+        try:
+            outcome = stop(cluster_id=cid, hosts=hosts, cluster=cluster, cache_dir=cache_dir, sctx=sctx)
+        except Exception as exc:
+            failures.update({host: str(exc) for host in hosts})
+            continue
+        removed += outcome.containers_removed
+        if outcome.success:
+            jobs_stopped += 1
+        else:
+            detail = "; ".join(outcome.errors) or "teardown did not confirm"
+            failures.update({host: detail for host in outcome.hosts_failed or hosts})
+    return StopAllResult(
+        discovered=discovered,
+        jobs_stopped=jobs_stopped,
+        containers_removed=removed,
+        hosts_stopped=tuple(h for h in all_hosts if h not in failures),
+        hosts_failed=failures,
+        discovery_errors=dict(discovered.errors),
     )
 
 

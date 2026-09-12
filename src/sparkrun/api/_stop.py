@@ -4,8 +4,8 @@ Two modes:
 
 - **By cluster_id**: provide the literal ``cluster_id`` (as returned
   by :func:`sparkrun.api.run`); the API loads the job metadata, picks
-  the executor that originally launched it, and runs ``stop_cmd``
-  against each candidate container name on every host.
+  the executor that originally launched it, and stops its native controller
+  resource or runs ``stop_cmd`` against candidate containers on every host.
 - **By recipe+hosts+overrides**: derive the same ``cluster_id`` the
   launcher would have produced and dispatch identically.  Useful for
   ``sparkrun stop <recipe>`` semantics.
@@ -51,13 +51,12 @@ def stop(
     """
     from sparkrun.api._resolve import (
         discover_cluster_id_by_intent,
-        maybe_load_config,
+        prepare_transport,
         resolve_cluster,
         resolve_cluster_for_job,
         resolve_recipe,
     )
     from sparkrun.orchestration.executor import resolve_executor
-    from sparkrun.orchestration.teardown import parse_teardown_removed
     from sparkrun.orchestration.job_metadata import (
         generate_intent_id,
         load_job_metadata,
@@ -128,9 +127,8 @@ def stop(
         # connects as the control node's login (issue #277).
         cluster_def = resolve_cluster_for_job(cluster, target_hosts, meta=meta, sctx=sctx)
 
-    # Refresh provider-backed connection details before any SSH (no-op for ssh).
-    from sparkrun.api._resolve import prepare_transport
-
+    # Provider refresh may update connection/executor settings. Resolve only
+    # after that refresh; SSH transports are a no-op here.
     prepare_transport(cluster_def)
 
     # Resolve the executor — prefer recipe-encoded selection from metadata
@@ -167,7 +165,54 @@ def stop(
         rootless=False,
         auto_user=False,
         v=sctx.variables if sctx is not None else None,
+        config=sctx.config if sctx is not None else None,
     )
+
+    try:
+        native_removed = executor.stop_workload(cluster_id, metadata=meta)
+        if native_removed is not None and (type(native_removed) is not int or native_removed < 0):
+            raise TypeError("Executor.stop_workload must return a nonnegative integer or None")
+    except Exception as exc:
+        logger.warning("Keeping job metadata for %s — native teardown failed: %s", cluster_id, exc)
+        return StopResult(
+            cluster_id=cluster_id,
+            hosts_targeted=tuple(target_hosts),
+            containers_removed=0,
+            errors=(str(exc),),
+            hosts_failed=tuple(target_hosts),
+        )
+    if native_removed is None:
+        removed_count, hosts_failed, errors = _stop_containers(cluster_id, target_hosts, cluster_def, executor, sctx)
+    else:
+        removed_count, hosts_failed, errors = native_removed, (), []
+
+    # Cleanup persistent metadata only once teardown is confirmed
+    # everywhere: while a container survives, the metadata still describes
+    # a live workload and is what ``stop``/``status`` use to find it again.
+    if hosts_failed:
+        logger.warning(
+            "Keeping job metadata for %s — teardown did not confirm on: %s",
+            cluster_id,
+            ", ".join(hosts_failed),
+        )
+    else:
+        try:
+            remove_job_metadata(cluster_id, cache_dir=cache_dir)
+        except Exception:
+            logger.debug("Failed to remove job metadata for %s", cluster_id, exc_info=True)
+
+    return StopResult(
+        cluster_id=cluster_id,
+        hosts_targeted=tuple(target_hosts),
+        containers_removed=removed_count,
+        errors=tuple(errors),
+        hosts_failed=hosts_failed,
+    )
+
+
+def _stop_containers(cluster_id, target_hosts, cluster_def, executor, sctx):
+    from sparkrun.api._resolve import maybe_load_config
+    from sparkrun.orchestration.teardown import parse_teardown_removed
 
     container_names = executor.enumerate_containers(cluster_id, len(target_hosts))
 
@@ -203,28 +248,7 @@ def stop(
         detail = ((r.stderr or r.stdout).strip() if r else "") or "teardown did not confirm"
         errors.append("%s: %s" % (host, detail))
 
-    # Cleanup persistent metadata only once teardown is confirmed
-    # everywhere: while a container survives, the metadata still describes
-    # a live workload and is what ``stop``/``status`` use to find it again.
-    if hosts_failed:
-        logger.warning(
-            "Keeping job metadata for %s — teardown did not confirm on: %s",
-            cluster_id,
-            ", ".join(hosts_failed),
-        )
-    else:
-        try:
-            remove_job_metadata(cluster_id, cache_dir=cache_dir)
-        except Exception:
-            logger.debug("Failed to remove job metadata for %s", cluster_id, exc_info=True)
-
-    return StopResult(
-        cluster_id=cluster_id,
-        hosts_targeted=tuple(target_hosts),
-        containers_removed=removed_count,
-        errors=tuple(errors),
-        hosts_failed=hosts_failed,
-    )
+    return removed_count, hosts_failed, errors
 
 
 def _discover_executor_name(

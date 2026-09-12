@@ -609,16 +609,14 @@ class AtlasRuntime(RuntimePlugin):
         """RDMA device + capabilities required by Atlas's NCCL/io_uring paths.
 
         ``--high-speed-swap`` uses ``IORING_SETUP_SQPOLL`` (kernel ≥ 5.13)
-        and Docker's default seccomp profile blocks ``io_uring_*``, so we
-        run the storage path unconfined. ``IPC_LOCK`` + ``memlock=-1``
+        with the Docker executor's io_uring seccomp profile.
+        ``IPC_LOCK`` + ``memlock=-1``
         unblock ``ibv_reg_mr``; ``SYS_NICE`` is needed by the SQPOLL
         kernel thread.
         """
         return [
             "--cap-add=IPC_LOCK",
             "--cap-add=SYS_NICE",
-            "--security-opt",
-            "seccomp=unconfined",
         ]
 
     # --- Version reporting ---

@@ -9,13 +9,24 @@ from __future__ import annotations
 from sparkrun.core.registration import enlist_registry_state, register_unique
 
 from dataclasses import dataclass
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 import re
 
 if TYPE_CHECKING:
     from sparkrun.api._models import RunOptions, RunPlan, RunResult
     from sparkrun.core.context import SparkrunContext
+    from sparkrun.orchestration.executors._base import Executor
+
+
+class BeforeStart(Protocol):
+    def __call__(self, *, executor: Executor | None = None) -> None:
+        """Replace prior deployments after preparation.
+
+        Controller-native handlers pass their resolved executor so replacement
+        uses that exact target, confirms teardown, and includes the current ID.
+        Container launchers omit it and retain their per-container cleanup.
+        """
+        ...
 
 
 class RunCallback(Protocol):
@@ -26,7 +37,7 @@ class RunCallback(Protocol):
         *,
         plan: RunPlan,
         started_at: float,
-        before_start: Callable[[], None] | None,
+        before_start: BeforeStart | None,
     ) -> RunResult:
         """Validate/stage, call before_start immediately before launch, then launch.
 
@@ -35,7 +46,10 @@ class RunCallback(Protocol):
         validation and preparation have succeeded. Return actual substrate
         outcomes (cluster ID, hosts, command, image, port); core completes shared
         identity components, fingerprint, operation timing, and preview metadata.
-        A private launch_result handle is optional.
+        A private launch_result handle is optional. For handler-discovered reuse,
+        return already_running=True with the existing deployment's identity and
+        any verified metadata; core preserves its fingerprint/timeline and never
+        substitutes proposed placement. Do not call before_start for reuse.
         """
         ...
 

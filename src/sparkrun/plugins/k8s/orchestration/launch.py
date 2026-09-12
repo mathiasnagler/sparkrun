@@ -173,7 +173,7 @@ def submit_jobset(client: KubectlClient, plan: JobSetPlan, *, timeout: int | Non
 def stop_jobset(client: KubectlClient, name: str):
     """Delete a JobSet (cascades to its Jobs/pods); idempotent."""
     jobset_status(client, name)
-    return client.run(["delete", "jobset", name, "--ignore-not-found"])
+    return client.run(["delete", "jobset", name, "--ignore-not-found", "--cascade=foreground", "--wait=true", "--timeout=60s"], timeout=65)
 
 
 def jobset_status(client: KubectlClient, name: str) -> dict:

@@ -21,6 +21,8 @@ class K8sSettings:
         Distinct from :attr:`executor_config` (which feeds executor-time
         ``kubeconfig`` / ``k8s_*`` overrides): this block holds the target
         a plain ``sparkrun setup k8s ...`` invocation defaults to, plus
+        fallback target settings for executor resolution and native lifecycle.
+        Explicit executor settings take precedence. This block also contains
         the ``kubectl`` binary settings (``path`` / ``version`` / per-
         context ``pinned`` versions).  Empty dict when unset.
         """

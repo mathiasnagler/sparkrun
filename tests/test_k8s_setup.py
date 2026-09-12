@@ -1399,7 +1399,7 @@ def _run_k8s_common(tmp_path, monkeypatch, nodes):
             name=kw["name"], namespace="sparkrun", manifests_yaml="kind: JobSet", feasible=True, dry_run=kw.get("dry_run", False)
         )
 
-    monkeypatch.setattr(apik8s, "launch_jobset", _fake_launch)
+    monkeypatch.setattr(apik8s._ops, "_launch_jobset", _fake_launch)
     return sctx, captured
 
 
