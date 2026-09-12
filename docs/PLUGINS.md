@@ -311,6 +311,12 @@ incompatible or failed integrations block launch while help/version/inventory
 remain usable. Optional load failures are reported as failures, not loaded
 plugins. Ambiguous selected implementation claims also block launch.
 
+`discover_installed_plugins()` and `installed_plugin_inventory()` return lists of
+frozen `InstalledIntegration` reporting values. They expose package metadata and
+load outcomes without entry-point handles. A retained snapshot does not change as
+loading proceeds; callers cannot change required-integration enforcement through
+inventory rows.
+
 `setup plugins list --json` includes installed package/version, source,
 selected/enabled, loaded, required, selection source and failure. A profile's
 selected package still declares registries at the external trust tier; reviewed
@@ -486,7 +492,14 @@ State callbacks run while the benchmark state-directory lock is held when a
 scheduled state exists. The host persists each integration's settings and data,
 including when a binding/checkpoint/completion callback fails. Rejected settings
 from `validate` are not persisted and do not overwrite the last accepted settings.
-Store only JSON-compatible values, never credentials. Ordinary caller-provided
+Store only JSON-compatible values, never credentials. Core copies and filters
+structured credential fields without interpreting serialized documents by key
+name. Plugins own validation and sanitization of documents they persist; use
+`public_recipe_text()` from `sparkrun.benchmarking.metadata` at an actual recipe
+boundary. Arena sanitizes its saved `effective_recipe_text` before publication;
+malformed legacy content produces a fresh-run diagnostic without parser excerpts.
+Unavailable plugins' saved documents remain opaque until their owner is loaded.
+Ordinary caller-provided
 `BenchmarkOptions.state_extras` is also copied into newly created state; see
 [caller metadata and reserved keys](BENCHMARK_API.md#caller-metadata).
 

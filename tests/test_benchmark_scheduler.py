@@ -22,67 +22,45 @@ from sparkrun.benchmarking.scheduler import BenchTask, run_schedule
 # ---------------------------------------------------------------------------
 
 
-class _FakeProc:
-    """Minimal fake subprocess.Popen result."""
-
-    def __init__(self, returncode: int = 0, write_result_to: Path | None = None) -> None:
-        self.returncode = returncode
-        self._target = write_result_to
-
-    def wait(self, timeout: int | None = None) -> None:
-        """Write a fake llama-benchy JSON file when a result path was captured."""
-        if self._target is not None:
-            data = {
-                "model": "org/model",
-                "max_concurrency": self._concurrency,
-                "benchmarks": [
-                    {
-                        "concurrency": self._concurrency,
-                        "context_size": self._depth,
-                        "prompt_size": 2048,
-                        "response_size": 32,
-                        "is_context_prefill_phase": False,
-                    }
-                ],
-            }
-            self._target.write_text(json.dumps(data))
-
-    def kill(self) -> None:
-        pass
-
-    # depth/concurrency set by factory after creation
-    _depth: int = 0
-    _concurrency: int = 1
-
-
-def _make_popen_factory(returncodes: list[int]):
-    """Return a Popen side-effect factory that consumes return codes from a list."""
+def _make_process_runner(returncodes: list[int]):
+    """Simulate framework task files and consume one return code per command."""
     rc_iter = iter(returncodes)
 
-    def _factory(cmd: list[str], *args: Any, **kwargs: Any) -> _FakeProc:
+    def run(cmd: list[str], **kwargs: Any) -> int:
         rc = next(rc_iter)
-        result_file: Path | None = None
+        result_file = None
         for i, arg in enumerate(cmd):
             if arg == "--save-result" and i + 1 < len(cmd):
                 result_file = Path(cmd[i + 1])
                 break
-
-        proc = _FakeProc(returncode=rc, write_result_to=result_file)
-
-        # Extract depth/concurrency from the result filename (e.g. "000_d0_c1.json"
-        # for llama-benchy or "000.json" for the suffix-less stub).
         if result_file is not None:
-            name = result_file.stem  # e.g. "000_d0_c1" or "000"
-            parts = name.split("_")
-            for p in parts:
-                if p.startswith("d") and p[1:].isdigit():
-                    proc._depth = int(p[1:])
-                if p.startswith("c") and p[1:].isdigit():
-                    proc._concurrency = int(p[1:])
+            # llama-benchy uses 000_d0_c1.json; the stub uses 000.json.
+            depth, concurrency = 0, 1
+            for part in result_file.stem.split("_"):
+                if part.startswith("d") and part[1:].isdigit():
+                    depth = int(part[1:])
+                if part.startswith("c") and part[1:].isdigit():
+                    concurrency = int(part[1:])
+            result_file.write_text(
+                json.dumps(
+                    {
+                        "model": "org/model",
+                        "max_concurrency": concurrency,
+                        "benchmarks": [
+                            {
+                                "concurrency": concurrency,
+                                "context_size": depth,
+                                "prompt_size": 2048,
+                                "response_size": 32,
+                                "is_context_prefill_phase": False,
+                            }
+                        ],
+                    }
+                )
+            )
+        return rc
 
-        return proc
-
-    return _factory
+    return run
 
 
 class _FakeFW(BenchmarkingPlugin):
@@ -146,13 +124,13 @@ def _run(
     exit_on_first_fail: bool = False,
     fw: BenchmarkingPlugin | None = None,
 ):
-    """Run run_schedule with a mocked Popen and a real BenchmarkProgressUI."""
+    """Run run_schedule with a simulated process runner and a real BenchmarkProgressUI."""
     if fw is None:
         fw = _FakeFW()
     ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
 
     with ui:
-        with patch("subprocess.Popen", side_effect=_make_popen_factory(returncodes)):
+        with patch("sparkrun.benchmarking.scheduler.run_benchmark_process", side_effect=_make_process_runner(returncodes)):
             result = run_schedule(
                 fw=fw,
                 tasks=tasks,
@@ -203,12 +181,12 @@ def test_run_schedule_filename_suffix_stub_fw(tmp_path: Path):
         for i, arg in enumerate(cmd):
             if arg == "--save-result" and i + 1 < len(cmd):
                 captured_paths.append(cmd[i + 1])
-        return _make_popen_factory([0, 0])(cmd, *a, **kw)
+        return _make_process_runner([0, 0])(cmd, *a, **kw)
 
     fw = _FakeFW()
     ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
     with ui:
-        with patch("subprocess.Popen", side_effect=_capturing_factory):
+        with patch("sparkrun.benchmarking.scheduler.run_benchmark_process", side_effect=_capturing_factory):
             run_schedule(
                 fw=fw,
                 tasks=tasks,
@@ -235,7 +213,7 @@ def test_run_schedule_filename_suffix_llama_benchy(tmp_path: Path):
         for i, arg in enumerate(cmd):
             if arg == "--save-result" and i + 1 < len(cmd):
                 captured_paths.append(cmd[i + 1])
-        return _make_popen_factory([0, 0])(cmd, *a, **kw)
+        return _make_process_runner([0, 0])(cmd, *a, **kw)
 
     # Use llama-benchy for filename suffix logic but keep cmd shape from the stub
     # by patching build_benchmark_command to a deterministic command.
@@ -251,7 +229,7 @@ def test_run_schedule_filename_suffix_llama_benchy(tmp_path: Path):
 
     ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
     with ui:
-        with patch("subprocess.Popen", side_effect=_capturing_factory):
+        with patch("sparkrun.benchmarking.scheduler.run_benchmark_process", side_effect=_capturing_factory):
             run_schedule(
                 fw=fw,
                 tasks=tasks,
@@ -298,7 +276,7 @@ def test_run_schedule_warmup_rule(tmp_path: Path):
 
     ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
     with ui:
-        with patch("subprocess.Popen", side_effect=_make_popen_factory([0, 0])):
+        with patch("sparkrun.benchmarking.scheduler.run_benchmark_process", side_effect=_make_process_runner([0, 0])):
             run_schedule(
                 fw=fw,
                 tasks=tasks,
@@ -368,7 +346,7 @@ def test_run_schedule_resume_warmup_rule(tmp_path: Path):
 
     ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
     with ui:
-        with patch("subprocess.Popen", side_effect=_make_popen_factory([0, 0])):
+        with patch("sparkrun.benchmarking.scheduler.run_benchmark_process", side_effect=_make_process_runner([0, 0])):
             with patch("sparkrun.benchmarking.scheduler.consolidate_results", return_value=full_consolidated):
                 run_schedule(
                     fw=fw,
@@ -405,7 +383,7 @@ def test_run_schedule_exit_on_first_fail(tmp_path: Path):
     tasks = _make_tasks(3)
     state = _make_state(tmp_path, n_tasks=3)
 
-    popen_factory = _make_popen_factory([0, 2])
+    popen_factory = _make_process_runner([0, 2])
 
     popen_call_count = 0
     original_factory = popen_factory
@@ -418,7 +396,7 @@ def test_run_schedule_exit_on_first_fail(tmp_path: Path):
     fw = _FakeFW()
     ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
     with ui:
-        with patch("subprocess.Popen", side_effect=_counting_factory):
+        with patch("sparkrun.benchmarking.scheduler.run_benchmark_process", side_effect=_counting_factory):
             result = run_schedule(
                 fw=fw,
                 tasks=tasks,
@@ -478,7 +456,7 @@ def test_run_schedule_gap_requeue(tmp_path: Path):
     def _counting_popen(cmd, *a, **kw):
         nonlocal popen_call_count
         popen_call_count += 1
-        return _make_popen_factory([0])(cmd, *a, **kw)
+        return _make_process_runner([0])(cmd, *a, **kw)
 
     fw = LlamaBenchyFramework()
 
@@ -492,7 +470,7 @@ def test_run_schedule_gap_requeue(tmp_path: Path):
 
     ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
     with ui:
-        with patch("subprocess.Popen", side_effect=_counting_popen):
+        with patch("sparkrun.benchmarking.scheduler.run_benchmark_process", side_effect=_counting_popen):
             with patch("sparkrun.benchmarking.scheduler.consolidate_results", side_effect=_fake_consolidate):
                 result = run_schedule(
                     fw=fw,

@@ -100,10 +100,12 @@ class ApplicationProfile:
             if any(type(value) is not bool for value in defaults.values()):
                 raise TypeError("feature_channel_defaults must contain booleans")
         for setting, aliases in self.env_aliases.items():
-            if not re.fullmatch(r"[A-Z][A-Z0-9_]*", setting) or isinstance(aliases, str):
-                raise ValueError("env_aliases must map setting suffixes to sequences of variable names")
+            if not isinstance(setting, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]*", setting):
+                raise ValueError("env_aliases keys must be setting suffixes")
+            if not isinstance(aliases, (tuple, list)) or any(not isinstance(alias, str) for alias in aliases):
+                raise TypeError("env_aliases values must be sequences of variable names")
             if any(not re.fullmatch(r"[A-Z][A-Z0-9_]*", alias) for alias in aliases):
-                raise ValueError("Invalid environment alias")
+                raise ValueError("Invalid env_aliases variable name")
         for attr in ("defaults", "feature_defaults", "feature_channel_defaults", "env_aliases"):
             object.__setattr__(self, attr, freeze(getattr(self, attr)))
         if self.registries is not None:
@@ -120,14 +122,14 @@ class ApplicationProfile:
                     raise ValueError("Duplicate application profile registry: %r" % name)
                 names.add(name)
             object.__setattr__(self, "registries", freeze(self.registries))
-        if not isinstance(self.bootstrap_registry_urls, (tuple, list)) or any(
-            not isinstance(url, str) or not url.strip() for url in self.bootstrap_registry_urls
-        ):
-            raise TypeError("bootstrap_registry_urls must be a sequence of nonempty URLs")
         for attr in ("integrations", "required_integrations", "bootstrap_registry_urls"):
-            object.__setattr__(self, attr, tuple(getattr(self, attr)))
-        if any(not _NAME.fullmatch(i) for i in (*self.integrations, *self.required_integrations)):
-            raise ValueError("Integration IDs must be lowercase names")
+            values = getattr(self, attr)
+            if not isinstance(values, (tuple, list)) or any(not isinstance(value, str) for value in values):
+                raise TypeError("%s must be a sequence of strings" % attr)
+            for value in values:
+                if not value.strip() or (attr != "bootstrap_registry_urls" and not _NAME.fullmatch(value)):
+                    raise ValueError("Invalid %s entry: %r" % (attr, value))
+            object.__setattr__(self, attr, tuple(values))
         sources = dict(self.update_sources)
         if any(not isinstance(s, UpdateSource) for s in sources.values()):
             raise TypeError("update_sources values must be UpdateSource instances")

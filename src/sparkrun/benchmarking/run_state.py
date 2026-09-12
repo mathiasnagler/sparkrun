@@ -43,6 +43,8 @@ def _validate_state_data(data, benchmark_id):
     for key in ("profile", "api_key_env"):
         if data.get(key) is not None and not isinstance(data[key], str):
             raise ValueError("%s must be a string or None" % key)
+    if data.get("measurement_spec") is not None and not isinstance(data["measurement_spec"], dict):
+        raise ValueError("measurement_spec must be a mapping or None")
     for key in ("base_args", "extras"):
         value = data.get(key, {})
         if not isinstance(value, dict) or any(not isinstance(k, str) for k in value):
@@ -361,6 +363,7 @@ class BenchmarkRunState:
     api_key_env: str | None = None  # reference only; never a credential value
     timeout: int | None = None  # None means legacy default on resume
     exit_on_first_fail: bool = False  # legacy resume policy
+    measurement_spec: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         """Derive ``intent_id`` from ``cluster_id`` if not already set."""

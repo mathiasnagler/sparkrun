@@ -118,9 +118,9 @@ def test_registry_catalog_rejects_ambiguous_duplicate_names():
         select(registries=(ALTERNATE_REGISTRY, ALTERNATE_REGISTRY))
 
 
-@pytest.mark.parametrize("value", ["https://example.test/repo", ("",), (None,)])
-def test_bootstrap_urls_require_sequence_of_nonempty_strings(value):
-    with pytest.raises(TypeError, match="bootstrap_registry_urls"):
+@pytest.mark.parametrize("value,error", [("https://example.test/repo", TypeError), (("",), ValueError), ((None,), TypeError)])
+def test_bootstrap_urls_require_sequence_of_nonempty_strings(value, error):
+    with pytest.raises(error, match="bootstrap_registry_urls"):
         select(bootstrap_registry_urls=value)
 
 

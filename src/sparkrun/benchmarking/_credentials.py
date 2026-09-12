@@ -29,7 +29,11 @@ def resolve_credentials(variables: "Variables", *, api_key_env: str | None = Non
         if not value:
             from scitrera_app_framework import add_env_file_source
 
-            add_env_file_source(".env", variables)
+            try:
+                add_env_file_source(".env", variables)
+            except ImportError:
+                # SAF makes dotenv optional; absence must not mask a missing key.
+                pass
             value = variables.get(api_key_env)
         if not isinstance(value, str) or not value:
             raise ValueError("Benchmark credential environment variable %r is missing or empty" % api_key_env)

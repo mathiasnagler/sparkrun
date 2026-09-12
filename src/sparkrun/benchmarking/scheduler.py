@@ -11,11 +11,10 @@ can be resumed after a crash.
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 import time
-from threading import Thread
 from sparkrun.benchmarking._credentials import BenchmarkCredentials
+from sparkrun.benchmarking._process import run_benchmark_process
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -137,65 +136,31 @@ def run_schedule(
             state.mark_started(idx)
             state.save(cache_dir)
 
-            env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-            proc: subprocess.Popen | None = None
             t_start = time.monotonic()
-
             try:
-                reader = None
-                reader_errors = []
-                log_fh = open(log_file, "w")  # closed in finally block below
+                log_fh = open(log_file, "w")
                 try:
-                    proc = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE if credentials.api_key else log_fh,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        errors="replace",
-                        env=env,
-                    )
-                    if credentials.api_key:
 
-                        def copy_output(source, sink, errors):
-                            for line in source:
-                                if not errors:
-                                    try:
-                                        sink.write(credentials.redact(line))
-                                        sink.flush()
-                                    except OSError as error:
-                                        errors.append(error)
+                    def output(line, sink=log_fh):
+                        sink.write(line)
+                        sink.flush()
 
-                        reader = Thread(target=copy_output, args=(proc.stdout, log_fh, reader_errors), daemon=True)
-                        reader.start()
-                    try:
-                        proc.wait(timeout=timeout)
-                    except subprocess.TimeoutExpired:
-                        logger.warning("Task %d (%s) timed out after %s seconds; killing process", idx, task.label, timeout)
-                        proc.kill()
-                        proc.wait()
-                        duration_s = time.monotonic() - t_start
-                        state.mark_failed(idx, "timeout after %ds" % timeout)
+                    rc = run_benchmark_process(cmd, timeout=timeout, credentials=credentials, stdout=output)
+                except subprocess.TimeoutExpired:
+                    logger.warning("Task %d (%s) timed out after %s seconds", idx, task.label, timeout)
+                    duration_s = time.monotonic() - t_start
+                    state.mark_failed(idx, "timeout after %ds" % timeout)
+                    state.save(cache_dir)
+                    progress_ui.end_task(idx, success=False, duration_s=duration_s)
+                    if exit_on_first_fail:
+                        state.mark_session_ended("partial")
                         state.save(cache_dir)
-                        progress_ui.end_task(idx, success=False, duration_s=duration_s)
-                        if exit_on_first_fail:
-                            state.mark_session_ended("partial")
-                            state.save(cache_dir)
-                            return True, False
-                        continue
+                        return True, False
+                    continue
                 finally:
-                    if reader is not None:
-                        if proc.poll() is None:
-                            proc.kill()
-                            proc.wait()
-                        reader.join()
-                        proc.stdout.close()
                     log_fh.close()
-                    if reader_errors:
-                        raise reader_errors[0]
 
                 duration_s = time.monotonic() - t_start
-                rc = proc.returncode
-
                 if rc == 0:
                     state.mark_completed(idx)
                     state.save(cache_dir)
@@ -213,9 +178,6 @@ def run_schedule(
                         return True, False
 
             except KeyboardInterrupt:
-                if proc is not None:
-                    proc.kill()
-                    proc.wait()
                 return False, True  # signal KeyboardInterrupt to caller
 
         return False, False

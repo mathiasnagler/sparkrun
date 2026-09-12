@@ -663,11 +663,13 @@ def export_results(
     resumed: bool = False,
     measured_at: str | None = None,
     readiness: ServeReadiness | None = None,
+    overrides: dict[str, Any] | None = None,
 ) -> Path:
     """Export benchmark results to a YAML file.
 
     Args:
         recipe: The recipe that was benchmarked.
+        overrides: Effective serving overrides to include in the exported recipe.
         hosts: Hosts used for inference.  Recorded under ``cluster.hosts`` as
             **pseudonyms** — a measurement is *of* a node set, and without any
             node identity a per-node comparison cannot be audited after the
@@ -697,7 +699,7 @@ def export_results(
     """
     output_path = Path(output_path)
     # noinspection PyProtectedMember
-    recipe_text = public_recipe_text(recipe.export(path=None))
+    recipe_text = public_recipe_text(recipe.export(path=None, overrides=overrides))
     recipe_hash = hashlib.sha256(recipe_text.encode("utf-8")).hexdigest()
 
     # Build model metadata from recipe metadata (includes auto-detected

@@ -299,13 +299,19 @@ def test_failed_initialization_cannot_return_partial_context(tmp_path, monkeypat
         get_variables()
 
     # Failed discovery also must not consume the loader's one-time attempt.
+    from sparkrun.core.config import SparkrunConfig
+
     variables = Variables()
-    discover = Mock(side_effect=[ValueError("bad config"), []])
-    monkeypatch.setattr("sparkrun.core.installed_plugins.discover_installed_plugins", discover)
-    with pytest.raises(ValueError):
-        load_installed_plugins(variables)
-    load_installed_plugins(variables)
-    assert discover.call_count == 2
+    config = SparkrunConfig()
+    config.set("integrations", [])
+    entries = Mock(return_value=[])
+    monkeypatch.setattr("sparkrun.core.installed_plugins.entry_points", entries)
+    with pytest.raises(ValueError, match="integrations"):
+        load_installed_plugins(variables, config=config)
+    entries.assert_not_called()
+    config.set("integrations", {})
+    load_installed_plugins(variables, config=config)
+    entries.assert_called_once()
 
 
 @pytest.mark.parametrize("owner", ["jetsonrun", "sparkrun", "legacy", "unrelated"])

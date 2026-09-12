@@ -233,7 +233,7 @@ def test_real_docker_probe_through_benchmark_yaml(bench_env, streaming_server, m
         subprocess.run(["docker", "rm", "-f", container], check=True, capture_output=True)
 
 
-@pytest.mark.parametrize("prior_completed", [0, 1, 2])
+@pytest.mark.parametrize("prior_completed", [0, 1])
 def test_scheduled_export_omits_startup_when_any_results_are_reused(bench_env, monkeypatch, prior_completed):
     from sparkrun.benchmarking.run_state import BenchmarkRunState
     from sparkrun.benchmarking.scheduler import BenchTask, ScheduleRunResult

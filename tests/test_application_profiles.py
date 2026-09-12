@@ -648,3 +648,56 @@ def test_feature_reset_restores_application_channel_policy(tmp_path, monkeypatch
     assert reloaded.feature_override("executor.docker") is False
     assert reloaded.feature_channel == "alpha"
     assert yaml.safe_load(config.config_path.read_text()) == {"features": {"executor.docker": False, "channel": "alpha"}}
+
+
+@pytest.mark.parametrize("field", ["integrations", "required_integrations", "bootstrap_registry_urls"])
+@pytest.mark.parametrize("bad", ["arena", {"arena": True}, 1, None, [None], [""]])
+def test_profile_collection_fields_reject_invalid_shapes(field, bad):
+    from sparkrun.core.application_profile import ApplicationProfile
+
+    with pytest.raises((TypeError, ValueError), match=field):
+        ApplicationProfile(id="example", display_name="Example", command="example", package="example", **{field: bad})
+
+
+@pytest.mark.parametrize("field", ["integrations", "required_integrations", "bootstrap_registry_urls"])
+def test_profile_collection_fields_copy_lists_to_tuples(field):
+    from sparkrun.core.application_profile import ApplicationProfile
+
+    values = ["example"]
+    profile = ApplicationProfile(id="example", display_name="Example", command="example", package="example", **{field: values})
+    values.append("later")
+    assert getattr(profile, field) == ("example",)
+
+
+@pytest.mark.parametrize("bad", ["COMPAT_KEY", {"COMPAT_KEY": True}, 1, None, [None]])
+def test_profile_env_aliases_require_sequences_of_names(bad):
+    from sparkrun.core.application_profile import ApplicationProfile
+
+    with pytest.raises(TypeError, match="env_aliases"):
+        ApplicationProfile(id="example", display_name="Example", command="example", package="example", env_aliases={"SETTING": bad})
+
+
+def test_inventory_is_immutable_and_cannot_change_required_enforcement(monkeypatch):
+    from dataclasses import FrozenInstanceError
+    from scitrera_app_framework import Variables
+    from sparkrun.core import installed_plugins as plugins
+
+    alternate(required_integrations=("example",))
+    monkeypatch.delenv("SPARKRUN_NO_INSTALLED_PLUGINS")
+    module = ModuleType("required_example")
+    module.SPARKRUN_PLUGIN_API_VERSION = 1
+    module.register = Mock(side_effect=RuntimeError("provider failed"))
+    entry = fake_entry("example", module)
+    monkeypatch.setattr(plugins, "entry_points", lambda **kwargs: [entry])
+    discovered = plugins.discover_installed_plugins()[0]
+    assert not hasattr(discovered, "entry_point")
+    entry.load.assert_not_called()
+    plugins.load_installed_plugins(Variables())
+    inventory = plugins.installed_plugin_inventory()
+    with pytest.raises(FrozenInstanceError):
+        inventory[0].loaded = True
+    inventory.clear()
+    assert discovered.failure is None
+    assert plugins.installed_plugin_inventory()[0].failure
+    with pytest.raises(plugins.RequiredIntegrationError, match="provider failed"):
+        plugins.require_integrations()

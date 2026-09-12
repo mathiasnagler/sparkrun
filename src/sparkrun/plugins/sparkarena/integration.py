@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import replace
 import json
+import yaml
 
 from sparkrun.api._errors import BenchmarkFailed
 from sparkrun.core.application_profile import render_identity_text
@@ -56,6 +57,15 @@ def validate_recipe_for_submission(recipe, *, context):
 
 
 def bind(context):
+    # This serialized recipe is Arena-owned data. Core must not interpret
+    # identically named strings in other plugins' or callers' JSON payloads.
+    if text := context.data.get("effective_recipe_text"):
+        from sparkrun.benchmarking.metadata import public_recipe_text
+
+        try:
+            context.data["effective_recipe_text"] = public_recipe_text(text)
+        except (ValueError, TypeError, yaml.YAMLError):
+            raise BenchmarkFailed("Saved Arena recipe is invalid; start a fresh benchmark before publishing") from None
     from .auth import load_refresh_token, exchange_token
     from .upload import generate_submission_id
 
@@ -82,7 +92,6 @@ def bind(context):
     if not context.data.get("effective_recipe_text"):
         if context.result.recipe_yaml is None:
             raise BenchmarkFailed("Arena submission provenance is missing; rerun the benchmark with --arena.", exit_code=1)
-        import yaml
         from sparkrun.core.recipe import Recipe
 
         validate_recipe_for_submission(Recipe(yaml.safe_load(context.result.recipe_yaml)), context=context)

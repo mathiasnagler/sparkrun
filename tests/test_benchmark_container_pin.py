@@ -174,7 +174,7 @@ def _make_minimal_recipe(container: str = "myimage:latest") -> MagicMock:
     recipe.model_revision = None
     recipe.source_registry = "registry"
     recipe.source_registry_url = "https://github.com/example/registry"
-    recipe.export.return_value = "recipe-yaml-content"
+    recipe.export.return_value = "model: org/model\nruntime: vllm-distributed\n"
     recipe.build_config_chain.return_value = {}
     return recipe
 

@@ -155,7 +155,7 @@ def test_credential_rotation_does_not_change_measurement_identity(scheduled_env,
         assert env.recipe.env["OPENAI_API_KEY"] == "new-review-secret"
 
 
-def test_legacy_publication_state_is_sanitized_without_requiring_auth(scheduled_env):
+def test_legacy_publication_state_is_sanitized_without_requiring_auth(scheduled_env, monkeypatch):
     env = scheduled_env
     first = benchmark(replace(env.options, export_files=False), sctx=env.sctx)
     path = Path(first.state_dir) / "state.yaml"
@@ -163,8 +163,8 @@ def test_legacy_publication_state_is_sanitized_without_requiring_auth(scheduled_
     secret = "legacy-review-secret"
     data["base_args"]["api_key"] = secret
     data["extras"]["benchmark_integrations"] = {
-        "audit": {
-            "settings": {},
+        "arena": {
+            "settings": {"local_test": True},
             "data": {
                 "metadata_json": {"benchmark": {"args": {"api_key": secret}}},
                 "effective_recipe_text": "defaults:\n  api_key: " + secret + "\n  port: 8000\ncommand: serve --auth-token=" + secret,
@@ -173,7 +173,12 @@ def test_legacy_publication_state_is_sanitized_without_requiring_auth(scheduled_
     }
     path.write_text(yaml.safe_dump(data))
     views = []
-    register_benchmark_integration(BenchmarkIntegration("audit", on_complete=lambda ctx: views.append((ctx.data, ctx.result))))
+    from sparkrun.plugins.sparkarena.integration import bind
+
+    monkeypatch.setattr("sparkrun.core.benchmark_integrations._INTEGRATIONS", {})
+    register_benchmark_integration(
+        BenchmarkIntegration("arena", on_bind=bind, on_complete=lambda ctx: views.append((ctx.data, ctx.result)))
+    )
     result = resume_benchmark(first.benchmark_id, sctx=env.sctx)
     assert result.success and secret not in str(views) and secret not in str(result.metadata)
     assert secret not in path.read_text()
@@ -296,7 +301,7 @@ def test_authenticated_subprocess_failures_close_redacted_log_and_remain_resumab
 
         def spawn(*args, **kwargs):
             proc = original(*args, **kwargs)
-            wait = proc.wait
+            poll = proc.poll
             first = True
 
             def interrupt_once(*a, **kw):
@@ -304,9 +309,9 @@ def test_authenticated_subprocess_failures_close_redacted_log_and_remain_resumab
                 if first:
                     first = False
                     raise KeyboardInterrupt()
-                return wait(*a, **kw)
+                return poll(*a, **kw)
 
-            proc.wait = interrupt_once
+            proc.poll = interrupt_once
             return proc
 
         monkeypatch.setattr("sparkrun.benchmarking.scheduler.subprocess.Popen", spawn)

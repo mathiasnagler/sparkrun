@@ -482,20 +482,6 @@ def _execute_benchmark(
         raise BenchmarkFailed("Benchmark requires a positive integer timeout and a boolean exit_on_first_fail")
 
     # -----------------------------------------------------------------------
-    # 3. Check prerequisites
-    # -----------------------------------------------------------------------
-    # Skipped for a dry run: --dry-run exists to show what *would* happen
-    # without executing anything, so requiring the execution toolchain to be
-    # installed defeats it — you could not preview a benchmark from a machine
-    # that isn't set up to run one.  A real run still fails closed below.
-    if not dry_run:
-        missing = fw.check_prerequisites()
-        if missing:
-            for msg in missing:
-                emitter.error("Error: %s" % msg)
-            raise BenchmarkFailed("Benchmark prerequisites not met", exit_code=1)
-
-    # -----------------------------------------------------------------------
     # 4. Build overrides and resolve runtime/hosts
     # -----------------------------------------------------------------------
     # Every remaining caller override is forwarded, so the benchmark builds the
@@ -634,15 +620,7 @@ def _execute_benchmark(
     # Only measurement arguments enter task definitions, identity and state.
     for k, bv in fw.prepare_benchmark_args(recipe, config_chain, overrides).items():
         bench_args.setdefault(k, bv)
-    credentials = (
-        BenchmarkCredentials()
-        if dry_run
-        else resolve_credentials(
-            v,
-            api_key_env=api_key_env,
-            fallback=bench_args.get("api_key") or runtime.resolve_api_key(recipe, overrides),
-        )
-    )
+    benchmark_api_key = bench_args.get("api_key")
     bench_args = public_benchmark_data(bench_args)
 
     # -----------------------------------------------------------------------
@@ -808,6 +786,10 @@ def _execute_benchmark(
                         "Prior benchmark state for %s is COMPLETE — re-emitting its recorded results; no requests will be sent. Use --fresh to re-measure."
                         % benchmark_id
                     )
+                    try:
+                        return _complete_saved_benchmark(existing_state, integrations, cache_dir)
+                    finally:
+                        lock_stack.close()
             else:
                 if resume_mode in (ResumeMode.IF_EXISTS, ResumeMode.REQUIRED):
                     pass
@@ -864,11 +846,14 @@ def _execute_benchmark(
 
                 state.extras.update(deepcopy(options.state_extras))
 
-            # Initial invocations have resolved their caller/profile execution policy.
-            state.api_key_env = api_key_env
-            state.api_key_required = bool(credentials.api_key)
-            state.timeout = effective_timeout
-            state.exit_on_first_fail = exit_on_first_fail
+            from sparkrun.benchmarking._specification import measurement_specification, restore_measurement_specification
+
+            # Capture the same declared inputs used for the ID, before pinning
+            # a resolved image into launch overrides (including legacy backfill).
+            if state.measurement_spec is None:
+                state.measurement_spec = measurement_specification(recipe, overrides)
+            else:
+                restore_measurement_specification(state, None, config=config)
 
             if "framework_version" not in state.extras:
                 detected_version = fw.detect_version()
@@ -912,6 +897,25 @@ def _execute_benchmark(
     try:
         bench_result.benchmark_id = state.benchmark_id if state else ""
         bench_result.state_dir = str(state.state_dir(cache_dir)) if state else None
+        if not dry_run:
+            missing = fw.check_prerequisites()
+            if missing:
+                for msg in missing:
+                    emitter.error("Error: %s" % msg)
+                raise BenchmarkFailed("Benchmark prerequisites not met", exit_code=1)
+        credentials = (
+            BenchmarkCredentials()
+            if dry_run
+            else resolve_credentials(
+                v,
+                api_key_env=api_key_env,
+                fallback=benchmark_api_key or runtime.resolve_api_key(recipe, overrides),
+            )
+        )
+        if state is not None:
+            state.api_key_env = api_key_env
+            state.api_key_required = bool(credentials.api_key)
+            state.timeout, state.exit_on_first_fail = effective_timeout, exit_on_first_fail
         integrations.bind(bench_result, state, resumed=bench_result.resumed)
 
         # -----------------------------------------------------------------------
@@ -942,6 +946,9 @@ def _execute_benchmark(
                 )
 
             cluster_id = run_result.cluster_id
+            bench_result.cluster_id = cluster_id
+            if state is not None:
+                state.cluster_id = cluster_id
             serve_port = run_result.serve_port
             # Establish ownership before invoking any frontend/plugin callback.
             launched = not getattr(run_result, "already_running", False)
@@ -993,6 +1000,11 @@ def _execute_benchmark(
         # -----------------------------------------------------------------------
         # 7. Wait for readiness and build target URL
         # -----------------------------------------------------------------------
+        if state is not None and not dry_run:
+            from sparkrun.benchmarking._specification import record_job_specification
+            from sparkrun.orchestration.job_metadata import load_job_metadata
+
+            record_job_specification(state, load_job_metadata(cluster_id, cache_dir=cache_dir))
         integrations.checkpoint()
 
         if is_local_host(head_host):
@@ -1151,53 +1163,45 @@ def _execute_benchmark(
                 emitter.info("--- benchmark output ---")
                 bench_start = time.monotonic()
                 bench_result.start_time = datetime.now(tz=timezone.utc)
-                bench_env = os.environ.copy()
-                bench_env["PYTHONUNBUFFERED"] = "1"
+                from sparkrun.benchmarking._process import run_benchmark_process
+
+                stdout_lines: list[str] = []
+                stderr_lines: list[str] = []
+
+                def output(line):
+                    emitter.info(line.rstrip("\n"))
+                    stdout_lines.append(line)
+
                 try:
-                    with subprocess.Popen(
-                        bench_cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        bufsize=1,
-                        env=bench_env,
-                    ) as proc:
-                        stdout_lines: list[str] = []
-                        for line in proc.stdout:
-                            line = credentials.redact(line)
-                            emitter.info(line.rstrip("\n"))
-                            stdout_lines.append(line)
+                    try:
+                        returncode = run_benchmark_process(
+                            bench_cmd,
+                            timeout=effective_timeout,
+                            credentials=credentials,
+                            stdout=output,
+                            stderr=stderr_lines.append,
+                        )
+                    except subprocess.TimeoutExpired as exc:
+                        raise BenchmarkFailed("Error: benchmark timed out after %d seconds" % effective_timeout, exit_code=1) from exc
+                    stdout_text = "".join(stdout_lines)
+                    stderr_text = "".join(stderr_lines)
+                    elapsed = time.monotonic() - bench_start
+                    bench_result.end_time = datetime.now(tz=timezone.utc)
+                    emitter.info("--- end benchmark output ---")
+                    emitter.info("")
 
-                        try:
-                            proc.wait(timeout=effective_timeout)
-                        except subprocess.TimeoutExpired as exc:
-                            proc.kill()
-                            proc.wait()
+                    if returncode != 0:
+                        emitter.warning("benchmark exited with code %d (%.0fs elapsed)" % (returncode, elapsed))
+                        if stderr_text:
+                            emitter.warning("stderr: %s" % stderr_text[:500])
+                        if exit_on_first_fail:
+                            emitter.warning("Skipping result export (--exit-on-first-fail set and benchmark failed).")
                             raise BenchmarkFailed(
-                                "Error: benchmark timed out after %d seconds" % effective_timeout,
-                                exit_code=1,
-                            ) from exc
-
-                        stdout_text = "".join(stdout_lines)
-                        stderr_text = credentials.redact(proc.stderr.read())
-
-                        elapsed = time.monotonic() - bench_start
-                        bench_result.end_time = datetime.now(tz=timezone.utc)
-                        emitter.info("--- end benchmark output ---")
-                        emitter.info("")
-
-                        if proc.returncode != 0:
-                            emitter.warning("benchmark exited with code %d (%.0fs elapsed)" % (proc.returncode, elapsed))
-                            if stderr_text:
-                                emitter.warning("stderr: %s" % stderr_text[:500])
-                            if exit_on_first_fail:
-                                emitter.warning("Skipping result export (--exit-on-first-fail set and benchmark failed).")
-                                raise BenchmarkFailed(
-                                    "benchmark exited with code %d" % proc.returncode,
-                                    exit_code=proc.returncode,
-                                )
-                        else:
-                            emitter.info("Benchmark completed successfully (%.0fs elapsed)." % elapsed)
+                                "benchmark exited with code %d" % returncode,
+                                exit_code=returncode,
+                            )
+                    else:
+                        emitter.info("Benchmark completed successfully (%.0fs elapsed)." % elapsed)
                 except FileNotFoundError as exc:
                     raise BenchmarkFailed(
                         "Error: benchmark command not found: %s" % bench_cmd[0],
@@ -1413,6 +1417,7 @@ def _export_measurement(execution, *, config, tp, pp, output_file, emitter):
         resumed=execution.resumed,
         measured_at=execution.measured_at,
         readiness=execution.readiness,
+        overrides=execution.launch_result.overrides if execution.launch_result else execution.overrides,
     )
     if execution.outputs is None:
         execution.outputs = {}
@@ -1608,50 +1613,12 @@ def resume_benchmark(
         raise SparkrunError("benchmark resume failed: %s" % exc) from exc
 
 
-def _resume_locked(
-    benchmark_id: str,
-    *,
-    dry_run: bool,
-    emitter: _ProgressEmitter,
-    config,
-    cache_dir: str | None,
-    sctx,
-    integration_settings=None,
-    export_files: bool = True,
-    output_file: str | None = None,
-    timeout: int | None = None,
-    exit_on_first_fail: bool | None = None,
-    api_key_env: str | None = None,
-) -> BenchmarkExecution:
-    """Body of :func:`resume_benchmark`, run while holding the state-dir lock."""
-    import yaml as _yaml
+def _saved_execution(state, cache_dir):
+    """One detached result reconstruction for complete and partial resumes."""
+    from sparkrun.benchmarking.base import BenchmarkExecution
 
-    from sparkrun.api._errors import NoResumableState
-    from sparkrun.benchmarking.base import BenchmarkExecution as InternalResult
-    from sparkrun.core.benchmark_integrations import BenchmarkIntegrationSession, STATE_KEY
-    from sparkrun.benchmarking.run_state import BenchmarkRunState
-    from sparkrun.benchmarking.scheduler import run_schedule
-    from sparkrun.core.bootstrap import get_benchmarking_framework
-    from sparkrun.core.resolve import load_recipe
-    from sparkrun.orchestration.job_metadata import check_job_running, load_job_metadata
-    from sparkrun.orchestration.primitives import build_ssh_kwargs, detect_host_ip
-    from sparkrun.utils import is_local_host
-
-    # Load existing state
-    state = BenchmarkRunState.load(benchmark_id, cache_dir, strict=True)
-    if state is None:
-        raise NoResumableState("no benchmark state found for id: %s" % benchmark_id)
-
-    options = BenchmarkOptions(
-        recipe=state.recipe_qualified_name,
-        framework=state.framework,
-        profile=state.profile,
-        dry_run=dry_run,
-        integrations=integration_settings or {},
-    )
-    integrations = BenchmarkIntegrationSession(options, sctx=sctx, emitter=emitter)
-    result = InternalResult(
-        benchmark_id=benchmark_id,
+    return BenchmarkExecution(
+        benchmark_id=state.benchmark_id,
         framework_name=state.framework,
         category=state.extras.get("benchmark_category", ""),
         host_list=state.host_list,
@@ -1670,20 +1637,70 @@ def _resume_locked(
         measured_at=_restore_measurement_time(state),
         measurement_completed_at=state.extras.get("measurement_completed_at"),
     )
-    if state.is_complete(len(state.schedule)):
-        saved_names = set(state.extras.get(STATE_KEY, {})) & integrations.specs.keys()
-        result_path = state.state_dir(cache_dir) / "result.yaml"
-        if not state.extras.get("measurement_complete") or not result_path.is_file():
-            raise BenchmarkFailed("Completed tasks have no validated benchmark results; rerun with --fresh.", exit_code=1)
-        result.results = _framework_results(_yaml.safe_load(result_path.read_text()), state.framework)
-        result.success = True
-        if not integrations.contexts and not saved_names:
-            result.already_complete = True
-            return result
-        with _integration_completion_errors(integrations):
-            integrations.bind(result, state, resumed=True)
-            integrations.complete()
+
+
+def _complete_saved_benchmark(state, integrations, cache_dir):
+    """Load validated measurements and retry publication without execution."""
+    import yaml
+    from sparkrun.core.benchmark_integrations import STATE_KEY
+
+    result = _saved_execution(state, cache_dir)
+    saved_names = set(state.extras.get(STATE_KEY, {})) & integrations.specs.keys()
+    result_path = state.state_dir(cache_dir) / "result.yaml"
+    if not state.extras.get("measurement_complete") or not result_path.is_file():
+        raise BenchmarkFailed("Completed tasks have no validated benchmark results; rerun with --fresh.", exit_code=1)
+    result.results = _framework_results(yaml.safe_load(result_path.read_text()), state.framework)
+    result.success = True
+    if not integrations.contexts and not saved_names:
+        result.already_complete = True
         return result
+    with _integration_completion_errors(integrations):
+        integrations.bind(result, state, resumed=True)
+        integrations.complete()
+    return result
+
+
+def _resume_locked(
+    benchmark_id: str,
+    *,
+    dry_run: bool,
+    emitter: _ProgressEmitter,
+    config,
+    cache_dir: str | None,
+    sctx,
+    integration_settings=None,
+    export_files: bool = True,
+    output_file: str | None = None,
+    timeout: int | None = None,
+    exit_on_first_fail: bool | None = None,
+    api_key_env: str | None = None,
+) -> BenchmarkExecution:
+    """Body of :func:`resume_benchmark`, run while holding the state-dir lock."""
+    from sparkrun.api._errors import NoResumableState
+    from sparkrun.core.benchmark_integrations import BenchmarkIntegrationSession
+    from sparkrun.benchmarking.run_state import BenchmarkRunState
+    from sparkrun.benchmarking.scheduler import run_schedule
+    from sparkrun.core.bootstrap import get_benchmarking_framework
+    from sparkrun.orchestration.job_metadata import check_job_running, load_job_metadata
+    from sparkrun.orchestration.primitives import build_ssh_kwargs, detect_host_ip
+    from sparkrun.utils import is_local_host
+
+    # Load existing state
+    state = BenchmarkRunState.load(benchmark_id, cache_dir, strict=True)
+    if state is None:
+        raise NoResumableState("no benchmark state found for id: %s" % benchmark_id)
+
+    options = BenchmarkOptions(
+        recipe=state.recipe_qualified_name,
+        framework=state.framework,
+        profile=state.profile,
+        dry_run=dry_run,
+        integrations=integration_settings or {},
+    )
+    integrations = BenchmarkIntegrationSession(options, sctx=sctx, emitter=emitter)
+    if state.is_complete(len(state.schedule)):
+        return _complete_saved_benchmark(state, integrations, cache_dir)
+    result = _saved_execution(state, cache_dir)
 
     # Snapshot before ``run_schedule`` starts saving: this is when the tasks
     # already recorded in the state were measured.  Read afterwards it would
@@ -1691,19 +1708,15 @@ def _resume_locked(
     # exists to prevent.
     # result.measured_at was pinned before any publication/state write.
 
-    # Reconstruct recipe
     recipe_name = state.recipe_qualified_name
-    from sparkrun.core.recipe import RecipeError
+    from sparkrun.benchmarking._specification import restore_measurement_specification
 
-    try:
-        recipe, _recipe_path, _registry_mgr = load_recipe(config, recipe_name, resolve=False)
-    except RecipeError as e:
-        raise BenchmarkFailed("could not reload recipe %r: %s" % (recipe_name, e), exit_code=1) from e
-
+    meta = load_job_metadata(state.cluster_id, cache_dir=cache_dir)
+    recipe, saved_overrides = restore_measurement_specification(state, meta, config=config)
     result.recipe = recipe
     result.host_list = state.host_list
     result.container_image = state.extras.get("container_image_sha") or recipe.container
-    result.overrides = {}
+    result.overrides = saved_overrides
     if dry_run:
         integrations.bind(result, state, resumed=True)
         emitter.info(
@@ -1722,7 +1735,6 @@ def _resume_locked(
     if type(effective_timeout) is not int or effective_timeout <= 0 or type(effective_fail_fast) is not bool:
         raise BenchmarkFailed("Resume requires a positive integer timeout and a boolean exit_on_first_fail")
     # Reconstruct hosts from job metadata
-    meta = load_job_metadata(state.cluster_id, cache_dir=cache_dir)
     if not meta or not meta.get("hosts"):
         raise NoResumableState(
             "no job metadata found for cluster_id %r.\n"
@@ -1730,10 +1742,13 @@ def _resume_locked(
         )
     from sparkrun.core.bootstrap import get_runtime
 
+    from sparkrun.core.recipe import Recipe
+
+    auth_recipe = Recipe._deserialize(meta["recipe_state"]) if meta.get("recipe_state") else recipe
     credentials = resolve_credentials(
         sctx.variables,
         api_key_env=api_key_env or state.api_key_env,
-        fallback=get_runtime(recipe.runtime, sctx.variables).resolve_api_key(recipe, meta.get("overrides") or {}),
+        fallback=get_runtime(recipe.runtime, sctx.variables).resolve_api_key(auth_recipe, meta.get("overrides") or {}),
     )
     if state.api_key_required and not credentials.api_key:
         raise BenchmarkFailed("This benchmark requires authentication; supply api_key_env when resuming")
@@ -1788,10 +1803,15 @@ def _resume_locked(
             exit_code=1,
         )
 
+    if state.measurement_spec is None:
+        from sparkrun.benchmarking._specification import measurement_specification, record_job_specification
+
+        state.measurement_spec = measurement_specification(recipe, saved_overrides)
+        record_job_specification(state, meta)
     result.framework = fw
     result.category = result.category or fw.primary_category
     result.host_list = hosts
-    result.overrides = meta.get("overrides") or {}
+    result.overrides = saved_overrides
     result.container_image = state.extras.get("container_image_sha") or meta.get("container_image") or recipe.container
     result.longterm_image_ref = state.extras.get("container_image_longterm_ref")
     result.longterm_image_pinned = bool(state.extras.get("container_image_longterm_pinned"))
@@ -1847,7 +1867,7 @@ def _resume_locked(
         if fw.measured_nothing(results):
             raise BenchmarkFailed("benchmark produced no measurements; upload was skipped", exit_code=1)
 
-        overrides = meta.get("overrides") or {}
+        overrides = saved_overrides
         effective_tp = int(overrides.get("tensor_parallel") or meta.get("tensor_parallel") or 1)
 
         result.results = results

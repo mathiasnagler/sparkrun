@@ -168,8 +168,12 @@ pin their first observed pre-retry state timestamp as a best available fallback;
 that cannot reconstruct lost historical timing. Arena uses the same interval.
 
 Completed scheduled measurements can retry saved integrations without inference
-running or reloading the recipe. Incomplete measurement resumes still require a
-resolvable recipe and running inference. Unschedulable/single-call frameworks do
+running. Both `benchmark(..., resume=IF_EXISTS)` and `resume_benchmark(id)` reuse
+validated results without launch, readiness, stop, framework prerequisites, or
+inference credentials. The initial entry point resolves its inputs to find the
+measurement ID; resume-by-ID does not reload the recipe. Incomplete resumes by
+ID require a verified saved recipe specification and running inference.
+Unschedulable/single-call frameworks do
 not persist resumable task state, though their publication errors still carry
 completed measurements. An already-complete ID with no available integrations
 returns its validated saved result with `already_complete=True`. It does not
@@ -189,6 +193,8 @@ A corrupt/missing validated result file still raises `BenchmarkFailed`.
 inference credential. An explicitly named missing or empty key is an error for
 real measurement; previews do not resolve authentication. When
 omitted, the runtime's resolved recipe credential can supply authentication.
+A missing optional dotenv parser does not change the missing-key diagnostic;
+when installed, its `.env` source remains available.
 Authentication is injected only into framework command construction. It is not
 part of task definitions, measurement arguments, benchmark IDs, result metadata,
 exports, or publication snapshots. Core command/stream logging redacts the active
@@ -197,15 +203,33 @@ key. Shared metadata projections remove API-key fields and the runtime-native
 Credential templates remain intact. Frameworks must also keep execution
 credentials out of their own artifacts and custom recipe fields.
 
-New checkpoints record only `api_key_env` and whether authentication is required.
+For authentication, checkpoints record only `api_key_env` and whether it is required.
 `resume_benchmark(id, api_key_env="INFERENCE_API_KEY")` can supply or replace that
 reference; otherwise resume resolves the saved reference again. Rotating the
 variable's value does not change measurement identity. Runtime authentication
-can be resolved again from the recipe and recorded launch overrides. Legacy
-checkpoints with embedded keys are sanitized when loaded; an incomplete run
+can be resolved again from the running job's recipe and recorded launch overrides.
+Legacy structured credential fields are removed when loaded; an incomplete run
 without a recoverable credential reference requires a current `api_key_env`.
 Completed result loading and publication-only retries do not resolve credentials.
-Old authenticated runs may have IDs derived from their key; resume those by ID.
+Serialized plugin documents are sanitized by their owner when bound; core does
+not decode arbitrary caller/plugin strings as recipe YAML.
+
+New scheduled checkpoints preserve a credential-free recipe specification and
+serving overrides, including in-memory recipe edits. Resume-by-ID restores these
+inputs without consulting the current recipe source. Before state-bound hooks or
+measurement, it verifies the measurement fingerprint/ID and checks running-job
+hosts, model/runtime, and the effective job fingerprint when recorded. Local
+exports include serving overrides. The checkpoint and returned result record the
+actual launched job ID while retaining the stable intent used for measurement
+identity.
+
+Legacy checkpoints without a specification can resume only when the current
+recipe and recorded overrides reproduce their original measurement ID. Successful
+reconstruction is saved as a specification on the next normal checkpoint. Changed
+or unverifiable inputs require an explicit fresh run; no measurement hook or
+command runs and validation does not rewrite the original state. This includes
+legacy incomplete IDs whose hashes included a now-removed credential. Completed
+results remain loadable by ID without reconstructing their recipe.
 
 Resume-by-ID uses the saved timeout and failure policy. Optional `timeout=...`
 and `exit_on_first_fail=...` keywords override them for the next execution and
@@ -213,6 +237,14 @@ subsequent resumes. Old checkpoints without these fields use the historical
 14,400-second timeout and `exit_on_first_fail=False`. These execution overrides
 do not turn publication-only retry into measurement. Initial `benchmark()` calls
 continue to resolve their own caller/profile policy, including implicit resumes.
+
+Scheduled and single-call frameworks share one process runner. Each task's timeout
+covers process execution and output draining, with stdout/stderr drained together.
+On timeout, interruption, or output-callback failure, the runner terminates its
+owned POSIX process group and bounds its wait for the immediate child. Worker
+pipes cannot hold the state lock past that cleanup. Plugins must keep workers in
+the owned group; detached services require their own lifecycle management. Output
+callbacks run synchronously and must return promptly.
 
 Execution and resume distinguish absent state from unusable state. Missing state
 permits a new benchmark; malformed YAML, invalid field shapes, unsupported schema
@@ -227,6 +259,9 @@ sanitized state is persisted on the next normal save.
 
 `BenchmarkOptions.state_extras` is copied into newly created scheduled state.
 Use application-owned names (for example, `my_app.experiment`) for caller metadata.
+JSON strings remain strings even when named `recipe_yaml` or
+`effective_recipe_text`; these names do not impose a YAML schema on caller data.
+Generic credential-field/command redaction still applies.
 Core reserves `framework_version`, `benchmark_integrations`, `benchmark_category`,
 `benchmark_outputs`, `measurement_complete`, `measurement_started_at`,
 `measurement_completed_at`, `container_image`, `container_image_sha`,

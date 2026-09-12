@@ -173,6 +173,12 @@ managed gateway processes; those clients may still connect to one external servi
 | `hardware_fallback` | `require-metadata` by default; built-in Sparkrun preserves `dgx-spark`. |
 | `profile_ref` | Installed `module:attribute` reference required for child execution. |
 
+`integrations`, `required_integrations`, and `bootstrap_registry_urls` accept lists
+or tuples of nonempty strings, copied into immutable tuples. Integration entries
+must be valid stable IDs. A bare string, mapping, or malformed member raises a
+field-specific error instead of being interpreted as a sequence of characters.
+Each `env_aliases` value likewise requires a list/tuple of variable names.
+
 `None` for `registries` is reserved for built-in Sparkrun's legacy catalog.
 Namespace names allow lowercase ASCII letters, digits and hyphens, beginning
 with a letter, at most 48 characters. Installed package names follow Python

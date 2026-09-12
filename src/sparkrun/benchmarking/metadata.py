@@ -27,19 +27,14 @@ def _public_command(text: str) -> str:
 def public_benchmark_data(value: Any) -> Any:
     """Detach publication/state data without credential fields.
 
-    Known embedded recipe documents are projected as structured YAML too;
-    literal --api-key/--auth-token arguments are redacted, preserving templates.
+    Literal --api-key/--auth-token arguments are redacted, preserving templates.
+    Serialized documents are interpreted only by their owning caller, never by
+    guessing at field names inside arbitrary JSON data.
     Do not replace arbitrary substrings: a short key must not corrupt names,
     identifiers, measurements, or unrelated plugin data during migration.
     """
     if isinstance(value, Mapping):
-        return {
-            key: public_recipe_text(child)
-            if key in {"recipe_yaml", "effective_recipe_text"} and isinstance(child, str)
-            else public_benchmark_data(child)
-            for key, child in value.items()
-            if not _credential_key(key)
-        }
+        return {key: public_benchmark_data(child) for key, child in value.items() if not _credential_key(key)}
     if isinstance(value, (list, tuple)):
         return [public_benchmark_data(child) for child in value]
     if isinstance(value, str):
@@ -69,7 +64,11 @@ def public_recipe_text(text: str) -> str:
     """Remove credential fields from the serialized recipe carried by results."""
     import yaml
 
+    if not isinstance(text, str):
+        raise TypeError("Serialized recipe must be a YAML string")
     data = yaml.safe_load(text)
+    if not isinstance(data, Mapping):
+        raise ValueError("Serialized recipe must contain a mapping")
     safe = public_benchmark_data(data)
     return text if safe == data else yaml.safe_dump(safe, sort_keys=False)
 

@@ -30,7 +30,7 @@ def _recipe() -> MagicMock:
     recipe.model_revision = None
     recipe.source_registry = "reg"
     recipe.source_registry_url = ""
-    recipe.export.return_value = "yaml"
+    recipe.export.return_value = "model: org/model\nruntime: vllm-distributed\n"
     return recipe
 
 

@@ -119,8 +119,16 @@ Benchmark authentication is now execution-only. Use `api_key_env` rather than
 persisting API keys in task args or publication data. Resume saves/reuses the
 variable name and resolves its current value; it accepts `api_key_env`, `timeout`,
 and `exit_on_first_fail` keyword overrides. Completed publication retries need no
-inference credential. Legacy embedded keys are removed from loaded snapshots;
-old authenticated IDs can be resumed explicitly with a current reference.
+inference credential, and implicit completed-result reuse performs no inference
+launch or cleanup. Legacy structured keys are removed from loaded snapshots;
+plugin-owned serialized documents are handled by their owner at binding.
+
+Incomplete resumes restore a credential-free saved recipe specification and
+verify it against measurement identity and running-job metadata. Legacy state
+without a specification must reproduce its original identity from current inputs;
+otherwise start fresh. Old incomplete IDs whose hashes included credentials
+cannot be verified after removing those credentials. Completed results remain
+loadable by ID.
 
 Checkpoints now distinguish absent state from unreadable/invalid state. Implicit
 resume raises a typed operational error for the latter; only explicit fresh
@@ -215,3 +223,9 @@ Core and bundled K8s/Arena declarations share the owning `sparkrun` distribution
 version. Independently released plugins, including vendored SparkRoute, retain
 their own versions. Downstream applications should declare a compatible core
 range or exact pin rather than infer compatibility from their own version.
+
+Installed plugin inventory rows are frozen reporting snapshots; entry-point
+handles are private. Replace any mutation of `InstalledIntegration` rows with
+explicit configuration before initialization. Profile integration lists,
+bootstrap URL lists, and environment-alias lists require list/tuple values;
+use `("arena",)` instead of `"arena"` for a single integration.
