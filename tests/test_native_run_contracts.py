@@ -1,0 +1,125 @@
+"""Native handlers preserve portable identity while returning usable substrate results."""
+
+import re
+from unittest.mock import Mock
+
+import pytest
+import yaml
+
+from sparkrun import api
+from sparkrun.api._run import plan, run
+from sparkrun.core.run_handlers import RunHandler
+from sparkrun.plugins.k8s import api as k8s
+from sparkrun.plugins.k8s.orchestration.client import KubectlClient
+from sparkrun.plugins.k8s.orchestration.names import native_jobset_name
+from sparkrun.plugins.k8s.run import run_k8s
+from test_benchmark_startup_collection import bench_env as bench_env
+from test_run_option_contracts import run_env as run_env
+from test_k8s_setup import _nodes_for, _SPARK_LABELS
+
+
+@pytest.fixture
+def native_env(run_env, monkeypatch):
+    env = run_env
+    monkeypatch.setattr("sparkrun.core.run_handlers.registered_run_handlers", lambda _: {"k8s": RunHandler("k8s", run_k8s)})
+    env.client = KubectlClient("/unused/kubectl")
+    env.make_client = Mock(return_value=env.client)
+    monkeypatch.setattr(k8s._ops, "make_client", env.make_client)
+    monkeypatch.setattr(
+        "sparkrun.plugins.k8s.orchestration.inventory.probe_nodes", lambda *a, **kw: _nodes_for([("s0", _SPARK_LABELS, 1, 1, False)])
+    )
+    env.submitted = []
+    original = k8s.launch_jobset
+
+    def launch(*args, **kwargs):
+        result = original(*args, **kwargs)
+        env.submitted.append(result)
+        return result
+
+    monkeypatch.setattr(k8s, "launch_jobset", launch)
+    return env
+
+
+@pytest.mark.parametrize("default,override", [(8000, None), (9022, None), (8000, 9001), (8000, "9001"), (None, None)])
+def test_native_plan_run_manifest_and_lifecycle_reference(native_env, monkeypatch, default, override):
+    env = native_env
+    if default is None:
+        env.recipe.defaults.pop("port")
+    else:
+        env.recipe.defaults["port"] = default
+    options = api.RunOptions(
+        recipe=env.recipe,
+        hosts=("localhost",),
+        solo=True,
+        executor="k8s",
+        overrides={} if override is None else {"port": override},
+        dry_run=True,
+    )
+    planned = plan(options, sctx=env.sctx)
+    result = run(options, sctx=env.sctx, plan=planned)
+    manifest = yaml.safe_load(env.submitted[0].manifests_yaml)
+    name = manifest["metadata"]["name"]
+    assert result.cluster_id == planned.cluster_id != name
+    assert name == result.metadata["k8s_jobset"] == native_jobset_name(planned.cluster_id, "gb10")
+    assert manifest["metadata"]["annotations"]["sparkrun.cluster_id"] == planned.cluster_id
+    assert manifest["metadata"]["annotations"]["sparkrun.recipe_fingerprint"] == planned.recipe_fingerprint
+    pod = manifest["spec"]["replicatedJobs"][0]["template"]["spec"]["template"]["spec"]
+    master = next(e["value"] for e in pod["containers"][0]["env"] if e["name"] == "MASTER_ADDR")
+    assert master == name + "-gb10-0-0." + name
+    assert all(len(part) <= 63 and re.fullmatch(r"[a-z][-a-z0-9]*[a-z0-9]", part) for part in master.split("."))
+    effective_port = int(override if override is not None else default or 8000)
+    assert "--port %d" % effective_port in result.serve_command
+    assert result.serve_port == effective_port
+    assert result.recipe_fingerprint == planned.recipe_fingerprint
+    assert result.intent_id == planned.intent_id and result.placement_token == planned.placement_token
+    assert result.timeline is not None and result.launch_result is None
+    assert result.dry_run and result.started_at > 0
+
+    # Returned resource references work directly across lifecycle APIs.
+    lookup = Mock(return_value=manifest)
+    monkeypatch.setattr(env.client, "run_json", lookup)
+    monkeypatch.setattr(env.client, "run", Mock(return_value=Mock(success=True)))
+    monkeypatch.setattr("sparkrun.plugins.k8s.api._logs.read_log_command", lambda *a, **kw: iter(()))
+    assert k8s.jobset_status(env.sctx, name=name) == manifest
+    assert list(k8s.logs(env.sctx, name=name)) == []
+    assert k8s.stop_jobset(env.sctx, name=name)
+    assert all(call.args[0][2] == name for call in lookup.call_args_list)
+
+
+@pytest.mark.parametrize("port", [0, -1, 65536, True, 3.5, "invalid"])
+def test_invalid_native_port_fails_before_cluster_preparation(native_env, port):
+    env = native_env
+    options = api.RunOptions(recipe=env.recipe, hosts=("localhost",), solo=True, executor="k8s", overrides={"port": port}, dry_run=True)
+    with pytest.raises(api.SparkrunError, match="port"):
+        run(options, sctx=env.sctx)
+    env.make_client.assert_not_called()
+    assert env.submitted == []
+
+
+@pytest.mark.parametrize(
+    "name,model,replicas",
+    [
+        ("bad_name", "gb10", 1),
+        ("9bad", "gb10", 1),
+        ("a.b", "gb10", 1),
+        ("a" * 55, "gb10", 1),
+        ("a" * 54, "gb10", 11),
+        ("good", "bad_model", 1),
+    ],
+)
+def test_invalid_jobset_names_fail_before_replacement(native_env, name, model, replicas):
+    env = native_env
+    replacement = Mock()
+    env.client.apply = Mock(side_effect=AssertionError("invalid manifests must not be submitted"))
+    with pytest.raises(k8s.JobSetLaunchError, match="resource name"):
+        k8s.launch_jobset(env.sctx, name=name, rank_models=[model] * replicas, image="img", serve_command="serve", before_start=replacement)
+    replacement.assert_not_called()
+    env.client.apply.assert_not_called()
+
+
+def test_portable_id_projection_is_bounded_and_distinguishes_normalization_collisions():
+    ids = ["sparkrun_a_b", "sparkrun-a-b", "sparkrun_" + "a" * 200, "sparkrun_" + "a" * 199 + "b", "123", "雪"]
+    names = [native_jobset_name(value, "gb10") for value in ids]
+    assert len(set(names)) == len(ids)
+    assert names == [native_jobset_name(value, "gb10") for value in ids]
+    assert all(len(name + "-gb10-0-0") <= 63 and re.fullmatch(r"[a-z][-a-z0-9]*[a-z0-9]", name) for name in names)

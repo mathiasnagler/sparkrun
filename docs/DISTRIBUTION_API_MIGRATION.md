@@ -88,7 +88,11 @@ contributions to enlisted registries. Failed plugins are not reported as loaded
 and independent plugins may continue. Inventory retains import/registration failure
 messages for all three sources, with directory/package provenance. Listing does
 not import disabled modules; a successful reload clears a prior failure for that
-source. Provider conflicts remain launch blockers.
+source. Provider conflicts remain launch blockers. Directory plugins with duplicate
+top-level names are rejected before import; pre-imported modules from another
+origin cannot satisfy a configured source. Directory inventory reads versions
+only from the module at that exact path and no longer borrows a same-named
+installed distribution's version. Installed entry-point versions remain metadata-based.
 Arbitrary plugin I/O is outside rollback. The SAF adapter depends on
 `scitrera-app-framework==0.0.69`, including private state-root/registry internals;
 changing that pin requires profile, rollback, and installed-wheel checks.
@@ -134,6 +138,19 @@ or `kind="job"`, optionally with `follow=True`, to consume structured `LogLine`
 records. Close the iterator when stopping early. `setup k8s launch --follow` and
 `setup k8s run-job --follow` render that iterator in the CLI. Native `run` JobSet
 submission returns without attachment; use the explicit plugin log API.
+Native `RunResult.cluster_id` remains the portable workload ID. Use
+`result.metadata["k8s_jobset"]` for Kubernetes status/stop/logs: it is the bounded
+resource name; the manifest retains the portable ID and fingerprint as annotations.
+Explicit JobSet names and generated suffixes are validated before replacement.
+Kubernetes lifecycle operations consistently translate operational failures into
+`SparkrunError`, while malformed resource arguments remain `ValueError`.
+
+Core completes common fresh-launch `RunResult` identity, fingerprint, timing and
+preview fields for native handlers too. Handlers still return actual substrate
+outcomes and need no private launch handle. Ensure hits keep unknown fields empty
+instead of borrowing the new plan's fingerprint or timeline. Native ports now
+resolve recipe defaults as well as explicit overrides and reject invalid values
+before preparation; custom command templates must honor that configured port.
 
 Run handlers reuse the supplied plan and standard executor resolver.
 `RunOptions.executor_overrides()` supplies the caller layer. Do not independently
@@ -287,6 +304,13 @@ A nonzero single-call benchmark exit now raises `BenchmarkFailed` under either
 and publication hooks do not run. For schedules, false means attempt remaining
 tasks once per invocation; failed tasks stay resumable and retry on the next run.
 Timeouts follow the same rule. The bounded measurement-gap pass remains available.
+Scheduled retries clear their previous task artifact before command construction.
+Only usable JSON from successful attempts is aggregated, in schedule order;
+unrelated or failed files cannot satisfy measurement coverage. A zero exit without
+usable output and coverage still missing after the bounded gap pass remain
+incomplete and cannot publish. Successful tasks retain their artifacts on resume.
+The internal aggregator now accepts selected paths instead of scanning a directory;
+the unused `gap_analysis(expected_per_task=...)` argument was removed.
 
 `run_setup_steps()` requires nonempty host keys and matching `HostState.host`
 values. Invalid initial mappings fail with `SetupFailed` before callbacks or

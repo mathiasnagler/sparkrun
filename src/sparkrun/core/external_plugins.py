@@ -7,6 +7,10 @@ This module extends that discovery to directories the user lists under
 runtimes, schedulers, builders, and benchmarking frameworks that live outside
 the open-source tree.
 
+Duplicate top-level module names across configured directories are rejected
+before importing them. An already imported module from a different directory
+is also rejected; inventory reports the actual loaded origin.
+
 For each configured directory:
 
 1. The directory is prepended to ``sys.path``.
@@ -41,6 +45,7 @@ from sparkrun.core.registration import enlist_registry_state, load_and_register_
 
 import importlib
 from functools import partial
+from importlib.machinery import PathFinder
 import inspect
 import logging
 import os
@@ -120,9 +125,30 @@ _REGISTERED_MODULES: set[tuple[int, str]] = set()
 enlist_registry_state(globals(), "_REGISTERED_MODULES")
 
 
-def loaded_plugin_module(dotted: str) -> "ModuleType | None":
-    """Return the module loaded as plugin *dotted*, or ``None`` if not loaded."""
-    return _LOADED_PLUGIN_MODULES.get(dotted)
+def _module_matches_directory(module: ModuleType, name: str, path: Path) -> bool:
+    spec = PathFinder.find_spec(name, [str(path.resolve())])
+    origin = getattr(module, "__file__", None)
+    return bool(spec and spec.origin and origin and Path(spec.origin).resolve() == Path(origin).resolve())
+
+
+def loaded_plugin_module(dotted: str, *, path: Path | None = None) -> "ModuleType | None":
+    """Return a successfully loaded plugin, optionally restricted to its directory."""
+    module = _LOADED_PLUGIN_MODULES.get(dotted)
+    if module is not None and path is not None and not _module_matches_directory(module, dotted, path):
+        return None
+    return module
+
+
+def _import_directory_plugin(name: str, path: Path, origins: list[Path]) -> ModuleType:
+    if len(origins) > 1:
+        raise ValueError("Plugin module %r occurs in multiple directories: %s" % (name, ", ".join(map(str, origins))))
+    previous = sys.modules.get(name)
+    if previous is not None and not _module_matches_directory(previous, name, path):
+        raise ValueError("Plugin module %r is already imported from outside %s" % (name, path))
+    module = importlib.import_module(name)
+    if not _module_matches_directory(module, name, path):
+        raise ValueError("Plugin module %r resolved outside %s" % (name, path))
+    return module
 
 
 def clear_loaded_plugin_modules() -> None:
@@ -269,17 +295,29 @@ def load_external_plugins(v: "Variables", paths: "list[Path] | None" = None) -> 
             return []
         paths = _configured_paths(v)
 
+    # Inspect all candidates before imports so duplicate module names cannot
+    # silently select one directory through sys.modules or sys.path precedence.
+    paths = list(dict.fromkeys(path.resolve() for path in paths))
+    candidates = {path: iter_plugin_module_names(path) for path in paths}
+    origins: dict[str, list[Path]] = {}
+    for path, names in candidates.items():
+        for name in names:
+            origins.setdefault(name, []).append(path)
+
     loaded: list[str] = []
     for path in paths:
         if not path.is_dir():
             logger.warning("Skipping external plugin path (not a directory): %s", path)
             continue
         path_str = str(path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-        for name in iter_plugin_module_names(path):
+        if path_str in sys.path:
+            sys.path.remove(path_str)
+        sys.path.insert(0, path_str)
+        for name in candidates[path]:
             try:
-                load_and_register_plugin(partial(importlib.import_module, name), v, source=("external", name, str(path.resolve())))
+                load_and_register_plugin(
+                    partial(_import_directory_plugin, name, path, origins[name]), v, source=("external", name, str(path))
+                )
             except Exception:  # one broken plugin must not prevent independent loading
                 logger.exception("Failed to load external plugin module %r from %s", name, path)
                 continue

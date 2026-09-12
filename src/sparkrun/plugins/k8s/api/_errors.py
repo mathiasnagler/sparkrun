@@ -8,6 +8,8 @@ uniformly.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from sparkrun.api._errors import SparkrunError
 
 
@@ -33,6 +35,23 @@ class KueueSetupError(SparkrunError):
 
 class JobSetLaunchError(SparkrunError):
     """Building, prechecking, or submitting a k8s JobSet launch failed."""
+
+
+@contextmanager
+def _operation_errors(operation: str):
+    """Translate operational failures; argument checks run outside this boundary."""
+    from ..orchestration.errors import K8sError, OwnershipError
+
+    try:
+        yield
+    except SparkrunError:
+        raise
+    except OwnershipError as exc:
+        raise SparkrunError(str(exc)) from exc
+    except K8sError as exc:
+        raise ClusterUnreachable(str(exc)) from exc
+    except Exception as exc:
+        raise SparkrunError("%s failed: %s" % (operation, exc)) from exc
 
 
 __all__ = [

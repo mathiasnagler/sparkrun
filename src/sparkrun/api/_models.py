@@ -357,7 +357,12 @@ class RunResult:
     """Launch outcome from :func:`sparkrun.api.run`; inspect rc for success.
 
     Runtime failure may return a nonzero rc; operational errors raise
-    SparkrunError. Plugin handlers need not supply the private launch_result.
+    SparkrunError. Core completes plan-derived identity, recipe_fingerprint,
+    started_at, dry_run, and a missing timeline for every fresh launch, including
+    plugin handlers. Handlers supply substrate outcomes (hosts, command, image,
+    port, runtime metadata) and need not supply the private launch_result.
+    Ensure hits describe the existing deployment: unavailable fields keep their
+    empty/zero defaults; the new plan's fingerprint and timeline are not reused.
     """
 
     cluster_id: str
@@ -385,7 +390,10 @@ class RunResult:
     container_image: str = ""
     """Container image actually used for the launch."""
     serve_port: int = 0
-    """Inference HTTP port the workload listens on."""
+    """Configured inference HTTP port; zero when unavailable (e.g. an ensure hit).
+
+    Custom command templates must honor the recipe's port configuration.
+    """
     effective_cache_dir: str = ""
     """Resolved HuggingFace cache directory on the launch target."""
     runtime_info: dict[str, str] = field(default_factory=dict)
@@ -422,7 +430,7 @@ class RunResult:
     then describe the **pre-existing** deployment, and
     :attr:`launch_result` is ``None`` (there was no launch)."""
     recipe_fingerprint: str = ""
-    """Serve-configuration digest persisted into this job's metadata.
+    """Serve-configuration digest for a fresh launch; empty on an ensure hit.
 
     Derived from the *declared* recipe before the launcher folds in
     host-dependent platform runtime-flag defaults, so a caller can reproduce it

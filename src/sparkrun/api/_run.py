@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
+from dataclasses import replace
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -266,7 +267,6 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         :class:`SparkrunError`: For other launch failures.
     """
     from sparkrun.core.launcher import launch_inference
-    from sparkrun.orchestration.job_metadata import parse_cluster_id
 
     sctx = resolve_sctx(sctx)
     from sparkrun.core.installed_plugins import RequiredIntegrationError, require_integrations
@@ -300,7 +300,6 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     placement = plan.placement
     effective_scheduler = plan.scheduler_selector
     intent_id = plan.intent_id
-    placement_token = plan.placement_token
     cluster_id_for_launch = plan.cluster_id
 
     # ``ensure``: don't launch a duplicate of a workload that's already
@@ -441,13 +440,14 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
                     "execution strategy %r does not support the %r executor launch path" % (execution_strategy.name, _executor_name)
                 )
             with _launch_errors("executor %r launch" % _executor_name):
-                return handler.run(
+                result = handler.run(
                     options,
                     sctx,
                     plan=plan,
                     started_at=started_at,
                     before_start=None if options.dry_run else _evict_before_start,
                 )
+                return _complete_run_result(result, plan=plan, options=options, sctx=sctx, started_at=started_at)
 
     # 4. Translate options → launch_inference kwargs.
     launch_kwargs: dict[str, Any] = {
@@ -512,27 +512,8 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     if result.runtime_info:
         metadata["runtime_info"] = dict(result.runtime_info)
 
-    # Recover identifier components from the launcher's final cluster_id
-    # in case it differs from the one we composed (e.g. an external
-    # caller passed a non-canonical cluster_id_override through).
-    final_cluster_id = result.cluster_id
-    final_intent_id = intent_id
-    final_placement_token = placement_token
-    try:
-        parsed_intent, parsed_token = parse_cluster_id(final_cluster_id)
-        final_intent_id = parsed_intent
-        final_placement_token = parsed_token
-    except ValueError:
-        # Non-canonical cluster_id (manual override) — keep the values
-        # we computed pre-launch so RunResult still carries something
-        # meaningful.
-        pass
-
     run_result = RunResult(
-        cluster_id=final_cluster_id,
-        intent_id=final_intent_id,
-        placement_token=final_placement_token,
-        recipe_fingerprint=plan.recipe_fingerprint,
+        cluster_id=result.cluster_id,
         host_list=tuple(result.host_list),
         placement=placement,
         scheduler=plan.scheduler or _resolve_scheduler_name(effective_scheduler, sctx),
@@ -551,10 +532,11 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         timeline=result.timeline,
         launch_result=result,
     )
+    run_result = _complete_run_result(run_result, plan=plan, options=options, sctx=sctx, started_at=started_at)
     _prune_stale_job_metadata(
         config,
         observed_running=observed_running["ids"],
-        keep=(final_cluster_id,),
+        keep=(run_result.cluster_id,),
         sctx=sctx,
     )
 
@@ -562,6 +544,32 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
 
     emit_run_telemetry(config, result=run_result, recipe=recipe, cluster=cluster_def, options=options)
     return run_result
+
+
+def _complete_run_result(result: RunResult, *, plan: RunPlan, options: RunOptions, sctx, started_at: float) -> RunResult:
+    """Populate shared launch metadata once, for core and native handlers.
+
+    The actual substrate identity/hosts/command remain the launcher's outcome.
+    Ensure hits bypass this helper: a new plan cannot describe the existing
+    deployment's fingerprint or claim a new launch timeline.
+    """
+    from sparkrun.orchestration.job_metadata import parse_cluster_id
+
+    if not isinstance(result, RunResult):
+        raise TypeError("Run handlers must return RunResult")
+    try:
+        intent_id, placement_token = parse_cluster_id(result.cluster_id)
+    except ValueError:
+        intent_id, placement_token = plan.intent_id, plan.placement_token
+    return replace(
+        result,
+        intent_id=intent_id,
+        placement_token=placement_token,
+        recipe_fingerprint=plan.recipe_fingerprint,
+        timeline=result.timeline if result.timeline is not None else sctx.timing,
+        started_at=started_at,
+        dry_run=options.dry_run,
+    )
 
 
 def _prune_stale_job_metadata(config, *, observed_running: "set[str] | None", keep: tuple[str, ...], sctx) -> None:

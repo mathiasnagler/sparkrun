@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -14,49 +14,33 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_RUNS_FILENAME_RE = re.compile(r"^(\d+)_?")
+
+def read_task_result(path: Path) -> dict[str, Any] | None:
+    """Read one task artifact, returning None for missing or unusable JSON."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        logger.warning("aggregator: skipping %s — %s", path.name, exc)
+        return None
+    if not isinstance(data, dict):
+        logger.warning("aggregator: skipping %s — top-level value is not a dict", path.name)
+        return None
+    return data
 
 
-def consolidate_results(state_dir: Path, fw: "BenchmarkingPlugin") -> dict[str, Any]:
-    """Read every JSON file under ``state_dir/runs/`` in schedule-index order and
-    delegate consolidation to ``fw.consolidate_per_task_results()``.
+def consolidate_results(result_files: Iterable[Path], fw: "BenchmarkingPlugin") -> dict[str, Any]:
+    """Combine explicitly accepted task artifacts in the caller's order.
 
-    Per-file errors (missing/invalid JSON, non-dict top level) are logged and
-    skipped so that one bad file does not abort the whole consolidation.
-
-    Returns the framework-shaped dict produced by the plugin.  When no files
-    exist yet, the empty list is passed to the plugin so it can decide on a
-    safe default.
+    The scheduler owns artifact selection; this function never scans a directory.
+    Unusable files are logged and skipped. Frameworks own the result schema.
     """
-    runs_dir = state_dir / "runs"
-    if not runs_dir.is_dir():
-        return fw.consolidate_per_task_results([])
-
-    json_files = sorted(
-        runs_dir.glob("*.json"),
-        key=lambda p: int(m.group(1)) if (m := _RUNS_FILENAME_RE.match(p.name)) else 0,
-    )
-
-    per_task_jsons: list[dict[str, Any]] = []
-    for json_path in json_files:
-        try:
-            data = json.loads(json_path.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("aggregator: skipping %s — %s", json_path.name, exc)
-            continue
-        if not isinstance(data, dict):
-            logger.warning("aggregator: skipping %s — top-level value is not a dict", json_path.name)
-            continue
-        per_task_jsons.append(data)
-
-    return fw.consolidate_per_task_results(per_task_jsons)
+    return fw.consolidate_per_task_results([data for path in result_files if (data := read_task_result(path)) is not None])
 
 
 def gap_analysis(
     task_list: list["BenchTask"],
     consolidated: dict[str, Any],
     fw: "BenchmarkingPlugin",
-    expected_per_task: int = 1,
 ) -> list["BenchTask"]:
     """Return tasks whose coverage key is absent from the consolidated dict.
 

@@ -13,12 +13,13 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
+from pathlib import Path
 from sparkrun.benchmarking._credentials import BenchmarkCredentials
 from sparkrun.benchmarking._process import run_benchmark_process
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from sparkrun.benchmarking.aggregator import consolidate_results, gap_analysis
+from sparkrun.benchmarking.aggregator import consolidate_results, gap_analysis, read_task_result
 from sparkrun.benchmarking.run_state import BenchmarkRunState
 
 if TYPE_CHECKING:
@@ -95,7 +96,17 @@ def run_schedule(
     """
     credentials = credentials or BenchmarkCredentials()
     total = len(tasks)
-    consolidated: dict[str, Any] = consolidate_results(state.state_dir(cache_dir), fw)
+    result_files = [state.runs_dir(cache_dir) / ("%03d%s.json" % (idx, fw.result_filename_suffix(task))) for idx, task in enumerate(tasks)]
+
+    def _consolidate() -> dict[str, Any]:
+        return consolidate_results((path for idx, path in enumerate(result_files) if idx in state.completed_indices), fw)
+
+    # Saved successes need usable artifacts too. Failed/interrupted artifacts
+    # and unrelated files in runs/ never contribute to measurement coverage.
+    for idx in tuple(state.completed_indices):
+        if read_task_result(result_files[idx]) is None:
+            state.mark_failed(idx, "missing or invalid result artifact")
+    consolidated = _consolidate()
 
     # Session bookkeeping — mark this execution session.
     state.mark_session_started()
@@ -103,7 +114,6 @@ def run_schedule(
 
     failed_this_run: set[int] = set()
     session_first_task = True
-    _gap_pass_done = False
 
     def _do_loop() -> tuple[bool, bool]:
         """Inner loop over pending tasks.
@@ -130,14 +140,14 @@ def run_schedule(
             if pinned_version:
                 run_args["framework_pinned_version"] = pinned_version
 
-            suffix = fw.result_filename_suffix(task)
-            result_file = state.runs_dir(cache_dir) / ("%03d%s.json" % (idx, suffix))
-            log_file = state.runs_dir(cache_dir) / ("%03d%s.log" % (idx, suffix))
-
-            cmd = fw.build_benchmark_command(target_url, model, credentials.arguments(run_args), result_file=str(result_file))
-
+            result_file: Path = result_files[idx]
+            log_file = result_file.with_suffix(".log")
             state.mark_started(idx)
             state.save(cache_dir)
+            # Invalidate before command construction: builders may inspect or
+            # produce the target file, and an interrupted retry must stay pending.
+            result_file.unlink(missing_ok=True)
+            cmd = fw.build_benchmark_command(target_url, model, credentials.arguments(run_args), result_file=str(result_file))
 
             t_start = time.monotonic()
             try:
@@ -165,16 +175,16 @@ def run_schedule(
                     log_fh.close()
 
                 duration_s = time.monotonic() - t_start
-                if rc == 0:
+                if rc == 0 and read_task_result(result_file) is not None:
                     state.mark_completed(idx)
                     state.save(cache_dir)
                     progress_ui.end_task(idx, success=True, duration_s=duration_s)
-                    consolidated = consolidate_results(state.state_dir(cache_dir), fw)
+                    consolidated = _consolidate()
                     progress_ui.update_results_table(consolidated)
                     session_first_task = False
                 else:
                     failed_this_run.add(idx)
-                    state.mark_failed(idx, "exit code %d" % rc)
+                    state.mark_failed(idx, "exit code %d" % rc if rc else "missing or invalid result artifact")
                     state.save(cache_dir)
                     progress_ui.end_task(idx, success=False, duration_s=duration_s)
                     if exit_on_first_fail:
@@ -206,32 +216,35 @@ def run_schedule(
             )
 
         # Post-loop gap analysis — done at most once.
-        if not _gap_pass_done:
-            _gap_pass_done = True
-            gaps = gap_analysis(tasks, consolidated, fw)
-            if gaps:
-                progress_ui.log("Found %d gap(s); re-queueing" % len(gaps))
-                for gap_task in gaps:
-                    if gap_task.index in state.completed_indices:
-                        state.completed_indices.remove(gap_task.index)
+        gaps = gap_analysis(tasks, consolidated, fw)
+        if gaps:
+            progress_ui.log("Found %d gap(s); re-queueing" % len(gaps))
+            for gap_task in gaps:
+                if gap_task.index in state.completed_indices:
+                    state.completed_indices.remove(gap_task.index)
+            state.save(cache_dir)
+            # Re-enter the loop for gap tasks.
+            aborted, interrupted = _do_loop()
+            if interrupted:
+                state.mark_session_ended("interrupted")
                 state.save(cache_dir)
-                # Re-enter the loop for gap tasks.
-                aborted, interrupted = _do_loop()
-                if interrupted:
-                    state.mark_session_ended("interrupted")
-                    state.save(cache_dir)
-                    raise KeyboardInterrupt
-                if aborted:
-                    return ScheduleRunResult(
-                        success=False,
-                        completed_count=len(state.completed_indices),
-                        failed_count=len(state.failed_indices),
-                        state=state,
-                        consolidated=consolidated,
-                    )
+                raise KeyboardInterrupt
+            if aborted:
+                return ScheduleRunResult(
+                    success=False,
+                    completed_count=len(state.completed_indices),
+                    failed_count=len(state.failed_indices),
+                    state=state,
+                    consolidated=consolidated,
+                )
 
-        # Final consolidation and session close.
-        consolidated = consolidate_results(state.state_dir(cache_dir), fw)
+        # A bounded gap pass may still leave successful commands without the
+        # requested measurements. Persist those gaps as failures for resume.
+        consolidated = _consolidate()
+        for task in gap_analysis(tasks, consolidated, fw):
+            if task.index in state.completed_indices:
+                state.mark_failed(task.index, "missing measurement coverage")
+        consolidated = _consolidate()
         progress_ui.update_results_table(consolidated)
 
         if state.is_complete(total):

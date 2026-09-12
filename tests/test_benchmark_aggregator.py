@@ -85,7 +85,7 @@ def test_consolidate_empty_dir_no_runs_subdir(tmp_path: Path):
     state_dir = tmp_path / "bench_aabbccddeeff"
     state_dir.mkdir()
     fw = _FakeFW()
-    result = consolidate_results(state_dir, fw)
+    result = consolidate_results(sorted((state_dir / "runs").glob("*.json")), fw)
     assert fw.consolidate_calls == [[]]
     assert result == {"runs": []}
 
@@ -95,13 +95,13 @@ def test_consolidate_empty_runs_dir(tmp_path: Path):
     state_dir = tmp_path / "bench_aabbccddeeff"
     (state_dir / "runs").mkdir(parents=True)
     fw = _FakeFW()
-    result = consolidate_results(state_dir, fw)
+    result = consolidate_results(sorted((state_dir / "runs").glob("*.json")), fw)
     assert fw.consolidate_calls == [[]]
     assert result == {"runs": []}
 
 
-def test_consolidate_preserves_filename_index_ordering(tmp_path: Path):
-    """Files are read in numeric-prefix order regardless of suffix."""
+def test_consolidate_preserves_selected_order_and_ignores_unselected_files(tmp_path: Path):
+    """Selection and ordering belong to the caller, not filename enumeration."""
     state_dir = tmp_path / "bench_aabbccddeeff"
     runs_dir = state_dir / "runs"
     _write_result(runs_dir, "002_d0_c5.json", {"tag": "third"})
@@ -109,12 +109,13 @@ def test_consolidate_preserves_filename_index_ordering(tmp_path: Path):
     _write_result(runs_dir, "001_d4096_c2.json", {"tag": "second"})
 
     fw = _FakeFW()
-    consolidate_results(state_dir, fw)
+    _write_result(runs_dir, "999-stray.json", {"tag": "unselected"})
+    consolidate_results([runs_dir / name for name in ("001_d4096_c2.json", "000.json", "002_d0_c5.json")], fw)
 
-    # The plugin should see exactly one call with the dicts in numeric order.
+    # Only the selected files, in the explicitly requested order.
     assert len(fw.consolidate_calls) == 1
     tags = [d.get("tag") for d in fw.consolidate_calls[0]]
-    assert tags == ["first", "second", "third"]
+    assert tags == ["second", "first", "third"]
 
 
 def test_consolidate_malformed_json_skipped(tmp_path: Path, caplog):
@@ -129,7 +130,7 @@ def test_consolidate_malformed_json_skipped(tmp_path: Path, caplog):
 
     fw = _FakeFW()
     with caplog.at_level(logging.WARNING, logger="sparkrun.benchmarking.aggregator"):
-        consolidate_results(state_dir, fw)
+        consolidate_results(sorted((state_dir / "runs").glob("*.json")), fw)
 
     # Only the 2 valid dicts forwarded
     assert len(fw.consolidate_calls) == 1
@@ -150,7 +151,7 @@ def test_consolidate_non_dict_top_level_skipped(tmp_path: Path, caplog):
 
     fw = _FakeFW()
     with caplog.at_level(logging.WARNING, logger="sparkrun.benchmarking.aggregator"):
-        consolidate_results(state_dir, fw)
+        consolidate_results(sorted((state_dir / "runs").glob("*.json")), fw)
 
     assert len(fw.consolidate_calls[0]) == 1
     warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
@@ -172,7 +173,7 @@ def test_consolidate_llama_benchy_end_to_end(tmp_path: Path):
     _write_result(runs_dir, "002_d0_c5.json", _make_result("org/model-c", concurrency=5, context_size=0))
 
     fw = LlamaBenchyFramework()
-    result = consolidate_results(state_dir, fw)
+    result = consolidate_results(sorted((state_dir / "runs").glob("*.json")), fw)
 
     assert result["model"] == "org/model-a"
     assert result["max_concurrency"] == 8

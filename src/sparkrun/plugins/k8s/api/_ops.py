@@ -12,6 +12,8 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from ..config import K8sSettings
+from ._errors import _operation_errors
+from ..orchestration.names import validate_resource_name
 
 from sparkrun.core.application_profile import resource_name
 
@@ -365,6 +367,7 @@ def launch_jobset(
     image: str,
     serve_command: str,
     env: dict[str, str] | None = None,
+    annotations: dict[str, str] | None = None,
     gpus_per_pod: int = 1,
     transport: str = "tcp",
     namespace: str | None = None,
@@ -407,6 +410,7 @@ def launch_jobset(
             node_selectors=node_selectors_from_nodes(nodes),
             gpus_per_pod=gpus_per_pod,
             env=env,
+            annotations=annotations,
             transport=transport,
             namespace=ns,
         )
@@ -451,10 +455,12 @@ def stop_jobset(
     """Delete a JobSet (cascades to Jobs/pods).  Returns True on success."""
     from sparkrun.plugins.k8s.orchestration import launch as _launch
 
-    sctx = resolve_sctx(sctx)
-    ns = namespace or resource_name("")
-    client = make_client(sctx, kubeconfig=kubeconfig, context=context, namespace=ns)
-    return _launch.stop_jobset(client, name).success
+    validate_resource_name(name)
+    with _operation_errors("Kubernetes JobSet stop"):
+        sctx = resolve_sctx(sctx)
+        ns = namespace or resource_name("")
+        client = make_client(sctx, kubeconfig=kubeconfig, context=context, namespace=ns)
+        return _launch.stop_jobset(client, name).success
 
 
 def jobset_status(
@@ -468,13 +474,12 @@ def jobset_status(
     """Return the JobSet object as a dict."""
     from sparkrun.plugins.k8s.orchestration import launch as _launch
 
-    sctx = resolve_sctx(sctx)
-    ns = namespace or resource_name("")
-    client = make_client(sctx, kubeconfig=kubeconfig, context=context, namespace=ns)
-    try:
+    validate_resource_name(name)
+    with _operation_errors("Kubernetes JobSet status"):
+        sctx = resolve_sctx(sctx)
+        ns = namespace or resource_name("")
+        client = make_client(sctx, kubeconfig=kubeconfig, context=context, namespace=ns)
         return _launch.jobset_status(client, name)
-    except K8sError as exc:
-        raise ClusterUnreachable(str(exc)) from exc
 
 
 def run_launcher_job(

@@ -473,6 +473,8 @@ class BenchmarkRunState:
 
     def mark_started(self, idx: int, pid: int | None = None) -> None:
         """Record that task *idx* has started (optionally with process *pid*)."""
+        if idx in self.completed_indices:
+            self.completed_indices.remove(idx)
         logger.debug("Benchmark %s: task %d started (pid=%s)", self.benchmark_id, idx, pid)
 
     def mark_completed(self, idx: int) -> None:
@@ -488,6 +490,8 @@ class BenchmarkRunState:
 
     def mark_failed(self, idx: int, error: str | None = None) -> None:
         """Record task *idx* as failed for this session."""
+        if idx in self.completed_indices:
+            self.completed_indices.remove(idx)
         if idx not in self.failed_indices:
             self.failed_indices.append(idx)
         logger.debug("Benchmark %s: task %d failed — %s", self.benchmark_id, idx, error or "no detail")

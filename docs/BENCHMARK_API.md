@@ -261,6 +261,15 @@ exit or timeout. Each failed task is skipped for the rest of that invocation; a
 later resume retries it while retaining completed tasks. An incomplete schedule
 raises `BenchmarkFailed`. The existing single bounded gap-analysis pass may still
 remeasure completed tasks with missing measurement coverage.
+Coverage still missing after that pass leaves the schedule incomplete.
+
+The scheduler removes a pending task's old JSON output before constructing its
+next command. A zero exit with missing, invalid, or non-object JSON is a failed
+attempt and remains resumable. Only usable artifacts of successful tasks enter
+aggregation, in schedule order; failed/interrupted output and unrelated files in
+`runs/` cannot satisfy coverage. Previously completed tasks with usable artifacts
+are preserved. Saved successes whose artifacts are missing or unusable are retried
+when measurement resumes. Successful publication requires the complete schedule.
 
 For single-call frameworks, any nonzero exit raises `BenchmarkFailed`, regardless
 of `exit_on_first_fail`, even if the command emitted valid partial measurements.

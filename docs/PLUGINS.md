@@ -249,17 +249,21 @@ sparkrun_thunder  0.2.0    external  off    core.external_plugins
 It is optional, and a plugin that declares nothing is reported `unknown` rather
 than being given a version it did not claim. Two consequences of that rule:
 
-- **The installed-distribution fallback is out-of-tree only.** If your plugin
-  is pip-installed and declares no `__version__`, sparkrun falls back to the
-  version of the distribution providing that top-level module. An in-tree
-  plugin gets no such fallback: its package resolves to the `sparkrun`
-  distribution, so the fallback would report sparkrun's version as the
-  plugin's — wrong precisely where it matters, since a vendored plugin carries
-  its own release line.
-- **A version is only read off a module sparkrun loaded as a plugin.** A
-  disabled plugin is never imported just to read its version, so it lists as
-  `unknown`; and a same-named module importable for unrelated reasons is not
-  consulted.
+- **Directory versions require matching source provenance.** Only the loaded
+  module at that configured directory supplies its `__version__`; a same-named
+  installed package does not supply a fallback. Installed entry-point rows use
+  their owning package's metadata version. Bundled modules use their declared
+  version, never the host package version.
+- **Listing never imports a plugin for its version.** An unattempted or failed
+  source has an unknown module version. A previously loaded source can still
+  report its version after its gate is disabled.
+
+Duplicate top-level module names in different configured plugin directories are
+rejected before those modules are imported. Unambiguous plugins still load. A
+module already imported from outside its configured directory is also rejected;
+use distinct module names or separate application processes. Inventory attributes
+loaded status and version to the actual source path and retains each rejected
+source's diagnostic. Listing itself does not import plugins.
 
 The `STATE` column separates the gate from the outcome. `on (load failed)`
 means the flag resolves on but the import raised — run with `-v` for the
@@ -572,7 +576,14 @@ Both default and plugin
 launches preserve typed `SparkrunError` errors and translate other exceptions with
 their cause; interrupts propagate unchanged. A runtime failure may instead return
 a nonzero `RunResult.rc`; consumers must inspect that public status. A plugin need
-not create the private `launch_result` handle. Benchmarking rejects nonzero real
+not create the private `launch_result` handle. Core completes shared result fields
+for both launch paths: identity components from the returned portable cluster ID
+(with the plan as fallback), the plan's recipe fingerprint, operation start time,
+preview flag, and an operation timeline when the handler omits one. Handlers supply
+actual substrate outcomes such as hosts, command, image, and configured serve port.
+Ensure hits describe an existing deployment and keep unavailable fields empty;
+they do not inherit the new plan's fingerprint or a launch timeline.
+Benchmarking rejects nonzero real
 launch status before endpoint waits, checkpoint hooks, or measurement.
 The Kubernetes plugin uses the same
 executor configuration chain for its target settings. `options.executor_overrides()`

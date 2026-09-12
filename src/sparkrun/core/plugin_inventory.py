@@ -21,8 +21,8 @@ user has switched off.
 Version resolution follows the source:
 
 - Bundled modules use the loaded module's ``__version__``, otherwise unknown.
-- Directory modules use ``__version__`` first, then an installed distribution
-  providing that top-level module, otherwise unknown.
+- Directory modules use ``__version__`` only from the loaded module at that
+  exact path, otherwise unknown. A matching package name is not provenance.
 - Installed entry points use their owning distribution's metadata version.
 
 A bundled plugin never inherits the host package version: a vendored plugin
@@ -32,7 +32,6 @@ such as SparkRoute has its own version.
 
 from __future__ import annotations
 
-import logging
 from sparkrun.core.registration import plugin_load_failure
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,8 +41,6 @@ if TYPE_CHECKING:
     from scitrera_app_framework import Variables
 
     from sparkrun.core.config import SparkrunConfig
-
-logger = logging.getLogger(__name__)
 
 #: ``source`` values.
 SOURCE_IN_TREE = "in-tree"
@@ -75,7 +72,7 @@ class PluginInfo:
     """Whether the plugin's feature gate currently resolves on."""
 
     loaded: bool
-    """Whether *this process* actually loaded it (gate on **and** import ok)."""
+    """Whether this process successfully registered this source, even if now disabled."""
 
     feature_flag: str | None = None
     """The flag gating it; ``None`` for an in-tree plugin missing its binding."""
@@ -87,7 +84,7 @@ class PluginInfo:
     """How :attr:`version` was obtained; ``None`` when it is unknown."""
 
     path: Path | None = None
-    """The ``plugins.paths`` directory it came from (out-of-tree only)."""
+    """The configured ``plugins.paths`` directory this row describes (directory plugins only)."""
 
     package: str | None = None
     selection_source: str | None = None
@@ -128,45 +125,16 @@ class PluginInfo:
         }
 
 
-def _module_version(dotted: str) -> tuple[str | None, str | None]:
+def _module_version(dotted: str, *, path: Path | None = None) -> tuple[str | None, str | None]:
     """Read ``__version__`` off the module loaded as plugin *dotted*."""
     from sparkrun.core.external_plugins import loaded_plugin_module
 
-    module = loaded_plugin_module(dotted)
+    module = loaded_plugin_module(dotted, path=path)
     if module is None:
         return None, None
     raw = getattr(module, VERSION_ATTR, None)
     if isinstance(raw, str) and raw.strip():
         return raw.strip(), VERSION_FROM_MODULE
-    return None, None
-
-
-def _distribution_version(top_level: str) -> tuple[str | None, str | None]:
-    """Version of the installed distribution providing *top_level*, if any.
-
-    Out-of-tree only (see the module docstring). Best-effort: a plugin dropped
-    into ``plugins.paths`` is typically not an installed distribution at all,
-    and that is a normal outcome, not an error.
-    """
-    try:
-        from importlib.metadata import packages_distributions, version as distribution_version
-
-        dists = packages_distributions().get(top_level) or []
-        for dist in dists:
-            found = distribution_version(dist)
-            if found:
-                return found, VERSION_FROM_DISTRIBUTION
-    except Exception:  # noqa: BLE001 - metadata lookup is advisory; unknown is a fine answer
-        logger.debug("Could not resolve a distribution version for %r", top_level, exc_info=True)
-    return None, None
-
-
-def _resolve_version(dotted: str, *, source: str, top_level: str) -> tuple[str | None, str | None]:
-    version, origin = _module_version(dotted)
-    if version is not None:
-        return version, origin
-    if source == SOURCE_EXTERNAL:
-        return _distribution_version(top_level)
     return None, None
 
 
@@ -190,7 +158,7 @@ def _in_tree_plugins(v: "Variables | None") -> list[PluginInfo]:
         # visible instead of silent.
         registered = flag is not None and get_feature(flag) is not None
         enabled = registered and feature_gate_enabled(flag, v)
-        version, origin = _resolve_version(dotted, source=SOURCE_IN_TREE, top_level=name)
+        version, origin = _module_version(dotted)
         out.append(
             PluginInfo(
                 name=name,
@@ -229,14 +197,14 @@ def _external_plugins(config: "SparkrunConfig | None", v: "Variables | None") ->
     out: list[PluginInfo] = []
     for path in config.external_plugin_paths:
         for name in iter_plugin_module_names(path):
-            version, origin = _resolve_version(name, source=SOURCE_EXTERNAL, top_level=name)
+            version, origin = _module_version(name, path=path)
             out.append(
                 PluginInfo(
                     name=name,
                     source=SOURCE_EXTERNAL,
                     module=name,
                     enabled=enabled,
-                    loaded=loaded_plugin_module(name) is not None,
+                    loaded=loaded_plugin_module(name, path=path) is not None,
                     feature_flag=gate,
                     version=version,
                     version_source=origin,

@@ -1379,6 +1379,9 @@ class _FakeRecipe:
     name = "r"
     qualified_name = "r"
 
+    def build_config_chain(self, overrides):
+        return {"port": 8000, **overrides}
+
 
 def _run_k8s_common(tmp_path, monkeypatch, nodes):
     from sparkrun.plugins.k8s import api as apik8s
@@ -1431,7 +1434,8 @@ def test_run_k8s_solo_homogeneous(tmp_path, monkeypatch):
     assert result.serve_port == 8000  # from the port override
     # launch received a single-rank gb10 plan
     assert captured["rank_models"] == ["gb10"]
-    assert captured["name"] == "intent-token"
+    assert captured["name"] == result.metadata["k8s_jobset"] != "intent-token"
+    assert captured["annotations"]["sparkrun.cluster_id"] == "intent-token"
     assert "follow" not in captured
 
 
@@ -1519,7 +1523,18 @@ def test_api_run_branches_to_k8s_when_flag_on(tmp_path, monkeypatch):
     monkeypatch.setattr("sparkrun.api._hosts.resolve_effective_hosts", lambda *a, **k: (["s0"], True, [], None))
     monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor_name", lambda **k: "k8s")
 
-    sentinel = object()
+    sentinel = api.RunResult(
+        cluster_id="native-result",
+        host_list=("s0",),
+        placement=None,
+        scheduler="greedy",
+        runtime="fake",
+        executor="k8s",
+        started_at=0,
+        dry_run=True,
+        is_solo=True,
+        rc=42,
+    )
     called = {}
 
     def _fake_run_k8s(options, sctx, **kw):
@@ -1530,7 +1545,8 @@ def test_api_run_branches_to_k8s_when_flag_on(tmp_path, monkeypatch):
 
     sctx = _sctx(tmp_path)
     out = api.run(api.RunOptions(recipe=_FakeRecipe(), hosts=("s0",), solo=True, dry_run=True, executor="k8s"), sctx=sctx)
-    assert out is sentinel and called.get("hit")
+    assert out.cluster_id == sentinel.cluster_id and out.rc == 42 and called.get("hit")
+    assert out.timeline is not None and out.recipe_fingerprint
 
 
 # ---------------------------------------------------------------------------

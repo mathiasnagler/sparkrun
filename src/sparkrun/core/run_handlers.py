@@ -32,7 +32,10 @@ class RunCallback(Protocol):
 
         Core owns replacement; the callback is idempotent and absent in previews.
         Callback failure must abort submission. Handlers must not call it before
-        validation and preparation have succeeded.
+        validation and preparation have succeeded. Return actual substrate
+        outcomes (cluster ID, hosts, command, image, port); core completes shared
+        identity components, fingerprint, operation timing, and preview metadata.
+        A private launch_result handle is optional.
         """
         ...
 

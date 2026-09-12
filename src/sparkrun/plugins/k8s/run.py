@@ -55,6 +55,18 @@ def run_k8s(
         )
 
     overrides = dict(options.overrides)
+    raw_port = recipe.build_config_chain(overrides).get("port")
+    if raw_port is None:
+        raw_port = 8000
+    try:
+        if isinstance(raw_port, bool) or not isinstance(raw_port, (str, int)):
+            raise ValueError
+        serve_port = int(raw_port)
+        if not 1 <= serve_port <= 65535:
+            raise ValueError
+    except ValueError as exc:
+        raise SparkrunError("Inference port must be an integer between 1 and 65535") from exc
+    overrides["port"] = serve_port
     image = runtime.resolve_container(recipe, overrides)
     serve_command = runtime.generate_command(recipe, overrides, is_cluster=False, num_nodes=1)
 
@@ -79,9 +91,12 @@ def run_k8s(
 
     env = {str(k): str(v) for k, v in (getattr(recipe, "env", {}) or {}).items()}
 
+    from .orchestration.names import native_jobset_name
+
     result = api.launch_jobset(
         sctx,
-        name=cluster_id,
+        name=native_jobset_name(cluster_id, model),
+        annotations={"sparkrun.cluster_id": cluster_id, "sparkrun.recipe_fingerprint": plan.recipe_fingerprint},
         rank_models=[model],
         image=image,
         serve_command=serve_command,
@@ -92,12 +107,6 @@ def run_k8s(
         dry_run=options.dry_run,
         before_start=before_start,
     )
-
-    serve_port = 0
-    try:
-        serve_port = int(overrides.get("port") or 0)
-    except (TypeError, ValueError):
-        serve_port = 0
 
     metadata = {
         "recipe": getattr(recipe, "qualified_name", None) or getattr(recipe, "name", None),
@@ -122,8 +131,6 @@ def run_k8s(
         container_image=image,
         serve_port=serve_port,
         metadata=metadata,
-        intent_id=plan.intent_id,
-        placement_token=plan.placement_token,
     )
 
 

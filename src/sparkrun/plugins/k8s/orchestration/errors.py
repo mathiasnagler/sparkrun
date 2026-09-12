@@ -14,6 +14,10 @@ class K8sError(Exception):
     """Base class for all Kubernetes orchestration failures."""
 
 
+class OwnershipError(K8sError):
+    """A resource belongs to a different application."""
+
+
 class KubectlNotFoundError(K8sError):
     """No usable ``kubectl`` binary could be resolved or downloaded."""
 
@@ -32,6 +36,7 @@ class ServiceAccountSetupError(K8sError):
 
 __all__ = [
     "K8sError",
+    "OwnershipError",
     "KubectlNotFoundError",
     "KubectlDownloadError",
     "ClusterUnreachableError",

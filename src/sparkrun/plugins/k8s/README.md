@@ -95,6 +95,31 @@ iterator and stop reading on Ctrl-C. Dry-run never reads logs. The native
 `api.run()` / `run` JobSet path returns after submission regardless of
 `RunOptions.follow`; use the explicit log API for attachment.
 
+## Resource identity and result contracts
+
+Native `api.run()` keeps its portable `RunResult.cluster_id` unchanged and derives
+a bounded Kubernetes JobSet name with a digest. The actual resource name is in
+`result.metadata["k8s_jobset"]`; pass it to `logs()`, `jobset_status()`, and
+`stop_jobset()` with the original target settings. The JobSet annotations retain
+`sparkrun.cluster_id` and `sparkrun.recipe_fingerprint`. Explicit `launch_jobset()`
+callers supply a Kubernetes name directly and may provide `annotations`.
+
+Before replacement/submission, JobSet naming checks cover the headless Service
+and the longest generated pod hostname, including replicated-job and index
+suffixes. The checks follow [JobSet's DNS naming rules](https://jobset.sigs.k8s.io/docs/concepts/#dns-hostnames-for-pods).
+Invalid explicit names fail during preparation. Portable workload IDs are never
+renamed globally to meet these substrate rules.
+
+The native serve port comes from the recipe configuration plus `overrides["port"]`,
+with the same 8000 fallback as the core launcher. The resolved integer is passed
+to command generation and returned in `RunResult.serve_port`; values outside
+1–65535 fail before cluster preparation. Custom commands must honor the recipe's
+configured port (for example, with a `{port}` template placeholder).
+
+Lifecycle/log operations reject foreign application ownership before mutation
+or reading. Operational failures raise `SparkrunError` subtypes with their cause;
+invalid resource arguments raise `ValueError`, and interrupts propagate unchanged.
+
 ## Existing launch limits
 
 The automatic `run` JobSet path currently supports a single pod and a homogeneous

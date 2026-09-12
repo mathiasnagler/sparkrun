@@ -265,13 +265,17 @@ class BenchmarkingPlugin(Plugin):
         """Per-task suffix appended after the index in scheduler artifact filenames.
 
         The scheduler writes ``{idx:03d}{suffix}.json`` / ``{idx:03d}{suffix}.log``.
-        Default: empty string (use index-only filenames).
+        Default: empty string (use index-only filenames). The suffix must be
+        deterministic for the saved task across resumes. The host invalidates
+        a pending task's previous output before command construction.
         """
         return ""
 
     def consolidate_per_task_results(self, per_task_jsons: list[dict[str, Any]]) -> dict[str, Any]:
         """Consolidate per-task JSON dicts into a single framework-shaped dict.
 
+        Inputs contain only usable JSON objects from successful task attempts,
+        in schedule order. Failed/interrupted artifacts are excluded.
         Default: ``{"runs": list(per_task_jsons)}``.
         """
         return {"runs": list(per_task_jsons)}

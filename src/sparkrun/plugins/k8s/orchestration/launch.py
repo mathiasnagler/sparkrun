@@ -23,6 +23,7 @@ from . import nccl
 from .client import KubectlClient
 from .jobset import JobSetPlan, PodSetPlan, render_jobset
 from .scheduling import FeasibilityReport, check_feasibility
+from .names import validate_jobset_names
 
 JOBSET_NAME_LABEL = "jobset.sigs.k8s.io/jobset-name"
 
@@ -89,6 +90,7 @@ def build_launch_jobset(
     queue: str = None,
     service_account: str = None,
     labels: dict[str, str] | None = None,
+    annotations: dict[str, str] | None = None,
 ) -> JobSetPlan:
     """Build a fully-populated JobSetPlan ready to submit.
 
@@ -109,6 +111,7 @@ def build_launch_jobset(
     world_size = len(rank_models)
 
     groups = group_contiguous_ranks(rank_models)
+    validate_jobset_names(name, ((group.model, group.count) for group in groups))
     head_model = groups[0].model  # rank 0 lives in the first podset
     master = nccl.master_addr(name, head_model)
     if transport == "rdma":
@@ -148,6 +151,7 @@ def build_launch_jobset(
         queue=queue,
         service_account=service_account,
         labels=labels or {},
+        annotations=dict(annotations or {}),
     )
 
 
@@ -174,14 +178,11 @@ def stop_jobset(client: KubectlClient, name: str):
 
 def jobset_status(client: KubectlClient, name: str) -> dict:
     """Return the JobSet object as a dict (``kubectl get jobset -o json``)."""
-    from sparkrun.core.application_profile import get_application_profile
+    from .manifests import require_application_owner
 
     result = client.run_json(["get", "jobset", name, "-o", "json", "--ignore-not-found"])
     if result:
-        labels = result.get("metadata", {}).get("labels", {})
-        owner = labels.get("sparkrun.distribution", labels.get("app.kubernetes.io/managed-by"))
-        if owner != get_application_profile().id:
-            raise ValueError("JobSet %r belongs to another distribution" % name)
+        require_application_owner(result, kind="JobSet", name=name)
     return result
 
 

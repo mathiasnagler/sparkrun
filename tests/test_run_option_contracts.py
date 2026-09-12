@@ -64,6 +64,9 @@ def test_port_override_reaches_plan_command_and_metadata(run_env, monkeypatch, s
     assert seen == [{"port": 9001}]
     assert result.serve_port == 9001 and "--port 9001" in result.serve_command
     assert result.intent_id == planned.intent_id
+    assert result.placement_token == planned.placement_token
+    assert result.recipe_fingerprint == planned.recipe_fingerprint
+    assert result.timeline is not None
 
 
 @pytest.mark.parametrize("running_port", [8000, 9001])
@@ -82,6 +85,10 @@ def test_ensure_matches_the_requested_port_only(run_env, monkeypatch, running_po
     assert find.call_args.args[0] == generate_intent_id(env.recipe, {"port": 9001})
     assert result.already_running is (running_port == 9001)
     assert launch.call_count == int(running_port != 9001)
+    if result.already_running:
+        assert result.cluster_id == match.cluster_id and result.placement_token == "aaaaaaaaaaaa"
+        assert result.timeline is None and result.recipe_fingerprint == ""
+        assert result.launch_result is None and result.placement is None
 
 
 @pytest.mark.parametrize("hook", ["pre_exec", "post_exec", "post_commands"])

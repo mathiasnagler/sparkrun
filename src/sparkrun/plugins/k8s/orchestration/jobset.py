@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from .inventory import GPU_PRODUCT_LABEL, NodeInfo
 from .manifests import managed_by_labels, render_manifests
 from .scheduling import GpuRequest
+from .names import validate_jobset_names
 
 JOBSET_API_VERSION = "jobset.x-k8s.io/v1alpha2"
 QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
@@ -68,6 +69,7 @@ class JobSetPlan:
     queue: str = field(default_factory=lambda: resource_name(""))
     service_account: str = field(default_factory=lambda: resource_name(""))
     labels: dict[str, str] = field(default_factory=dict)
+    annotations: dict[str, str] = field(default_factory=dict)
 
     @property
     def total_pods(self) -> int:
@@ -139,6 +141,7 @@ def replicated_job(pod_set: PodSetPlan, *, service_account: str) -> dict:
 
 def build_jobset(plan: JobSetPlan) -> dict:
     """Assemble the JobSet manifest for *plan* (Kueue-labeled, gang-admitted)."""
+    validate_jobset_names(plan.name, ((ps.name, ps.replicas) for ps in plan.pod_sets))
     labels = managed_by_labels()
     labels[QUEUE_LABEL] = plan.queue
     labels.update(plan.labels)
@@ -146,7 +149,7 @@ def build_jobset(plan: JobSetPlan) -> dict:
     return {
         "apiVersion": JOBSET_API_VERSION,
         "kind": "JobSet",
-        "metadata": {"name": plan.name, "namespace": plan.namespace, "labels": labels},
+        "metadata": {"name": plan.name, "namespace": plan.namespace, "labels": labels, "annotations": dict(plan.annotations)},
         "spec": {"replicatedJobs": [replicated_job(ps, service_account=plan.service_account) for ps in plan.pod_sets]},
     }
 

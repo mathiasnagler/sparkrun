@@ -318,6 +318,8 @@ def test_run_schedule_resume_warmup_rule(tmp_path: Path):
 
     state.completed_indices = [0, 1]
     state.save(str(tmp_path))
+    for idx in (0, 1):
+        (state.runs_dir(str(tmp_path)) / ("%03d_d%d_c1.json" % (idx, idx))).write_text("{}")
 
     fw = LlamaBenchyFramework()
     call_args_list: list[dict[str, Any]] = []

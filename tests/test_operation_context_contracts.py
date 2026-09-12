@@ -48,7 +48,7 @@ def test_k8s_handler_preserves_resolved_target(monkeypatch, source, caller):
     monkeypatch.setattr(K8sExecutor, "finalize_config", lambda *a, **kw: None)
     expected = resolve_executor(recipe=plan.recipe, cluster=cluster, runtime=plan.runtime, config=sctx.config, v=sctx.variables).config
     assert expected.k8s_context == "lab-context"
-    probe = Mock(return_value="NVIDIA")
+    probe = Mock(return_value="gb10")
     submit = Mock(return_value=SimpleNamespace(name="review", feasible=True))
     monkeypatch.setattr(handler_module, "_resolve_single_gpu_class", probe)
     monkeypatch.setattr("sparkrun.plugins.k8s.api.launch_jobset", submit)
@@ -161,7 +161,7 @@ def test_benchmark_cluster_user_is_local_to_invocation(bench_env):
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("failure", [None, "validation", "staging"])
 def test_handler_controls_replacement_after_preparation(monkeypatch, dry_run, failure):
-    from sparkrun.api import run, RunOptions, SparkrunError
+    from sparkrun.api import run, RunOptions, RunResult, SparkrunError
     from sparkrun.api._context import default_sctx
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.run_handlers import RunHandler
@@ -171,7 +171,17 @@ def test_handler_controls_replacement_after_preparation(monkeypatch, dry_run, fa
     calls = []
     replacement = Mock(side_effect=lambda **kw: (calls.append("replace"), set()))
     monkeypatch.setattr("sparkrun.api._run._evict_superseded_deployments", replacement)
-    expected = object()
+    expected = RunResult(
+        cluster_id=plan.cluster_id,
+        host_list=plan.host_list,
+        placement=plan.placement,
+        scheduler=plan.scheduler,
+        runtime=plan.runtime.runtime_name,
+        executor="docker",
+        started_at=0,
+        dry_run=dry_run,
+        is_solo=plan.is_solo,
+    )
 
     def launch(options, current, *, plan, started_at, before_start):
         for phase in ("validation", "staging"):
@@ -194,7 +204,9 @@ def test_handler_controls_replacement_after_preparation(monkeypatch, dry_run, fa
         replacement.assert_not_called()
         assert "submit" not in calls
     else:
-        assert run(options, sctx=sctx, plan=plan) is expected
+        result = run(options, sctx=sctx, plan=plan)
+        assert result.cluster_id == expected.cluster_id and result.host_list == expected.host_list
+        assert result.timeline is not None
         assert calls == (["validation", "staging"] if dry_run else ["validation", "staging", "replace", "submit"])
         assert replacement.call_count == (0 if dry_run else 1)
 

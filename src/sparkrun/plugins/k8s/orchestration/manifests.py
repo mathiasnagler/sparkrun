@@ -19,6 +19,17 @@ def managed_by_labels() -> dict[str, str]:
     return {"app.kubernetes.io/managed-by": get_application_profile().id, "sparkrun.distribution": get_application_profile().id}
 
 
+def require_application_owner(resource: dict, *, kind: str, name: str) -> None:
+    """Reject lifecycle access to an object managed by another application."""
+    from sparkrun.core.application_profile import get_application_profile
+    from .errors import OwnershipError
+
+    labels = resource.get("metadata", {}).get("labels", {})
+    owner = labels.get("sparkrun.distribution", labels.get("app.kubernetes.io/managed-by"))
+    if owner != get_application_profile().id:
+        raise OwnershipError("Kubernetes %s %r belongs to another application" % (kind, name))
+
+
 def _labels(extra: dict[str, str] | None = None) -> dict[str, str]:
     labels = managed_by_labels()
     if extra:
