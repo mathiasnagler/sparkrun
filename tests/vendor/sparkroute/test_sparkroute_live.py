@@ -93,7 +93,7 @@ def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_pa
         )
     )
     monkeypatch.setenv("SPARKRUN_FEATURE_GATEWAY_SPARKROUTE", "1")
-    monkeypatch.setenv("SPARKRUN_SPARKROUTE_BINARY", str(Path(os.environ["SPARKROUTE_TEST_BINARY"]).resolve()))
+    monkeypatch.setenv("SPARKROUTE_BINARY", str(Path(os.environ["SPARKROUTE_TEST_BINARY"]).resolve()))
     monkeypatch.setenv("SPARKROUTE_OPERATIONS_ADDRESS", "127.0.0.1:0")
     register(None)
     data_port = _port()

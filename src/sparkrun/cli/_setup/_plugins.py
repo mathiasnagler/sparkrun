@@ -21,12 +21,12 @@ from . import setup
 @setup.group("plugins", invoke_without_command=True, hidden=HIDE_ADVANCED_OPTIONS)
 @click.pass_context
 def setup_plugins(ctx):
-    """Inspect the plugin modules sparkrun knows about.
+    """Inspect the plugin modules {app_command} knows about.
 
     Covers first-party in-tree integrations (sparkrun.plugins) and out-of-tree
     ones loaded from 'plugins.paths' in config.yaml. Runtimes, executors and
     transports shipped in core are not plugin modules in this sense — see
-    'sparkrun list-runtimes' / 'sparkrun list-executors'.
+    '{app_command} list-runtimes' / '{app_command} list-executors'.
 
     Defaults to 'list' when no subcommand is given.
     """

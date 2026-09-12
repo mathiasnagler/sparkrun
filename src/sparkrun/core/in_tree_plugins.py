@@ -22,10 +22,10 @@ every plugin surface should be controllable the same way. The flag is checked
 *before* the import, so turning a plugin off costs nothing at all — no import,
 no commands, no registrations.
 
-It is the plugin's *own* feature flag rather than a separate presence flag:
-there is no point loading a plugin whose capability will not be used, and no
-point enabling that capability without the plugin. So an integration is gated
-end-to-end by the one flag that governs the capability it contributes.
+The loading gate controls the whole integration. A plugin may additionally
+expose ``FEATURE_DEFINITIONS`` for individual capabilities; those definitions
+register only after the loading gate is enabled, before its implementations
+are scanned. Child overrides cannot load a disabled parent.
 
 The binding lives in :data:`IN_TREE_PLUGIN_FEATURES` rather than on the plugin
 because the flag has to be known *without importing* the module it gates —
@@ -69,7 +69,35 @@ IN_TREE_PLUGIN_PACKAGE = "sparkrun.plugins"
 #: off the plugin because the flag must resolve *before* the import — a plugin
 #: that declared its own gate could only be consulted by importing it, which is
 #: exactly what the gate is meant to avoid.
-IN_TREE_PLUGIN_FEATURES: dict[str, str] = {"sparkroute": "gateway.sparkroute"}
+IN_TREE_PLUGIN_FEATURES: dict[str, str] = {"sparkroute": "gateway.sparkroute", "sparkarena": "integration.arena", "k8s": "integration.k8s"}
+
+
+def plugin_application_profile_api(name: str) -> int | None:
+    """Read the verified bundled declaration without importing the integration."""
+    from pathlib import Path
+    import tomllib
+
+    path = Path(__file__).resolve().parents[1] / "plugins" / name / "VENDORED.toml"
+    try:
+        value = tomllib.loads(path.read_text(encoding="utf-8")).get("application_profile_api")
+    except (OSError, ValueError):
+        return None
+    return value if type(value) is int else None
+
+
+def plugin_application_profile_failure(name: str) -> str | None:
+    from sparkrun.core.application_profile import APPLICATION_PROFILE_API_VERSION, get_application_profile
+
+    if (
+        name == "sparkroute"
+        and get_application_profile().id != "sparkrun"
+        and plugin_application_profile_api(name) != APPLICATION_PROFILE_API_VERSION
+    ):
+        return (
+            "The pinned SparkRoute plugin does not declare support for this host's application profile API; "
+            "import a compatible plugin snapshot before using an alternate application profile"
+        )
+    return None
 
 
 def plugin_feature_flag(name: str) -> str | None:
@@ -127,6 +155,11 @@ def load_in_tree_plugins(v: "Variables", package: str | None = None) -> list[str
             continue
         if not feature_gate_enabled(flag, v):
             logger.debug("Skipping in-tree plugin %r (feature %r off)", name, flag)
+            continue
+
+        failure = plugin_application_profile_failure(name)
+        if failure:
+            logger.warning("Cannot load in-tree integration %s: %s", name, failure)
             continue
 
         dotted = "%s.%s" % (package, name)

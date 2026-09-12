@@ -6,6 +6,9 @@ from remote git repositories using sparse checkouts for efficiency.
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import remote_cache_path
+from sparkrun.core.config import resolve_sparkrun_cache_dir
+
 import logging
 import os
 import re
@@ -19,6 +22,7 @@ import yaml
 from vpd.next.util import read_yaml
 
 from sparkrun.utils.shell import validate_git_url
+from sparkrun.core.application_profile import get_application_profile, thaw
 
 logger = logging.getLogger(__name__)
 
@@ -491,6 +495,35 @@ SUPPRESSED_REGISTRIES_KEY = "suppressed_plugin_registries"
 _IMPLIED_VERSION_TRUST_PRESENT = 1
 
 
+def application_profile_registries() -> list[RegistryEntry]:
+    """Return fresh entries from the active application's replacement catalog.
+
+    Explicit catalogs, including an empty one, never fall back to Sparkrun's
+    built-ins. Profile declarations remain overlays so user overrides and
+    removal decisions survive upgrades without serializing inherited defaults.
+    """
+    profile = get_application_profile()
+    if profile.registries is None:
+        return [_dataclass_replace(e) for e in FALLBACK_DEFAULT_REGISTRIES]
+    result = []
+    for raw in profile.registries:
+        fields = thaw(raw)
+        fields.setdefault("subpath", "")
+        entry = RegistryEntry(**fields)
+        validate_registry_name(entry.name, entry.url)
+        validate_git_url(entry.url)
+        assert_safe_registry_entry(entry)
+        entry.declared_by = "distribution:" + profile.id
+        result.append(entry)
+    return result
+
+
+def application_profile_bootstrap_urls() -> tuple[str, ...] | list[str]:
+    """Use only the active profile's bootstrap sources; never merge products."""
+    profile = get_application_profile()
+    return BOOTSTRAP_REGISTRY_URLS if profile.registries is None else profile.bootstrap_registry_urls
+
+
 def _default_trusted_urls() -> set[str]:
     """Normalized URLs of every registry that ships ``trusted=True``.
 
@@ -498,7 +531,7 @@ def _default_trusted_urls() -> set[str]:
     box", consumed by the legacy-config trust migration so a newly-trusted
     default reaches upgrading users and not just fresh installs.
     """
-    return {_normalize_registry_url(e.url) for e in FALLBACK_DEFAULT_REGISTRIES if e.trusted}
+    return {_normalize_registry_url(e.url) for e in application_profile_registries() if e.trusted}
 
 
 def _migration_v1_backfill_trust(entries: list["RegistryEntry"]) -> None:
@@ -949,7 +982,7 @@ class RegistryManager:
             cache_root: Optional cache directory, defaults to ~/.cache/sparkrun/registries
         """
         self.config_root = Path(config_root)
-        self.cache_root = Path(cache_root) if cache_root else Path.home() / ".cache/sparkrun/registries"
+        self.cache_root = Path(cache_root) if cache_root else resolve_sparkrun_cache_dir() / "registries"
         self.config_root.mkdir(parents=True, exist_ok=True)
         self.cache_root.mkdir(parents=True, exist_ok=True)
         self._manifest_discovery_attempted = False
@@ -1128,13 +1161,19 @@ class RegistryManager:
         """
         from sparkrun.core.registry_defaults import iter_declared_registries
 
+        # Profile declarations are non-persisted defaults, with the same durable
+        # user overrides and removal tombstones as plugin declarations.
+        if get_application_profile().registries is not None:
+            existing = {e.name for e in entries}
+            suppressed = set(self._load_suppressed())
+            entries = list(entries) + [e for e in application_profile_registries() if e.name not in existing and e.name not in suppressed]
         declarations = iter_declared_registries()
         if not declarations:
             return entries
 
         existing = {e.name for e in entries}
         suppressed = set(self._load_suppressed())
-        shipped = {e.name for e in FALLBACK_DEFAULT_REGISTRIES}
+        shipped = {e.name for e in application_profile_registries()}
 
         merged = list(entries)
         for declaration in declarations:
@@ -1188,8 +1227,8 @@ class RegistryManager:
         # Layer fallback entries whose names don't collide with manifest entries
         seen_names = {e.name for e in discovered}
         combined = list(discovered)
-        for fallback in FALLBACK_DEFAULT_REGISTRIES:
-            if fallback.name not in seen_names:
+        for fallback in application_profile_registries():
+            if fallback.name not in seen_names and fallback.name not in self._load_suppressed():
                 # Copy — never hand out the module-level entry itself.  Callers
                 # mutate what they get back (``untrust_registry`` flips
                 # ``trusted``, ``disable_registry`` flips ``enabled``), and on a
@@ -1242,7 +1281,7 @@ class RegistryManager:
         all_entries: list[RegistryEntry] = []
         seen_names: set[str] = set()
 
-        for url in BOOTSTRAP_REGISTRY_URLS:
+        for url in application_profile_bootstrap_urls():
             try:
                 entries = self._discover_manifest_entries(url)
                 for entry in entries:
@@ -1253,7 +1292,10 @@ class RegistryManager:
                     # Bootstrap-discovered entries are trusted because they
                     # came in via the curated BOOTSTRAP_REGISTRY_URLS list,
                     # not because the manifest declared itself trustworthy.
-                    entry.trusted = True
+                    entry.trusted = get_application_profile().registries is None or any(
+                        e.name == entry.name and e.url == entry.url and e.subpath == entry.subpath and e.trusted
+                        for e in application_profile_registries()
+                    )
                     seen_names.add(entry.name)
                     all_entries.append(entry)
             except Exception as e:
@@ -1420,7 +1462,7 @@ class RegistryManager:
         Returns:
             True when any entry was modified (caller re-saves the file).
         """
-        by_url = {_normalize_registry_url(e.url): e for e in FALLBACK_DEFAULT_REGISTRIES}
+        by_url = {_normalize_registry_url(e.url): e for e in application_profile_registries()}
         changed = False
         for entry in entries:
             shipped = by_url.get(_normalize_registry_url(entry.url))
@@ -1509,7 +1551,7 @@ class RegistryManager:
             # entry trusted by matching its URL against `_default_trusted_urls()`,
             # which holds the *new* URLs — a pre-trust config still carrying an
             # old URL would otherwise be backfilled as untrusted.
-            urls_migrated = self._migrate_registry_urls(entries)
+            urls_migrated = self._migrate_registry_urls(entries) if get_application_profile().registries is None else False
 
             # Filter out any entries whose URL matches a deprecated registry
             filtered = []
@@ -2152,7 +2194,10 @@ class RegistryManager:
             raise RegistryError(f"Registry {name!r} not found")
 
         filtered = [r for r in registries if r.name != name]
-        if target.declared_by:
+        from sparkrun.core.registry_defaults import declared_registry_names
+
+        declared_names = declared_registry_names() | {e.name for e in application_profile_registries() if e.declared_by}
+        if target.declared_by or name in declared_names:
             suppressed = self._load_suppressed()
             if name not in suppressed:
                 suppressed.append(name)
@@ -2182,9 +2227,9 @@ class RegistryManager:
     def restore_missing_defaults(self) -> list[str]:
         """Add default registry entries that are missing from the config.
 
-        Checks ``FALLBACK_DEFAULT_REGISTRIES`` for entries whose name is not
-        present in the current ``registries.yaml``.  Missing entries are
-        appended and persisted.
+        Restore missing persisted defaults for built-in Sparkrun. Application
+        profile defaults already resolve through the overlay and are never
+        materialized merely by an update. User removal tombstones are honored.
 
         Returns:
             List of registry names that were added.
@@ -2194,8 +2239,13 @@ class RegistryManager:
         existing_names = {e.name for e in entries}
         added: list[str] = []
 
-        for default in FALLBACK_DEFAULT_REGISTRIES:
-            if default.name not in existing_names:
+        for default in application_profile_registries():
+            # Profile defaults are already available through the overlay. They
+            # intentionally have no file entry; reporting them restored on every
+            # update would be misleading, and saving strips them out again.
+            if default.declared_by:
+                continue
+            if default.name not in existing_names and default.name not in self._load_suppressed():
                 entries.append(_dataclass_replace(default))  # copy — see _default_registries
                 added.append(default.name)
                 logger.info("Restored missing default registry: %s", default.name)
@@ -2694,7 +2744,7 @@ class RegistryManager:
                 if p and p not in sparse_paths:
                     sparse_paths.append(p)
         url_hash = hashlib.sha256(entry.url.encode()).hexdigest()[:12]
-        remote_clone_dir = "~/.cache/sparkrun/registries/_url_%s" % url_hash
+        remote_clone_dir = remote_cache_path("registries/_url_%s" % url_hash, home="~")
         sparse_args = " ".join(quote(p) for p in sparse_paths) if sparse_paths else ""
 
         # Redirect git's chatty output to stderr (1>&2) so stdout stays clean,

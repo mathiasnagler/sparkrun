@@ -36,6 +36,8 @@ of truth for platform resolution.
 
 from __future__ import annotations
 
+from sparkrun.core.registration import enlist_registry_state
+
 import logging
 
 from sparkrun.core.hardware import HostHardware
@@ -53,6 +55,8 @@ _REGISTRY: list[HardwarePlatformPlugin] = [
     GenericNvidiaPlatform(),
 ]
 
+enlist_registry_state(globals(), "_REGISTRY")
+
 
 def register_platform(platform: HardwarePlatformPlugin, *, prepend: bool = False) -> None:
     """Register a platform plugin instance.
@@ -63,6 +67,22 @@ def register_platform(platform: HardwarePlatformPlugin, *, prepend: bool = False
             wins ties.  Default appends, so the built-in NVIDIA
             platforms keep their specificity ordering.
     """
+    for existing in _REGISTRY:
+        if existing.platform_name == platform.platform_name:
+            if type(existing) is type(platform):
+                return
+            from sparkrun.core.installed_plugins import PluginConflictError
+
+            raise PluginConflictError(
+                "Conflicting platform %r: %s.%s and %s.%s"
+                % (
+                    platform.platform_name,
+                    type(existing).__module__,
+                    type(existing).__qualname__,
+                    type(platform).__module__,
+                    type(platform).__qualname__,
+                )
+            )
     if prepend:
         _REGISTRY.insert(0, platform)
     else:

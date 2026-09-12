@@ -22,7 +22,7 @@ from sparkrun.benchmarking.run_state import BenchmarkRunState
 
 if TYPE_CHECKING:
     from sparkrun.benchmarking.base import BenchmarkingPlugin
-    from sparkrun.benchmarking.progress_ui import BenchmarkProgressUI
+    from sparkrun.benchmarking.progress import BenchmarkProgress
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def run_schedule(
     target_url: str,
     model: str,
     timeout: int | None,
-    progress_ui: "BenchmarkProgressUI",
+    progress_ui: "BenchmarkProgress",
     cache_dir: str | None = None,
     exit_on_first_fail: bool = False,
     skip_run: bool = False,
@@ -79,7 +79,7 @@ def run_schedule(
         target_url: Inference endpoint URL forwarded to the benchmark command.
         model: Model name forwarded to the benchmark command.
         timeout: Per-task subprocess timeout in seconds, or ``None`` for no limit.
-        progress_ui: Live progress display context manager (must already be entered).
+        progress_ui: Task event sink (the keyword is retained for compatibility).
         cache_dir: Override for the sparkrun cache directory root.
         exit_on_first_fail: Stop immediately after the first task failure.
         skip_run: When ``True``, the warmup/coherence steps are suppressed even

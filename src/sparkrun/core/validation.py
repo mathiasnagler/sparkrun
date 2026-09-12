@@ -1112,10 +1112,10 @@ def _is_portable_mount_source(path: str) -> bool:
         return True
     if path.startswith(_PORTABLE_MOUNT_PREFIXES) or path in ("/dev", "/sys", "/proc", "/run", "/tmp"):
         return True
-    from sparkrun.core.config import DEFAULT_CACHE_DIR, DEFAULT_HF_CACHE_DIR
+    from sparkrun.core.config import resolve_sparkrun_cache_dir, DEFAULT_HF_CACHE_DIR
 
     managed: list[str] = []
-    for root in (DEFAULT_CACHE_DIR, DEFAULT_HF_CACHE_DIR):
+    for root in (resolve_sparkrun_cache_dir(), DEFAULT_HF_CACHE_DIR):
         managed.extend((str(root), str(root).rstrip("/") + "/"))
     return path.startswith(tuple(managed))
 

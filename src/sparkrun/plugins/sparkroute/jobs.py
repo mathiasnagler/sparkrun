@@ -128,6 +128,8 @@ def start_operation(request: Request, *, sctx) -> dict:
             if os.name == "nt"
             else {"start_new_session": True}
         )
+        from ._application_profile import child_environment
+
         try:
             child = subprocess.Popen(
                 [sys.executable, "-m", "sparkrun.plugins.sparkroute.jobs", str(sctx.config.config_path), operation_id],
@@ -135,6 +137,7 @@ def start_operation(request: Request, *, sctx) -> dict:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 close_fds=True,
+                env=child_environment(sctx.config.config_path),
                 **kwargs,
             )
         except OSError as exc:
@@ -217,16 +220,13 @@ def previous_placement() -> dict | None:
 
 def run_worker(config_path: Path, operation_id: str) -> None:
     import sparkrun.api as api
-    from sparkrun.core.config import SparkrunConfig
-    from sparkrun.core.cluster_manager import ClusterManager
+    from ._application_profile import worker_context
     import logging
     from logging.handlers import RotatingFileHandler
     from .operations import _ensure_ready, _require_feature_enabled, _resolve_binding
 
     global _current
-    sctx = api.default_sctx()
-    sctx.config = SparkrunConfig(config_path)
-    sctx.cluster_manager = ClusterManager(config_path.parent)
+    sctx = worker_context(config_path)
     path = _path(sctx)
     with _connect(path) as db:
         row = db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()

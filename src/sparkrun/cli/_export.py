@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import render_identity_text
+
+from sparkrun.core.application_profile import get_application_profile, resource_name, child_environment
+
 import logging
 import os
 import sys
@@ -92,18 +96,18 @@ def export_recipe(ctx, recipe_name, output_json=False, save_path=None):
 def export_running(ctx, target, hosts, hosts_file, cluster_name, output_json, save_path):
     """Export the effective recipe from a running workload.
 
-    TARGET can be a recipe name or a cluster ID (from sparkrun status output).
+    TARGET can be a recipe name or a cluster ID (from {app_command} status output).
     The exported recipe includes all applied overrides baked into defaults.
 
     Examples:
 
-      sparkrun export running-recipe e5f6a7b8
+      {app_command} export running-recipe e5f6a7b8
 
-      sparkrun export running-recipe glm-4.7-flash-awq --cluster mylab
+      {app_command} export running-recipe glm-4.7-flash-awq --cluster mylab
 
-      sparkrun export running-recipe e5f6a7b8 --json
+      {app_command} export running-recipe e5f6a7b8 --json
 
-      sparkrun export running-recipe e5f6a7b8 --save effective-recipe.yaml
+      {app_command} export running-recipe e5f6a7b8 --save effective-recipe.yaml
     """
     from sparkrun.core.recipe import Recipe
     from sparkrun.orchestration.job_metadata import load_job_metadata, derive_cluster_id
@@ -188,8 +192,9 @@ def _output_export(recipe, output_json, save_path, overrides=None, container_ima
 # ---------------------------------------------------------------------------
 
 _SYSTEMD_UNIT_TEMPLATE = textwrap.dedent("""\
+    # sparkrun.distribution={owner}
     [Unit]
-    Description=sparkrun inference: {recipe_name} ({model})
+    Description={app_command} inference: {recipe_name} ({model})
     After=network-online.target docker.service
     Wants=network-online.target
     Requires=docker.service
@@ -204,12 +209,13 @@ _SYSTEMD_UNIT_TEMPLATE = textwrap.dedent("""\
     RestartSec=30
     TimeoutStartSec=600
     TimeoutStopSec=120
+    Environment=SPARKRUN_APPLICATION_PROFILE={profile_ref}
     Environment=HOME={user_home}
     Environment=PATH=/usr/local/bin:/usr/bin:/bin:{extra_path}
     WorkingDirectory={user_home}
     StandardOutput=journal
     StandardError=journal
-    SyslogIdentifier=sparkrun-{slug}
+    SyslogIdentifier={namespace}-{slug}
 
     [Install]
     WantedBy=multi-user.target
@@ -219,8 +225,12 @@ _SYSTEMD_UNIT_TEMPLATE = textwrap.dedent("""\
 def _render_systemd_unit(slug, recipe, cluster_name, ssh_user, sparkrun_path, user_home):
     """Render a systemd unit file from template values."""
     extra_path = os.path.dirname(sparkrun_path) if sparkrun_path else ""
-    service_dir = "%s/.config/sparkrun/services/%s" % (user_home, slug)
+    service_dir = "%s/.config/%s/services/%s" % (user_home, get_application_profile().config_namespace, slug)
     return _SYSTEMD_UNIT_TEMPLATE.format(
+        app_command=get_application_profile().command,
+        namespace=get_application_profile().resource_namespace,
+        owner=get_application_profile().id,
+        profile_ref=child_environment()["SPARKRUN_APPLICATION_PROFILE"],
         recipe_name=recipe.name,
         model=recipe.model,
         slug=slug,
@@ -233,33 +243,92 @@ def _render_systemd_unit(slug, recipe, cluster_name, ssh_user, sparkrun_path, us
     )
 
 
+def _service_owner_guard(path, *, unit=False):
+    """Reject foreign artifacts before installing or removing service files."""
+    from sparkrun.utils.shell import quote
+
+    legacy_check = 'grep -q "^Description=sparkrun inference:" "$_artifact"' if unit else "true"
+    return """_artifact={path}
+if [ -e "$_artifact" ]; then
+    _owner=$(sed -n 's/^# sparkrun.distribution=//p; s/^distribution: *//p' "$_artifact" | sort -u)
+    if [ "$_owner" != {owner} ]; then
+        if [ -n "$_owner" ] || [ {owner} != sparkrun ] || ! {legacy}; then
+            echo "Refusing to replace service artifact owned by another application: $_artifact" >&2
+            exit 1
+        fi
+    fi
+fi""".format(path=quote(path), owner=quote(get_application_profile().id), legacy=legacy_check)
+
+
+def _service_artifacts(slug, cluster_name, user_home):
+    root = "%s/.config/%s" % (user_home, get_application_profile().config_namespace)
+    return (
+        "%s/services/%s/recipe.yaml" % (root, slug),
+        "%s/services/%s/cluster.yaml" % (root, slug),
+        "%s/clusters/%s.yaml" % (root, cluster_name),
+    )
+
+
+def _service_guards(slug, cluster_name, user_home):
+    unit = "/etc/systemd/system/%s.service" % resource_name("-%s" % slug)
+    return "\n".join(
+        [_service_owner_guard(unit, unit=True), *(_service_owner_guard(p) for p in _service_artifacts(slug, cluster_name, user_home))]
+    )
+
+
+def _service_lock(user_home, *, unit_path=None):
+    """Lock the persistent home directory before the privileged unit lock.
+
+    Both phases can lock this inode, and service removal cannot unlink it.
+    Sharing it also serializes services referencing the same cluster file.
+    """
+    from sparkrun.utils.shell import quote
+
+    script = "exec 9<%s\nflock -x 9" % quote(user_home)
+    if unit_path is not None:
+        script += "\nexec 8>%s\nflock -x 8" % quote(unit_path + ".lock")
+    return script
+
+
 def _render_install_script(slug, recipe_yaml, cluster_yaml, cluster_name, user_home):
     """Render user-level install script (no sudo needed)."""
-    service_dir = "%s/.config/sparkrun/services/%s" % (user_home, slug)
-    clusters_dir = "%s/.config/sparkrun/clusters" % user_home
+    service_dir = "%s/.config/%s/services/%s" % (user_home, get_application_profile().config_namespace, slug)
+    clusters_dir = "%s/.config/%s/clusters" % (user_home, get_application_profile().config_namespace)
     return textwrap.dedent("""\
         #!/usr/bin/env bash
         set -euo pipefail
 
-        # Create service directory
-        mkdir -p '{service_dir}'
-        mkdir -p '{clusters_dir}'
+        {lock}
+        {guards}
+        mkdir -p '{service_dir}' '{clusters_dir}'
+        _recipe_tmp=$(mktemp '{service_dir}/.recipe.XXXXXX')
+        _cluster_tmp=$(mktemp '{service_dir}/.cluster.XXXXXX')
+        _definition_tmp=$(mktemp '{clusters_dir}/.cluster.XXXXXX')
+        trap 'rm -f "$_recipe_tmp" "$_cluster_tmp" "$_definition_tmp"' EXIT
 
         # Write baked recipe
-        cat > '{service_dir}/recipe.yaml' << 'SPARKRUN_RECIPE_EOF'
+        cat > "$_recipe_tmp" << 'SPARKRUN_RECIPE_EOF'
+        # sparkrun.distribution={owner}
         {recipe_yaml}
         SPARKRUN_RECIPE_EOF
 
         # Write cluster reference
-        cat > '{service_dir}/cluster.yaml' << 'SPARKRUN_CLUSTER_EOF'
+        cat > "$_cluster_tmp" << 'SPARKRUN_CLUSTER_EOF'
+        # sparkrun.distribution={owner}
         {cluster_yaml}
         SPARKRUN_CLUSTER_EOF
 
         # Write cluster definition for sparkrun run --cluster
-        cp '{service_dir}/cluster.yaml' '{clusters_dir}/{cluster_name}.yaml'
+        cp "$_cluster_tmp" "$_definition_tmp"
+        mv -f "$_recipe_tmp" '{service_dir}/recipe.yaml'
+        mv -f "$_cluster_tmp" '{service_dir}/cluster.yaml'
+        mv -f "$_definition_tmp" '{clusters_dir}/{cluster_name}.yaml'
 
         echo "Service files installed to {service_dir}"
     """).format(
+        lock=_service_lock(user_home),
+        guards=_service_guards(slug, cluster_name, user_home),
+        owner=get_application_profile().id,
         service_dir=service_dir,
         clusters_dir=clusters_dir,
         cluster_name=cluster_name,
@@ -268,25 +337,38 @@ def _render_install_script(slug, recipe_yaml, cluster_yaml, cluster_name, user_h
     )
 
 
-def _render_sudo_install_script(slug, unit_contents):
+def _render_sudo_install_script(slug, unit_contents, *, user_home, cluster_name):
     """Render sudo install script (writes unit file, enables service)."""
-    unit_path = "/etc/systemd/system/sparkrun-%s.service" % slug
+    unit_path = "/etc/systemd/system/%s.service" % resource_name("-%s" % slug)
     return textwrap.dedent("""\
         #!/usr/bin/env bash
         set -euo pipefail
 
-        # Write systemd unit file
-        cat > '{unit_path}' << 'SPARKRUN_UNIT_EOF'
+        {lock}
+        {guards}
+        {required}
+        _unit_tmp=$(mktemp '{unit_path}.XXXXXX')
+        trap 'rm -f "$_unit_tmp"' EXIT
+        cat > "$_unit_tmp" << 'SPARKRUN_UNIT_EOF'
         {unit_contents}
         SPARKRUN_UNIT_EOF
+        chmod 644 "$_unit_tmp"
+        mv -f "$_unit_tmp" '{unit_path}'
 
         # Reload systemd and enable service
         systemctl daemon-reload
-        systemctl enable 'sparkrun-{slug}'
+        systemctl enable '{namespace}-{slug}'
 
-        echo "Service sparkrun-{slug} installed and enabled"
+        echo "Service {namespace}-{slug} installed and enabled"
     """).format(
+        namespace=get_application_profile().resource_namespace,
         unit_path=unit_path,
+        lock=_service_lock(user_home, unit_path=unit_path),
+        guards=_service_guards(slug, cluster_name, user_home),
+        required="\n".join(
+            "test -f '%s' || { echo 'Service files missing; retry installation' >&2; exit 1; }" % p
+            for p in _service_artifacts(slug, cluster_name, user_home)
+        ),
         slug=slug,
         unit_contents=unit_contents,
     )
@@ -294,14 +376,18 @@ def _render_sudo_install_script(slug, unit_contents):
 
 def _render_uninstall_script(slug, cluster_name, user_home):
     """Render uninstall script (sudo: stop, disable, remove unit; user: remove service dir)."""
-    service_dir = "%s/.config/sparkrun/services/%s" % (user_home, slug)
-    cluster_file = "%s/.config/sparkrun/clusters/%s.yaml" % (user_home, cluster_name)
+    service_dir = "%s/.config/%s/services/%s" % (user_home, get_application_profile().config_namespace, slug)
+    cluster_file = "%s/.config/%s/clusters/%s.yaml" % (user_home, get_application_profile().config_namespace, cluster_name)
+    unit_path = "/etc/systemd/system/%s.service" % resource_name("-%s" % slug)
     return textwrap.dedent("""\
         #!/usr/bin/env bash
         set -euo pipefail
 
-        SERVICE_NAME='sparkrun-{slug}'
-        UNIT_PATH='/etc/systemd/system/sparkrun-{slug}.service'
+        SERVICE_NAME='{namespace}-{slug}'
+        UNIT_PATH='/etc/systemd/system/{namespace}-{slug}.service'
+
+        {lock}
+        {guards}
 
         # Stop and disable if active
         if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
@@ -325,6 +411,9 @@ def _render_uninstall_script(slug, cluster_name, user_home):
         rm -f '{cluster_file}'
         echo "Removed service files for {slug}"
     """).format(
+        namespace=get_application_profile().resource_namespace,
+        lock=_service_lock(user_home, unit_path=unit_path),
+        guards=_service_guards(slug, cluster_name, user_home),
         slug=slug,
         service_dir=service_dir,
         cluster_file=cluster_file,
@@ -342,17 +431,17 @@ def _detect_remote_sparkrun(host, ssh_kwargs, dry_run=False):
         #!/usr/bin/env bash
         set -euo pipefail
         export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-        SPARKRUN_PATH=$(which sparkrun 2>/dev/null || true)
+        SPARKRUN_PATH=$(which @APP_COMMAND@ 2>/dev/null || true)
         if [ -z "$SPARKRUN_PATH" ]; then
             echo "ERROR: sparkrun not found on PATH" >&2
             exit 1
         fi
         echo "$SPARKRUN_PATH"
         echo "$HOME"
-    """)
+    """).replace("@APP_COMMAND@", get_application_profile().command)
 
     if dry_run:
-        return "/usr/local/bin/sparkrun", "/home/user"
+        return "/usr/local/bin/" + get_application_profile().command, "/home/user"
 
     result = run_remote_script(host, script, **ssh_kwargs, timeout=15)
     if not result.success:
@@ -372,6 +461,11 @@ def _install_remote_sparkrun(host, ssh_kwargs, dry_run=False):
     """
     from sparkrun.orchestration.ssh import run_remote_script
 
+    from sparkrun.core.channels import channel_requirement
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.utils.shell import quote
+
+    requirement = channel_requirement(SparkrunConfig().self_update_channel)
     script = textwrap.dedent("""\
         #!/usr/bin/env bash
         set -euo pipefail
@@ -382,11 +476,11 @@ def _install_remote_sparkrun(host, ssh_kwargs, dry_run=False):
             echo "Install uv first: https://docs.astral.sh/uv/" >&2
             exit 1
         fi
-        "$UV_PATH" x sparkrun setup install --no-update-registries
-    """)
+        "$UV_PATH" tool install @REQUIREMENT@ --force
+    """).replace("@REQUIREMENT@", quote(requirement))
 
     if dry_run:
-        click.echo("Would install sparkrun on %s via: uvx sparkrun setup install" % host)
+        click.echo(render_identity_text("Would install {app_command} on %s via: uvx {app_command} setup install" % host))
         return True
 
     result = run_remote_script(host, script, **ssh_kwargs, timeout=120)
@@ -530,7 +624,7 @@ def _build_cluster_yaml(cluster_name, hosts, ssh_user=None):
 @click.option("--install", "do_install", is_flag=True, help="Deploy service to head node")
 @click.option("--uninstall", "do_uninstall", is_flag=True, help="Remove service from head node")
 @click.option("--start", is_flag=True, help="Start service after install (implies --install)")
-@click.option("--service-name", default=None, help="Override service name (default: sparkrun-<slug>)")
+@click.option("--service-name", default=None, help="Override service name (default: {resource_namespace}-<slug>)")
 @dry_run_option
 @click.pass_context
 def export_systemd(
@@ -554,7 +648,7 @@ def export_systemd(
     service_name,
     dry_run,
 ):
-    """Generate a systemd service for a sparkrun inference workload.
+    """Generate a systemd service for a {app_command} inference workload.
 
     TARGET can be a recipe name (with optional overrides) or a cluster_id
     (from a running workload).
@@ -564,10 +658,10 @@ def export_systemd(
 
     \b
     Examples:
-      sparkrun export systemd qwen3-1.7b --cluster mylab
-      sparkrun export systemd qwen3-1.7b --cluster mylab --install --start
-      sparkrun export systemd qwen3-1.7b --cluster mylab --uninstall
-      sparkrun export systemd e5f6a7b8 --install
+      {app_command} export systemd qwen3-1.7b --cluster mylab
+      {app_command} export systemd qwen3-1.7b --cluster mylab --install --start
+      {app_command} export systemd qwen3-1.7b --cluster mylab --uninstall
+      {app_command} export systemd e5f6a7b8 --install
     """
     if do_install and do_uninstall:
         click.echo("Error: --install and --uninstall are mutually exclusive.", err=True)
@@ -624,16 +718,16 @@ def export_systemd(
     # Detect sparkrun on head node (needed for unit file), auto-install if missing
     sparkrun_path, user_home = _detect_remote_sparkrun(head_host, ssh_kwargs, dry_run=dry_run)
     if sparkrun_path is None:
-        click.echo("sparkrun not found on %s, attempting auto-install..." % head_host)
+        click.echo(render_identity_text("{app_command} not found on %s, attempting auto-install..." % head_host))
         if not _install_remote_sparkrun(head_host, ssh_kwargs, dry_run=dry_run):
-            click.echo("Error: Failed to install sparkrun on '%s'." % head_host, err=True)
-            click.echo("  Install manually: ssh %s 'uvx sparkrun setup install'" % head_host, err=True)
+            click.echo(render_identity_text("Error: Failed to install {app_command} on '%s'." % head_host), err=True)
+            click.echo(render_identity_text("  Install manually: ssh %s 'uvx {app_command} setup install'" % head_host), err=True)
             sys.exit(1)
         sparkrun_path, user_home = _detect_remote_sparkrun(head_host, ssh_kwargs, dry_run=dry_run)
         if sparkrun_path is None:
-            click.echo("Error: sparkrun installed but not found on PATH on '%s'." % head_host, err=True)
+            click.echo(render_identity_text("Error: {app_command} installed but not found on PATH on '%s'." % head_host), err=True)
             sys.exit(1)
-        click.echo("sparkrun installed on %s" % head_host)
+        click.echo(render_identity_text("{app_command} installed on %s" % head_host))
 
     unit_contents = _render_systemd_unit(
         slug,
@@ -650,18 +744,18 @@ def export_systemd(
         systemd_cluster_name,
         user_home,
     )
-    sudo_install_script = _render_sudo_install_script(slug, unit_contents)
+    sudo_install_script = _render_sudo_install_script(slug, unit_contents, user_home=user_home, cluster_name=systemd_cluster_name)
     # uninstall_script = _render_uninstall_script(slug, systemd_cluster_name, user_home)
 
     if not do_install:
         # Dry-run mode: display all generated artifacts
         click.echo("=" * 60)
-        click.echo("systemd service: sparkrun-%s" % slug)
+        click.echo(render_identity_text("systemd service: {resource_namespace}-%s" % slug))
         click.echo("Head node: %s" % head_host)
         click.echo("Cluster hosts: %s" % ", ".join(host_list))
         click.echo("=" * 60)
         click.echo()
-        click.echo("--- Unit file: /etc/systemd/system/sparkrun-%s.service ---" % slug)
+        click.echo(render_identity_text("--- Unit file: /etc/systemd/system/{resource_namespace}-%s.service ---" % slug))
         click.echo(unit_contents)
         click.echo("--- Baked recipe ---")
         click.echo(recipe_yaml)
@@ -685,7 +779,7 @@ def _do_install(slug, head_host, ssh_user, ssh_kwargs, install_script, sudo_inst
     from sparkrun.orchestration.ssh import run_remote_script
     from sparkrun.orchestration.sudo import run_sudo_script_on_host
 
-    service_name = "sparkrun-%s" % slug
+    service_name = resource_name("-%s" % slug)
 
     # Step 1: User-level script (create dirs, write recipe + cluster YAML)
     click.echo("Installing service files on %s..." % head_host)
@@ -745,7 +839,7 @@ def _do_uninstall(slug, cluster_name, head_host, ssh_user, ssh_kwargs, dry_run):
     from sparkrun.orchestration.ssh import run_remote_command
     from sparkrun.orchestration.sudo import run_sudo_script_on_host
 
-    service_name = "sparkrun-%s" % slug
+    service_name = resource_name("-%s" % slug)
 
     # Detect user home on the remote host
     if dry_run:

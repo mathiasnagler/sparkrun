@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import render_identity_text
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -355,7 +357,7 @@ def _run_ssh_mesh_native(mesh_hosts, user, ssh_key=None, dry_run=False):
     if result.public_keys:
         click.echo("  Meshed %d host key(s) across %d host(s)." % (len(result.public_keys), len(mesh_hosts)))
     if not result.ok:
-        click.echo("  Mesh incomplete. Run 'sparkrun setup ssh --diagnose' for details.", err=True)
+        click.echo(render_identity_text("  Mesh incomplete. Run '{app_command} setup ssh --diagnose' for details."), err=True)
     return result.ok
 
 
@@ -460,7 +462,7 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
         click.echo("  2. sshd AuthorizedKeysFile points to a non-default location", err=True)
         click.echo("  3. AllowUsers/AllowGroups in sshd_config restricts the user", err=True)
         click.echo(err=True)
-        click.echo("Run 'sparkrun setup ssh --diagnose' for detailed diagnostics.", err=True)
+        click.echo(render_identity_text("Run '{app_command} setup ssh --diagnose' for detailed diagnostics."), err=True)
         click.echo("Continuing with Phase 2 (some operations may fail)...", err=True)
         click.echo()
     else:

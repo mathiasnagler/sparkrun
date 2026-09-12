@@ -269,3 +269,274 @@ point of the gate.
 `--json` emits the same rows as an array, where an unknown version is `null`
 rather than the string `"unknown"` — the latter is a display rendering, and
 would be indistinguishable from a plugin that declared it.
+
+
+## Installed integrations (API version 1)
+
+Distributions and ordinary Sparkrun can explicitly select installed packages via
+one shared entry-point group:
+
+```toml
+[project]
+name = "example-hardware"
+version = "0.1.0"
+dependencies = ["sparkrun>=0.4.0,<0.5"]
+
+[project.entry-points."sparkrun.plugins"]
+example-hardware = "example_hardware"
+```
+
+The entry point targets a **module**, with `SPARKRUN_PLUGIN_API_VERSION = 1`.
+Select it using `integrations: {example-hardware: true}` in user config or an
+`ApplicationProfile` integration list. Installation alone never imports it.
+Selected installed integrations use the existing class scan and `register(v)`
+hook. They do not require the development-only `core.external_plugins` flag.
+Configured directory loading and its existing kill switch remain available.
+
+A module can expose `FEATURE_DEFINITIONS`, a sequence of `FeatureFlag` objects;
+these register before its implementations are gated. For CLI contributions,
+import `register_cli_command` from `sparkrun.core.cli_registry` and pass a lazy
+loader with an explicit name to keep API initialization console-free. Registration
+must be local and inexpensive: no dependency installation, network, registry
+clones or hardware probes. Supported registry mutations from a failed installed
+integration are rolled back; arbitrary import-time side effects are outside this
+contract. The rollback adapter targets the project's pinned SAF version.
+
+Discovery is deterministic. Repeated registration of the same provider is
+idempotent. Distinct integration IDs/providers or concrete runtime, builder,
+executor, scheduler, transport, framework, telemetry scope or gateway selector claims cannot silently
+replace each other; diagnostics name both owners. Ordered platform matching is
+preserved, with duplicate platform names rejected. Required missing, disabled,
+incompatible or failed integrations block launch while help/version/inventory
+remain usable. Optional load failures are reported as failures, not loaded
+plugins. Ambiguous selected implementation claims also block launch.
+
+`setup plugins list --json` includes installed package/version, source,
+selected/enabled, loaded, required, selection source and failure. A profile's
+selected package still declares registries at the external trust tier; reviewed
+profile registry declarations are a separate explicit policy.
+
+API compatibility is versioned by `APPLICATION_PROFILE_API_VERSION` and
+`SPARKRUN_PLUGIN_API_VERSION`; declare supported core ranges in package
+requirements. See [the application profile guide](APPLICATION_PROFILES.md).
+
+
+### Application and controller identity
+
+Plugins can import `get_application_profile()`, `get_application_identity()` and
+`get_controller_identity()` from `sparkrun.application`. Context-bearing hooks
+can use `sctx.application_profile`, `sctx.application_identity`, and
+`sctx.controller_identity`. A controller is one application/profile using one
+canonical config directory; every process and config file in that directory
+shares its opaque ID. There is no configurable controller ID. The full profile
+is local policy; the serializable identity descriptors are suitable for shared
+services. Key ownership by
+`(application.id, controller_id)` and use `controller.labels()` to tag resources.
+See [identity, persistence and shared-service contracts](APPLICATION_PROFILES.md#plugin-identity-and-shared-services)
+for the wire format, lazy ID creation and migration behavior.
+
+### Hardware inventory extensions
+
+An installed integration can register a platform with `register_platform` and
+extend the target probe through
+`core.hardware_probe_extensions.register_hardware_probe`. Device-specific shell
+facts and the hardware enricher stay in the plugin. The normal fingerprint and
+combined accelerator/IB probes include selected providers, and failed installed
+plugin registration rolls back their probe registrations. See
+[MULTIPLATFORM.md](MULTIPLATFORM.md#plugin-owned-hardware-probes) for the contract.
+Plugin-specific devices and qualification tests belong to the integration repository.
+
+## Benchmark integrations
+
+A `BenchmarkingPlugin` implements a measurement framework: command building,
+result parsing, and scheduled tasks. A **benchmark integration** adds behavior
+around that measurement, such as publishing results. Integrations use the same
+execution path from the CLI and Python API.
+
+Register `BenchmarkIntegration` with
+`sparkrun.core.benchmark_integrations.register_benchmark_integration` in the
+plugin's `register(v)` hook. Its callbacks are:
+
+- `prepare(defaults, context) -> BenchmarkDefaults`: select measurement defaults
+  before resolving a new invocation's recipe/profile/framework. `BenchmarkDefaults`
+  contains only `category`, `framework`, `profile`, and read-only `bench_args`.
+  Return a new value with `dataclasses.replace`; lifecycle, targets, dry-run mode,
+  callbacks, and integration selection remain caller-owned. Returning full
+  `BenchmarkOptions` is rejected. This hook is not called by `resume_benchmark(id)`;
+  saved measurements keep their original configuration.
+- `validate(context)`: validate the effective integration settings before any
+  binding or launch. This runs for fresh runs, incomplete resumes, and completed
+  publication retries. Saved settings are merged first; explicit settings win.
+  Move settings validation out of `prepare` into this hook.
+- `on_bind(context)`: authenticate and establish persistent state before launching
+  or resuming measurements. Saved settings and data have already been restored.
+- `on_checkpoint(context)`: capture provenance after launch and before framework
+  execution. This callback can run more than once and must be idempotent.
+- `on_complete(context)`: finalize a successful benchmark, preview a dry run, or
+  retry finalization for saved, validated results. It never runs after a failed
+  measurement and must tolerate repeated calls for the same state.
+
+`context` carries `sctx`, `settings`, an emitter, mutable integration-private
+`data` and `outcome` mappings, optional `BenchmarkMeasurement` and
+`BenchmarkStateInfo` snapshots, and `dry_run`/`resumed`. `BenchmarkReporter`
+defines supported `info`, `warning`, `error`, `event`, and `confirm` methods.
+`sctx` exposes application and controller identities for shared services.
+
+`prepare` has no result/state; `validate` has restored settings/data/state but no
+measurement snapshot. The other hooks see a frozen `BenchmarkMeasurement`,
+built only for hooks that are present and refreshed before each hook. It contains measurement identity, framework/category,
+profile, results, output paths, hosts/image, benchmark arguments, and resume
+provenance. `measured_at` and `completed_at` describe the measurement interval
+and stay fixed during publication-only retries. Nested result/provenance mappings
+and sequences are read-only.
+The snapshot exposes `recipe_yaml` and a redacted `provenance` mapping when a
+recipe is available. It contains no live Recipe, runtime, launcher, or framework
+plugin object. Snapshot construction does not resolve builder images: provenance
+uses an already recorded archival reference, or the recorded container reference.
+`framework` is a name. If a plugin needs to validate the recipe,
+it can construct its own Recipe from the YAML snapshot.
+
+Write publication outcomes into `context.outcome`; the host copies this into
+`api.BenchmarkResult.integration_results[<your integration name>]`. Each plugin
+can write only its own outcome. Persist values needed for retries in
+`context.data`; `outcome` describes the current invocation and is not itself
+persisted. Publication-only retries can have `recipe_yaml=None` and empty
+`provenance`, so save original provenance during binding/checkpointing.
+
+`on_bind` precedes inference launch. By `on_checkpoint`, launch/readiness has
+finished (or was skipped). `on_complete` sees successful measurements or a dry-run
+preview. The mutable internal `BenchmarkExecution` remains orchestration-only;
+`benchmarking.base.BenchmarkResult` is its compatibility alias for framework code.
+`BenchmarkStateInfo` exposes the benchmark ID, creation/update timestamps, and a
+detached, top-level read-only `extras` mapping for legacy migration. It has no
+`save()` method. New plugins should persist only through `context.data`; internal
+state-file keys outside their data are not a stable plugin API.
+
+State callbacks run while the benchmark state-directory lock is held when a
+scheduled state exists. The host persists each integration's settings and data,
+including when a binding/checkpoint/completion callback fails. Rejected settings
+from `validate` are not persisted and do not overwrite the last accepted settings.
+Store only JSON-compatible values, never credentials. Ordinary caller-provided
+`BenchmarkOptions.state_extras` is also copied into newly created state.
+
+A scheduled run saves validated results for completion retries; `benchmark resume
+<ID>` can retry publication after inference has stopped. An unscheduled framework
+has no resumable state: its integration callbacks run, but resumable publication
+requires a scheduled framework. Dry runs invoke preview hooks without persisting
+integration data; each plugin must also honor `context.dry_run` for its own I/O.
+
+To contribute flags, register a `CliOptionSpec` from the Click-free
+`sparkrun.core.cli_registry`, targeting `benchmark.run` (generic and category
+commands) or `benchmark.resume`. Supply a lazy loader returning `click.Option`
+objects and a decoder returning a settings dict, or `None` when not selected.
+The host resolves options before parsing/help/completion, rejects parameter name
+and flag collisions, and forwards the decoded mapping to `BenchmarkOptions`.
+Use the same `feature_flag` on the lifecycle and option specs. Option and lifecycle
+registrations participate in installed-plugin registration rollback.
+
+The in-tree [sparkarena plugin](../src/sparkrun/plugins/sparkarena/README.md) provides a
+complete example. `integration.arena` gates its commands, flags, and lifecycle.
+Sparkrun enables it by default; application profiles can override that default.
+Saved integrations resume automatically when available. Disabling or uninstalling
+one leaves its saved data intact and permits local benchmarking to continue;
+explicitly selecting an unavailable integration fails with a clear error.
+
+Python callers now select Arena with
+`BenchmarkOptions(recipe='...', integrations={'arena': {}})` or use
+`{'arena': {'local_test': True}}` for a rehearsal. This replaces the former
+`arena=True` field. The result exposes
+`result.integration_results['arena']['submission_id']` and `uploaded`, replacing
+the Arena-specific top-level `submission_id` field. Telemetry records integration
+names only, never their settings, saved data, or outcome details.
+
+## Kubernetes plugin and executor-owned launches
+
+The in-tree [Kubernetes plugin](../src/sparkrun/plugins/k8s/README.md) is loaded
+through `integration.k8s`: off for Sparkrun stable/beta and on for alpha.
+Application profiles can override that policy. Its `FEATURE_DEFINITIONS` register
+`executor.k8s`, `cli.setup.k8s`, and `api.run.k8s` only after the loading gate is
+on. All three child features default on inside the enabled plugin. Explicit
+child overrides do not load a disabled parent.
+
+An executor may set `config_class` to an `ExecutorConfig` subclass with a
+`from_chain()` implementation for its own fields. The shared resolution chain
+selects this class instead of keeping plugin-specific fields in core.
+
+Plugins with a native control-plane launch may register a
+`RunHandler(executor, callback, feature_flag=...)` through
+`sparkrun.core.run_handlers.register_run_handler()`. The typed callback receives
+`(options, sctx, *, plan: RunPlan, started_at: float)` and returns `RunResult`.
+The plan is the existing resolved recipe/cluster/placement/identity decision;
+handlers must not independently repeat placement. Core enforces execution-strategy
+compatibility and replacement semantics before dispatch. Both default and plugin
+launches preserve typed `SparkrunError` errors and translate other exceptions with
+their cause; interrupts propagate unchanged. The Kubernetes plugin uses the same
+executor configuration chain for its target settings. `options.executor_overrides()`
+returns the caller layer for `resolve_executor()`; do not independently merge the
+recipe/cluster/default layers.
+
+Setup plugins can contribute read-only probes, per-host readiness checks, and
+optional apply/undo actions through the [shared setup step API](SETUP_STEPS.md).
+
+
+Failures in completion hooks, snapshot/outcome conversion, or completion-state
+persistence raise `api.BenchmarkIntegrationFailed`, a subclass of `BenchmarkFailed`.
+Its `result` retains successful measurements and output paths; errors describe
+finalization separately from measurement success. `integration` names the failing
+plugin, or the reserved `<state>` marker for shared persistence failures. Secondary
+persistence failures are retained without masking the original hook error.
+When completed state was saved, retry using `resume_benchmark(id)`.
+
+Python frontends pass `BenchmarkOptions.decision_callback` (or the same argument
+to `resume_benchmark`) for integration confirmations. Without a callback,
+`emitter.confirm(message, default=...)` uses the supplied default. The older
+`on_prompt_required` hook only decides whether to reuse incomplete benchmark
+state; it never handled integration confirmations. Recipe trust remains separate.
+See [the benchmark API guide](BENCHMARK_API.md) for events and decision kinds.
+
+Arena's in-tree CLI adapter is versioned with core and intentionally uses private
+CLI helpers to reuse its command layout. Those helpers are not a supported API
+for installed plugins. Use `CliOptionSpec` for contributions to existing commands,
+or register your own lazy command and call the public benchmark APIs. No import
+from `sparkrun.cli` is needed during plugin registration or library initialization.
+
+
+### Registry rollback state
+
+A registry that stores plugin contributions enlists its containers beside their
+module-level definitions:
+
+```python
+from sparkrun.core.registration import enlist_registry_state, register_unique
+
+_ENTRIES = {}
+enlist_registry_state(globals(), "_ENTRIES")
+
+# Inside the registry's registration function, after domain-specific validation:
+# register_unique(_ENTRIES, name, spec, description="Example extension")
+```
+
+Plugin loading snapshots enlisted containers and SAF registration state.
+Nested mutable containers and registry imports during registration participate
+in rollback. Identical registrations are allowed; conflicting providers fail.
+Enlistment tracks the namespace entry, so deliberately replacing a container
+does not leave rollback pointing at its old value. Registration finishes before
+application workers start. It does not roll back arbitrary plugin I/O, and the
+SAF adapter remains tied to the pinned framework version.
+
+
+### Finalization and setup undo contracts
+
+`api.BenchmarkFinalizationFailed` is the common result-bearing exception after
+measurement validation. `BenchmarkIntegrationFailed` remains its subtype for
+plugin and shared-state failures. Export, inference cleanup, and final frontend
+notification failures now retain measurements too; inspect `stage` and `errors`.
+See [the benchmark API guide](BENCHMARK_API.md#results-and-publication-retries).
+
+Setup apply and undo callbacks share result validation. Return `ok` from undo
+only when the recorded change has been removed or is already absent. `warn`,
+`skip`, `fail`, exceptions, and invalid statuses leave the host's record available
+for retry. Return useful detail explaining incomplete cleanup. Successful hosts
+are cleared independently before frontend notification; other hosts and
+unselected phases remain recorded. Built-in and plugin undo run through the
+same console-free API. See [shared setup](SETUP_STEPS.md).

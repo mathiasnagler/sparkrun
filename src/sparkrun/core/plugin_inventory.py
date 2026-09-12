@@ -95,6 +95,11 @@ class PluginInfo:
     path: Path | None = None
     """The ``plugins.paths`` directory it came from (out-of-tree only)."""
 
+    package: str | None = None
+    selection_source: str | None = None
+    failure: str | None = None
+    required: bool = False
+
     @property
     def version_display(self) -> str:
         """Version for display, distinguishing *unknown* from *not declared*."""
@@ -113,6 +118,11 @@ class PluginInfo:
         """
         return {
             "name": self.name,
+            "package": self.package,
+            "selected": self.enabled,
+            "selection_source": self.selection_source,
+            "failure": self.failure,
+            "required": self.required,
             "source": self.source,
             "module": self.module,
             "enabled": self.enabled,
@@ -173,6 +183,7 @@ def _in_tree_plugins(v: "Variables | None") -> list[PluginInfo]:
         IN_TREE_PLUGIN_PACKAGE,
         iter_in_tree_plugin_names,
         plugin_feature_flag,
+        plugin_application_profile_failure,
     )
 
     out: list[PluginInfo] = []
@@ -194,6 +205,7 @@ def _in_tree_plugins(v: "Variables | None") -> list[PluginInfo]:
                 enabled=enabled,
                 loaded=loaded_plugin_module(dotted) is not None,
                 feature_flag=flag if registered else None,
+                failure=plugin_application_profile_failure(name) if enabled else None,
                 version=version,
                 version_source=origin,
             )
@@ -255,6 +267,24 @@ def list_plugins(config: "SparkrunConfig | None" = None, v: "Variables | None" =
     """
     plugins = sorted(_in_tree_plugins(v), key=lambda p: p.name)
     plugins.extend(sorted(_external_plugins(config, v), key=lambda p: (str(p.path), p.name)))
+    from sparkrun.core.installed_plugins import installed_plugin_inventory
+
+    plugins.extend(
+        PluginInfo(
+            name=p.name,
+            source="installed",
+            module=p.module,
+            enabled=p.selected,
+            loaded=p.loaded,
+            version=p.version,
+            version_source=VERSION_FROM_DISTRIBUTION if p.version else None,
+            package=p.package,
+            selection_source=p.selection_source,
+            failure=p.failure,
+            required=p.required,
+        )
+        for p in installed_plugin_inventory(config)
+    )
     return plugins
 
 

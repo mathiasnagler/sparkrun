@@ -101,7 +101,13 @@ def registry_list(ctx, show_disabled, only_show_visible, output_json, config_pat
             bench = "yes" if reg.benchmark_subpath else "no"
             row += f" {bench:<7}"
         if has_declared:
-            source = ("plugin:%s" % reg.declared_by) if reg.declared_by else "config"
+            source = (
+                reg.declared_by.replace("distribution:", "profile:", 1)
+                if reg.declared_by.startswith("distribution:")
+                else ("plugin:%s" % reg.declared_by)
+                if reg.declared_by
+                else "config"
+            )
             row += f" {source[:16]:<16}"
         click.echo(row)
 
@@ -151,16 +157,16 @@ def registry_list(ctx, show_disabled, only_show_visible, output_json, config_pat
 )
 @click.pass_context
 def registry_add_url(ctx, url, no_update, trust, config_path=None):
-    """Add registries from a repository's .sparkrun/registry.yaml manifest.
+    """Add registries from a repository's .{app_command}/registry.yaml manifest.
 
     Clones the repository, reads the manifest, and adds all declared registries.
     Newly added registries are then fetched so their recipes are immediately
-    available to ``sparkrun run``.  Pass ``--no-update`` to skip the fetch.
+    available to ``{app_command} run``.  Pass ``--no-update`` to skip the fetch.
 
     Examples:
 
-      sparkrun registry add https://github.com/spark-arena/recipe-registry
-      sparkrun registry add --trust https://github.com/me/my-recipes
+      {app_command} registry add https://github.com/spark-arena/recipe-registry
+      {app_command} registry add --trust https://github.com/me/my-recipes
     """
     from sparkrun.core.registry import RegistryError
 
@@ -226,8 +232,15 @@ def registry_remove(ctx, name, config_path=None):
     try:
         registry_mgr.remove_registry(name)
         if declared_by:
-            click.echo(f"Registry '{name}' (declared by plugin '{declared_by}') removed and suppressed.")
-            click.echo(f"  It will not return while '{declared_by}' is installed. Undo with: sparkrun registry add <url>")
+            if declared_by.startswith("distribution:"):
+                from sparkrun.core.application_profile import render_identity_text
+
+                profile_id = declared_by.removeprefix("distribution:")
+                click.echo(f"Registry '{name}' (application profile '{profile_id}') removed and suppressed.")
+                click.echo(render_identity_text("  Add it again with: {app_command} registry add <url>"))
+            else:
+                click.echo(f"Registry '{name}' (declared by plugin '{declared_by}') removed and suppressed.")
+                click.echo(f"  It will not return while '{declared_by}' is installed. Undo with: sparkrun registry add <url>")
         else:
             click.echo(f"Registry '{name}' removed successfully.")
     except RegistryError as e:
@@ -327,7 +340,10 @@ def registry_show(ctx, name, config_path=None):
     click.echo("Stemless:    %s" % ("yes" if entry.visible else "no"))
     click.echo("Trusted:     %s" % ("yes" if entry.trusted else "no"))
     if entry.declared_by:
-        click.echo("Source:      declared by plugin '%s' (not in your configuration)" % entry.declared_by)
+        if entry.declared_by.startswith("distribution:"):
+            click.echo("Source:      application profile '%s' (default)" % entry.declared_by.removeprefix("distribution:"))
+        else:
+            click.echo("Source:      declared by plugin '%s' (not in your configuration)" % entry.declared_by)
     if entry.tuning_subpath:
         click.echo("Tuning:      %s" % entry.tuning_subpath)
     if entry.benchmark_subpath:
@@ -342,15 +358,15 @@ def registry_show(ctx, name, config_path=None):
 def registry_revert_to_default(ctx, no_run_update, config_path=None):
     """Reset registries to defaults (deletes config and re-initializes).
 
-    Removes the current registries.yaml and re-discovers registries from
-    the default manifest URLs.  If discovery fails (offline, etc.), falls
-    back to hardcoded defaults.
+    Removes the current registries.yaml and restores the active application's
+    registry catalog and bootstrap sources. An application with no default
+    registries resets to an empty catalog.
 
     Examples:
 
-      sparkrun registry revert-to-default
+      {app_command} registry revert-to-defaults
 
-      sparkrun registry revert-to-default --update
+      {app_command} registry revert-to-defaults --no-update
     """
     config, registry_mgr = _get_config_and_registry(config_path)
 

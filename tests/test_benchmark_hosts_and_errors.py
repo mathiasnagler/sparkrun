@@ -64,22 +64,9 @@ def _capture_hosts(argv, *, arena: bool):
         captured["hosts"] = opts.hosts
         raise SystemExit(99)
 
-    patches = [patch("sparkrun.api._benchmark._execute_benchmark", _fake_execute)]
-    if arena:
-        # Skip the arena auth/preflight round-trip; irrelevant to host parsing.
-        patches.append(
-            patch(
-                "sparkrun.cli._arena_flow.preflight_arena",
-                lambda local_test=False, ctx=None, recipe_name=None, dry_run=False: ("sub-1", None),
-            )
-        )
-
-    with patches[0]:
-        if arena:
-            with patches[1]:
-                CliRunner().invoke(main, argv)
-        else:
-            CliRunner().invoke(main, argv)
+    with patch("sparkrun.api._benchmark._execute_benchmark", _fake_execute):
+        result = CliRunner().invoke(main, argv)
+    assert result.exit_code == 99, result.output
     return captured.get("hosts")
 
 
@@ -166,14 +153,8 @@ def _capture_trust(argv, *, arena: bool):
         raise SystemExit(99)
 
     with patch("sparkrun.api._benchmark._execute_benchmark", _fake_execute):
-        if arena:
-            with patch(
-                "sparkrun.cli._arena_flow.preflight_arena",
-                lambda local_test=False, ctx=None, recipe_name=None, dry_run=False: ("sub-1", None),
-            ):
-                CliRunner().invoke(main, argv)
-        else:
-            CliRunner().invoke(main, argv)
+        result = CliRunner().invoke(main, argv)
+    assert result.exit_code == 99, result.output
     return captured.get("trust")
 
 

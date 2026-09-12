@@ -284,7 +284,9 @@ class TestRegistryManagerInit:
     def test_default_cache_root(self, tmp_path: Path):
         """Test that cache_root defaults when not provided."""
         mgr = RegistryManager(tmp_path)
-        assert mgr.cache_root == Path.home() / ".cache/sparkrun/registries"
+        from sparkrun.core.config import resolve_sparkrun_cache_dir
+
+        assert mgr.cache_root == resolve_sparkrun_cache_dir() / "registries"
 
     def test_registries_path(self, mgr):
         """Test the registries.yaml path property."""

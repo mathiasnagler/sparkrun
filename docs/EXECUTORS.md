@@ -304,8 +304,14 @@ runtime that can't pair with Local.
 
 ## `K8sExecutor` (experimental draft)
 
-`orchestration/executors/k8s.py`. `kubectl run`-based — every lifecycle
+`plugins/k8s/executor.py`, owned by the [Kubernetes plugin](../src/sparkrun/plugins/k8s/README.md). `kubectl run`-based — every lifecycle
 operation is a `kubectl` invocation.
+
+Enable `integration.k8s` first (default on only for Sparkrun alpha). The plugin
+registers `executor.k8s`, `cli.setup.k8s`, and `api.run.k8s`, each defaulting on.
+Its typed executor settings live in `K8sExecutorConfig`. The native API run path
+uses JobSet for supported single-pod launches; the commands below describe the
+Pod-level executor used for lifecycle operations and the legacy launch path.
 
 ### What it does
 
@@ -366,3 +372,12 @@ executor_config:
 Docker fields (the existing ones — `privileged`, `cap_add`, `devices`, etc.)
 keep their previous behavior and ship under the same `executor_config:` block
 when `executor: docker` (or unset).
+
+
+Native launch and stop serialize changes to each PID path using `flock` from
+util-linux (alongside the existing `setsid` requirement). The lock covers owner
+validation and PID/owner writes; the workload closes the lock descriptor. Locks
+are released by the OS when the operation exits. Lock files stay in place so
+concurrent operations continue to lock the same inode. Explicitly shared PID
+paths reject another application's owner even if its claim appeared after solo
+preflight. A launch also refuses to replace a PID that is still running.

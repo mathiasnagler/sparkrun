@@ -36,7 +36,7 @@ from sparkrun.orchestration.executors.docker import (
     _parse_docker_labels,
     _parse_docker_ps_output,
 )
-from sparkrun.orchestration.executors.k8s import K8sExecutor
+from sparkrun.plugins.k8s.executor import K8sExecutor
 from sparkrun.orchestration.executors.local import (
     LocalExecutor,
     _parse_local_pidfile_output,
@@ -60,6 +60,7 @@ def test_workload_labels_minimal_has_cluster_id_and_intent():
     labels = Executor.workload_labels("sparkrun_abc123abc123abc1_def456abcdef")
     assert labels == {
         LABEL_CLUSTER_ID: "sparkrun_abc123abc123abc1_def456abcdef",
+        "sparkrun.distribution": "sparkrun",
         LABEL_INTENT_ID: "abc123abc123abc1",
     }
 

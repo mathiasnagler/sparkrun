@@ -178,13 +178,12 @@ def test_underscore_and_missing_paths_ignored(tmp_path, clean_sys):
 
 def test_config_driven_auto_load(tmp_path, clean_sys, monkeypatch):
     v = init_sparkrun()
-    cfg_root = tmp_path / "cfg"
-    cfg_root.mkdir()
+    cfg_root = SparkrunConfig().config_path.parent
+    cfg_root.mkdir(parents=True, exist_ok=True)
     plug = tmp_path / "myplugins"
     _write(plug, "ext_cfg_f", _transport_module("extprov_cfg_f"))
     (cfg_root / "config.yaml").write_text("plugins:\n  paths:\n    - %s\n" % plug)
 
-    monkeypatch.setattr("sparkrun.core.config.get_config_root", lambda v=None: cfg_root)
     monkeypatch.delenv("SPARKRUN_NO_EXTERNAL_PLUGINS", raising=False)
     monkeypatch.setenv("SPARKRUN_FEATURE_CORE_EXTERNAL_PLUGINS", "1")
 

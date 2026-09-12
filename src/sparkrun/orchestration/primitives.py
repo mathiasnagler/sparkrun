@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from sparkrun.core.config import DEFAULT_CACHE_DIR, SparkrunConfig, resolve_hf_cache_home
+from sparkrun.core.config import resolve_sparkrun_cache_dir, SparkrunConfig, resolve_hf_cache_home
 from sparkrun.utils import is_valid_ip
 from sparkrun.orchestration.ssh import (
     DEFAULT_MAX_PARALLEL_SSH,
@@ -164,11 +164,13 @@ def probe_remote_sparkrun_cache(
     relocates its caches is respected.
     """
     if dry_run:
-        return str(DEFAULT_CACHE_DIR)
+        return str(resolve_sparkrun_cache_dir())
+
+    from sparkrun.core.application_profile import env_name, get_application_profile
 
     return probe_remote_path(
         host,
-        "${SPARKRUN_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/sparkrun}",
+        "${%s:-${XDG_CACHE_HOME:-$HOME/.cache}/%s}" % (env_name("CACHE_DIR"), get_application_profile().cache_namespace),
         ssh_user=ssh_user,
         ssh_key=ssh_key,
         ssh_options=ssh_options,

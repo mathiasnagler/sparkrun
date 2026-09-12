@@ -15,7 +15,10 @@ def setup(ctx):
         return
     # Smart routing: auto-launch wizard when no default cluster is set
     mgr = _get_cluster_manager()
-    if mgr.get_default() is None:
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.features import is_feature_enabled
+
+    if mgr.get_default() is None and is_feature_enabled("cli.setup.wizard", config=SparkrunConfig()):
         from ._wizard import setup_wizard
 
         ctx.invoke(setup_wizard)
@@ -30,7 +33,6 @@ def setup(ctx):
 from . import _commands as _commands  # noqa: E402, F401  — registers @setup.command() decorators
 from . import _fe_update as _fe_update  # noqa: E402, F401  — registers @setup.command("fe-system-update")
 from . import _gpu_clock as _gpu_clock  # noqa: E402, F401  — registers @setup.command("throttle-gpu-clock")
-from . import _k8s as _k8s  # noqa: E402, F401  — registers @setup.group("k8s")
 from . import _plugins as _plugins  # noqa: E402, F401  — registers @setup.group("plugins")
 from . import _rdma as _rdma  # noqa: E402, F401  — registers @setup.command("rdma-test")
 from . import _tailscale as _tailscale  # noqa: E402, F401  — registers @setup.group("tailscale")

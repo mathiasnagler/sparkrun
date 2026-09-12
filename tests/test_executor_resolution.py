@@ -30,7 +30,7 @@ from sparkrun.orchestration.executor import (
     list_executors,
     resolve_executor,
 )
-from sparkrun.orchestration.executors.k8s import K8sExecutor
+from sparkrun.plugins.k8s.executor import K8sExecutor
 from sparkrun.orchestration.executors.local import LocalExecutor
 
 
@@ -104,7 +104,7 @@ class TestExecutorLookup:
     def test_get_executor_static_fallback_local(self):
         assert get_executor("local", v=None) is LocalExecutor
 
-    def test_get_executor_static_fallback_k8s(self):
+    def test_get_executor_bootstraps_enabled_k8s_plugin(self):
         assert get_executor("k8s", v=None) is K8sExecutor
 
     def test_get_executor_unknown_raises(self):
@@ -116,7 +116,7 @@ class TestExecutorLookup:
 
         v = init_sparkrun()
         registered = list_executors(v)
-        # We need at least the three built-in executors.
+        # Core and the explicitly enabled Kubernetes plugin contribute executors.
         assert "docker" in registered
         assert "local" in registered
         assert "k8s" in registered
@@ -152,7 +152,7 @@ class TestResolveExecutor:
 
     def test_return_type_matches_selected_executor(self):
         from sparkrun.orchestration.executors.local import LocalExecutor as LE
-        from sparkrun.orchestration.executors.k8s import K8sExecutor as KE
+        from sparkrun.plugins.k8s.executor import K8sExecutor as KE
 
         assert isinstance(resolve_executor(recipe=_FakeRecipe(executor="docker")), DockerExecutor)
         assert isinstance(resolve_executor(recipe=_FakeRecipe(executor="local")), LE)

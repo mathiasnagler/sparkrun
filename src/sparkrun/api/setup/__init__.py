@@ -1,27 +1,28 @@
 """Public library API for cluster setup operations.
 
 Console-free surface for the parts of ``sparkrun setup`` that a GUI needs to
-drive itself.  Mirrors the :mod:`sparkrun.api.k8s` / :mod:`sparkrun.api.tailscale`
+drive itself.  Mirrors the :mod:`sparkrun.plugins.k8s.api` / :mod:`sparkrun.api.tailscale`
 conventions: dataclass returns, typed
 :class:`~sparkrun.api._errors.SparkrunError` subclasses, no writes to
 stdout/stderr.
 
-Today this covers the SSH access bootstrap — the step that has to succeed
-before any other setup phase can run, and the one that fails on a control
-machine that has never talked to the cluster:
-
-- :func:`probe_ssh_access` — non-interactive reachability + failure diagnosis.
-- :func:`ensure_local_key` — find or generate the identity to install.
-- :func:`install_public_key_interactive` — install it via password auth.
-- :func:`mesh_ssh_keys_native` — host↔host key mesh with no local shell.
-
-Every function here works from a bare Windows control machine, using only the
-OpenSSH client binaries.
+Includes SSH bootstrap/mesh, RDMA diagnostics, and the shared host setup runner.
+Low-level setup checks/actions remain available for custom planning interfaces.
 """
 
 from __future__ import annotations
 
-from ._errors import OpenSshUnavailable, RdmaTestError, SshAccessError, SshKeyError
+from ._runner import SetupEvent, SetupRunResult, SetupUndoResult, run_setup_steps, run_setup_undo
+
+# Caller-facing planning/action models are aliases of the core types. Plugin
+# registration remains in core.setup_steps; frontends need only this facade.
+from sparkrun.core.setup_actions import SetupActionContext, SetupActionResult
+from sparkrun.core.setup_manifest import ManifestManager, SetupManifest, PhaseRecord
+from sparkrun.core.setup_models import CheckContext, CheckItem, HostState, OK, WARN, FAIL, SKIP
+from sparkrun.core.setup_probe import probe_setup_hosts, resolve_setup_context
+from sparkrun.core.setup_steps import PlannedStep, SetupStep, build_setup_plan, apply_setup_step, evaluate_host
+
+from ._errors import SetupFailed, OpenSshUnavailable, RdmaTestError, SshAccessError, SshKeyError
 from ._mesh import (
     MeshResult,
     build_collect_key_script,
@@ -54,6 +55,31 @@ from ._ssh_access import (
 )
 
 __all__ = [
+    "SetupActionContext",
+    "SetupActionResult",
+    "ManifestManager",
+    "SetupManifest",
+    "PhaseRecord",
+    "CheckContext",
+    "CheckItem",
+    "HostState",
+    "OK",
+    "WARN",
+    "FAIL",
+    "SKIP",
+    "probe_setup_hosts",
+    "resolve_setup_context",
+    "PlannedStep",
+    "SetupStep",
+    "build_setup_plan",
+    "apply_setup_step",
+    "evaluate_host",
+    "SetupFailed",
+    "SetupEvent",
+    "SetupRunResult",
+    "SetupUndoResult",
+    "run_setup_undo",
+    "run_setup_steps",
     # Functions
     "probe_ssh_access",
     "ensure_local_key",

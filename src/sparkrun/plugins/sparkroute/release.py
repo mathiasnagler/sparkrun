@@ -86,14 +86,7 @@ RELEASE_CHECKSUMS: dict[tuple[str, str, str], str] = {
 #: Point at a locally-built binary instead of a release asset.  Development
 #: aid for working on SparkRoute itself; skips version and digest checks, so
 #: it warns every time.
-BINARY_OVERRIDE_ENV = "SPARKRUN_SPARKROUTE_BINARY"
-
-#: Names this variable had before, newest first, still honoured so an existing
-#: development setup continues to use its explicitly selected binary.
-LEGACY_BINARY_OVERRIDE_ENVS = (
-    "SPARKRUN_FOXSCI_ROUTE_BINARY",
-    "SPARKRUN_LLM_GATEWAY_BINARY",
-)
+BINARY_OVERRIDE_ENV = "SPARKROUTE_BINARY"
 
 #: Refuse absurd downloads rather than filling the cache dir.  Also bounds
 #: extraction, so a decompression bomb cannot outgrow the same limit.
@@ -165,9 +158,9 @@ def expected_digest(version: str, target_os: str, target_arch: str) -> str:
 
 def _version_dir(version: str, cache_dir: Path | None = None) -> Path:
     if cache_dir is None:
-        from sparkrun.core.config import DEFAULT_CACHE_DIR
+        from sparkrun.core.config import resolve_sparkrun_cache_dir
 
-        cache_dir = DEFAULT_CACHE_DIR
+        cache_dir = resolve_sparkrun_cache_dir()
     return Path(cache_dir) / "gateways" / SPARKROUTE_BINARY / version
 
 
@@ -181,25 +174,6 @@ def archive_path(version: str, *, cache_dir: Path | None = None) -> Path:
     """Cache location for the verified release archive of *version*."""
     target_os, target_arch = platform_target()
     return _version_dir(version, cache_dir) / asset_name(version, target_os, target_arch)
-
-
-def _binary_override() -> tuple[str, str] | None:
-    """Return ``(env var, binary path)``, preferring the current name.
-
-    The variable name is returned rather than assumed, so every message about
-    the override names the one the caller actually set — telling someone their
-    binary came from a variable they never exported is how a stale legacy
-    export survives a debugging session.
-    """
-    override = os.environ.get(BINARY_OVERRIDE_ENV)
-    if override:
-        return BINARY_OVERRIDE_ENV, override
-    for name in LEGACY_BINARY_OVERRIDE_ENVS:
-        legacy = os.environ.get(name)
-        if legacy:
-            logger.warning("%s is deprecated; use %s", name, BINARY_OVERRIDE_ENV)
-            return name, legacy
-    return None
 
 
 def ensure_binary(
@@ -219,15 +193,14 @@ def ensure_binary(
         GatewayReleaseError: The platform is unsupported, no digest is pinned,
             the download failed, or the asset did not match its digest.
     """
-    override = _binary_override()
+    override = os.environ.get(BINARY_OVERRIDE_ENV)
     if override:
-        source_env, override_path = override
-        path = Path(override_path)
+        path = Path(override)
         if not path.is_file():
-            raise GatewayReleaseError("%s points at %s, which is not a file" % (source_env, path))
+            raise GatewayReleaseError("%s points at %s, which is not a file" % (BINARY_OVERRIDE_ENV, path))
         logger.warning(
             "Using SparkRoute binary from %s (%s) — version and checksum verification are skipped",
-            source_env,
+            BINARY_OVERRIDE_ENV,
             path,
         )
         return path
@@ -464,13 +437,24 @@ def resolve_sparkrun_executable() -> str:
             in a source checkout that was never installed; ``uv sync`` (or any
             pip/pipx/uvx install) provides the script.
     """
-    script = shutil.which("sparkrun")
+    from ._application_profile import host_api
+    import sys
+
+    api = host_api()
+    profile = api.get_application_profile() if api is not None else None
+    command = profile.command if profile is not None else "sparkrun"
+    if profile is not None and profile.id != "sparkrun":
+        # A PATH entry can belong to another installation with different plugins.
+        windows = sys.platform == "win32"
+        candidate = Path(sys.prefix) / ("Scripts" if windows else "bin") / (command + (".exe" if windows else ""))
+        script = str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+    else:
+        script = shutil.which(command)
     if not script:
         raise GatewayReleaseError(
-            "No 'sparkrun' executable on PATH for the gateway to call back into. "
-            "The gateway appends a single argument to -sparkrun-command, so a "
-            "'python -m sparkrun' invocation cannot be used; install sparkrun so its "
-            "console script exists (e.g. 'uv sync')."
+            "No %r console executable in the selected installation for the gateway callback. "
+            "The gateway appends a single argument to -sparkrun-command; install the distribution "
+            "and its required plugins in this environment." % command
         )
     return script
 
@@ -481,7 +465,6 @@ __all__ = [
     "SPARKROUTE_REPO",
     "SPARKROUTE_VERSION",
     "GatewayReleaseError",
-    "LEGACY_BINARY_OVERRIDE_ENVS",
     "MAX_DOWNLOAD_BYTES",
     "RELEASE_CHECKSUMS",
     "archive_path",

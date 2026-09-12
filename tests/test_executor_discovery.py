@@ -30,7 +30,7 @@ from sparkrun.orchestration.executor import (
     list_executors,
     resolve_executor,
 )
-from sparkrun.orchestration.executors.k8s import K8sExecutor
+from sparkrun.plugins.k8s.executor import K8sExecutor
 from sparkrun.orchestration.executors.local import LocalExecutor
 
 

@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import render_identity_text
+
+
 import logging
 
 import click
+from sparkrun.core.features import feature_gate_enabled
 
 logger = logging.getLogger(__name__)
 
 
-@click.command("wizard")
+@click.command("wizard", hidden=not feature_gate_enabled("cli.setup.wizard"))
 @click.option("--hosts", "-H", default=None, help="Pre-populate host list (comma-separated)")
 @click.option("--cluster", "cluster_name", default=None, help="Cluster name")
 @click.option("--user", "-u", default=None, help="SSH username")
@@ -17,21 +21,26 @@ logger = logging.getLogger(__name__)
 @click.option("--yes", "-y", is_flag=True, help="Accept all defaults (non-interactive)")
 @click.pass_context
 def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
-    """Guided setup wizard for sparkrun.
+    """Guided setup wizard for {app_command}.
 
-    Walks through cluster creation, SSH mesh, CX7 configuration,
-    sudoers entries, and earlyoom installation step by step.
+    Selects host setup steps from application policy, detected hardware, and
+    the cluster executor. Checks prerequisites before offering changes.
 
     Auto-detects CX7 peers when running on a DGX Spark.
 
     \b
     Examples:
-      sparkrun setup wizard
-      sparkrun setup wizard --hosts 10.0.0.1,10.0.0.2 --cluster mylab
-      sparkrun setup wizard --dry-run --hosts 10.0.0.1 --cluster test
-      sparkrun setup wizard --yes --hosts 10.0.0.1,10.0.0.2
+      {app_command} setup wizard
+      {app_command} setup wizard --hosts 10.0.0.1,10.0.0.2 --cluster mylab
+      {app_command} setup wizard --dry-run --hosts 10.0.0.1 --cluster test
+      {app_command} setup wizard --yes --hosts 10.0.0.1,10.0.0.2
     """
-    import shutil
+    from sparkrun.core.features import is_feature_enabled
+    from sparkrun.core.config import SparkrunConfig
+
+    if not is_feature_enabled("cli.setup.wizard", config=SparkrunConfig()):
+        raise click.ClickException("Setup wizard is disabled; use setup check or enable cli.setup.wizard")
+
     import subprocess
 
     from sparkrun.core.version import display_version
@@ -55,21 +64,10 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         distribute_cx7_host_keys,
     )
     from sparkrun.orchestration.primitives import build_ssh_kwargs
-    from sparkrun.orchestration.sudo import dispatch_sudo_script, run_with_sudo_fallback, run_sudo_script_on_host
-    from sparkrun.scripts import read_script
+    from sparkrun.orchestration.sudo import dispatch_sudo_script, run_sudo_script_on_host
     from sparkrun.utils.net import local_ip_for
 
     from .._common import _get_cluster_manager
-    from ._commands import setup_install
-    from ._phases import (
-        EARLYOOM_PREFER_PATTERNS,
-        EARLYOOM_AVOID_PATTERNS,
-        _build_earlyoom_regex,
-        _cdi_summary,
-        _DOCKER_GROUP_SCRIPT,
-        _DOCKER_GROUP_FALLBACK_SCRIPT,
-        _docker_group_summary,
-    )
     from ._ssh import _default_ssh_user, _ensure_ssh_access, _run_ssh_mesh, _detect_and_update_mgmt_ips
 
     # Manifest tracking
@@ -83,10 +81,14 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
     cx7_detected_any = False
     cx7_changed_ips = False
 
+    from contextlib import ExitStack
+
+    recordings = ExitStack()
+    locked_clusters = set()
     try:
         # ── Phase 0: Welcome + Install Check ─────────────────────────
         click.echo()
-        click.echo("Welcome to sparkrun %s setup wizard!" % display_version(SparkrunConfig()))
+        click.echo(render_identity_text("Welcome to {app_command} %s setup wizard!" % display_version(SparkrunConfig())))
         click.echo("=" * 48)
         click.echo()
 
@@ -96,28 +98,8 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         if user is None:
             user = default_user
 
-        # Auto-install if not installed via uv tool
-        uv = shutil.which("uv")
-        if uv:
-            try:
-                check = subprocess.run(
-                    [uv, "tool", "list"],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
-                if check.returncode == 0 and "sparkrun" not in check.stdout:
-                    click.echo("Installing sparkrun as a uv tool...")
-                    try:
-                        ctx.invoke(setup_install)
-                        results["install"] = "OK"
-                    except SystemExit:
-                        results["install"] = "failed (non-fatal)"
-                    click.echo()
-            except Exception:
-                pass  # uv check failed, skip install
-        else:
-            logger.debug("uv not found, skipping tool install check")
+        click.echo(render_identity_text("Controller installation and completion: {app_command} setup install"))
+        click.echo()
 
         # ── Phase 1: Host Discovery + Cluster Creation ───────────────
         click.echo("Phase 1: Cluster Setup")
@@ -125,7 +107,14 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
         config = SparkrunConfig()
         cluster_mgr = _get_cluster_manager()
-        manifest_mgr = ManifestManager(cluster_mgr.clusters_dir)
+        manifest_mgr = None if dry_run else ManifestManager(cluster_mgr.clusters_dir)
+        from sparkrun.core.setup_steps import step_enabled, build_setup_plan
+        from sparkrun.core.setup_probe import probe_setup_hosts, resolve_setup_context
+        from sparkrun.core.setup_models import HostState
+        from sparkrun.core.setup_actions import SetupActionContext
+        from ._step_runner import run_host_steps
+
+        cx7_enabled = step_enabled("cx7", config)
 
         # Control→host SSH access is a precondition for every probe the wizard
         # runs (CX7 detection, shared-cache detection, the mesh itself).  Gate
@@ -135,9 +124,22 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         # the username prompt arriving after the damage is done.
         ssh_access_hosts: list[str] | None = None
 
+        def _record_cluster():
+            if manifest_mgr is not None and cluster_name and cluster_name not in locked_clusters:
+                # A renamed cluster replaces the earlier selection; never hold
+                # multiple cluster locks while prompting for a new name.
+                recordings.close()
+                locked_clusters.clear()
+                try:
+                    recordings.enter_context(manifest_mgr.recording(cluster_name))
+                except (ValueError, OSError) as exc:
+                    raise click.ClickException(str(exc)) from exc
+                locked_clusters.add(cluster_name)
+
         def _gate_ssh_access(current_user):
             """Run the access gate once; return the (possibly corrected) user."""
             nonlocal ssh_access_hosts
+            _record_cluster()
             if ssh_access_hosts is not None or not host_list:
                 return current_user
             outcome = _ensure_ssh_access(host_list, current_user, config, dry_run=dry_run, yes=yes)
@@ -192,7 +194,8 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         host_list = list(chosen.hosts)
                         cluster_name = chosen.name
                         if default_name != cluster_name:
-                            cluster_mgr.set_default(cluster_name)
+                            if not dry_run:
+                                cluster_mgr.set_default(cluster_name)
                         results["cluster"] = "%s (%d hosts, set as default)" % (cluster_name, len(host_list))
                         click.echo("Using cluster '%s': %s" % (cluster_name, ", ".join(host_list)))
                         click.echo()
@@ -212,7 +215,8 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     chosen = existing[choice - 1]
                     host_list = list(chosen.hosts)
                     cluster_name = chosen.name
-                    cluster_mgr.set_default(cluster_name)
+                    if not dry_run:
+                        cluster_mgr.set_default(cluster_name)
                     results["cluster"] = "%s (%d hosts, set as default)" % (cluster_name, len(host_list))
                     click.echo("Using cluster '%s': %s" % (cluster_name, ", ".join(host_list)))
                     click.echo()
@@ -253,28 +257,29 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
         if not host_list:
             # Step 1a: Local CX7 detection
-            click.echo("Detecting CX7 interfaces on this machine...")
             local_cx7 = None
-            try:
-                script = generate_cx7_detect_script()
-                det_result = subprocess.run(
-                    ["bash", "-s"],
-                    input=script,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if det_result.returncode == 0:
-                    raw = parse_cx7_detect_output(det_result.stdout)
-                    local_cx7 = build_host_detection("localhost", raw)
-            except Exception as e:
-                logger.debug("Local CX7 detection failed: %s", e)
+            if cx7_enabled and not dry_run:
+                click.echo("Detecting CX7 interfaces on this machine...")
+                try:
+                    script = generate_cx7_detect_script()
+                    det_result = subprocess.run(
+                        ["bash", "-s"],
+                        input=script,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if det_result.returncode == 0:
+                        raw = parse_cx7_detect_output(det_result.stdout)
+                        local_cx7 = build_host_detection("localhost", raw)
+                except Exception as e:
+                    logger.debug("Local CX7 detection failed: %s", e)
 
             local_is_spark = local_cx7 is not None and local_cx7.detected
 
             if local_is_spark:
                 # Step 1b: Peer discovery on CX7 subnets
-                click.echo("  CX7 detected! This machine is a DGX Spark.")
+                click.echo("  CX7 interfaces detected on this machine.")
                 cx7_detected_any = True
 
                 cx7_subnets = [iface.subnet for iface in local_cx7.interfaces if iface.subnet]
@@ -303,17 +308,18 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         )
             else:
                 # Step 1c: No CX7 on control machine
-                click.echo("  No CX7 interfaces detected on this machine.")
+                if cx7_enabled and not dry_run:
+                    click.echo("  No CX7 interfaces detected on this machine.")
                 click.echo()
 
                 if not hosts:
                     if yes:
                         click.echo(
-                            "Error: --hosts required with --yes when no CX7 detected.",
+                            "Error: --hosts required with --yes when no existing cluster or discovered hosts are available.",
                             err=True,
                         )
                         return
-                    hosts = click.prompt("Enter DGX Spark host IPs/hostnames (comma-separated)")
+                    hosts = click.prompt("Enter host IPs/hostnames (comma-separated)")
 
             # Parse host list
             if hosts:
@@ -340,21 +346,6 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
             # Step 1e: SSH access gate — the first network action of the run.
             user = _gate_ssh_access(user)
-
-            # Detect CX7 on remote hosts if not already known
-            if not local_is_spark and not dry_run and ssh_access_hosts:
-                click.echo("Detecting CX7 on remote hosts...")
-                ssh_kwargs = build_ssh_kwargs(config)
-                if user:
-                    ssh_kwargs["ssh_user"] = user
-                try:
-                    remote_detections = detect_cx7_for_hosts(
-                        ssh_access_hosts,
-                        ssh_kwargs=ssh_kwargs,
-                    )
-                    cx7_detected_any = any(d.detected for d in remote_detections.values())
-                except Exception as e:
-                    logger.debug("Remote CX7 detection failed: %s", e)
 
             # Detect a shared/NFS HF cache and offer to enable the matching
             # distribution preferences (skip the redundant per-host rsync,
@@ -395,62 +386,70 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
             from sparkrun.core.scheduler import NEW_CLUSTER_DEFAULT_SCHEDULER, new_cluster_scheduler_notice
 
-            try:
-                cluster_mgr.create(
-                    name=cluster_name,
-                    hosts=host_list,
-                    user=user if user != default_user else None,
-                    distribution=dist_cfg,
-                    scheduler=NEW_CLUSTER_DEFAULT_SCHEDULER,
-                )
-                cluster_mgr.set_default(cluster_name)
-                results["cluster"] = "%s (%d hosts, set as default)" % (cluster_name, len(host_list))
-                click.echo(
-                    "Created cluster '%s' with %d host(s), set as default."
-                    % (
-                        cluster_name,
-                        len(host_list),
+            if dry_run:
+                results["cluster"] = "%s (%d hosts, preview only)" % (cluster_name, len(host_list))
+                click.echo("[dry-run] Would create/update cluster '%s' and set it as default." % cluster_name)
+            else:
+                try:
+                    cluster_mgr.create(
+                        name=cluster_name,
+                        hosts=host_list,
+                        user=user if user != default_user else None,
+                        distribution=dist_cfg,
+                        scheduler=NEW_CLUSTER_DEFAULT_SCHEDULER,
                     )
-                )
-                click.echo(new_cluster_scheduler_notice())
-            except ClusterError as e:
-                if "already exists" in str(e):
-                    if yes or click.confirm(
-                        "Cluster '%s' already exists. Update it?" % cluster_name,
-                        default=True,
-                    ):
-                        # Only override distribution prefs when we actually
-                        # detected a shared cache; otherwise leave the existing
-                        # cluster's prefs untouched (update() defaults to _UNSET).
-                        _update_kw = {}
-                        if dist_cfg is not None:
-                            _update_kw["distribution"] = dist_cfg
-                        cluster_mgr.update(
-                            name=cluster_name,
-                            hosts=host_list,
-                            user=user if user != default_user else None,
-                            **_update_kw,
-                        )
+                    if not dry_run:
                         cluster_mgr.set_default(cluster_name)
-                        results["cluster"] = "%s (%d hosts, updated)" % (cluster_name, len(host_list))
-                        click.echo("Updated cluster '%s'." % cluster_name)
-                    else:
-                        cluster_name = click.prompt("Enter a different cluster name")
-                        cluster_mgr.create(
-                            name=cluster_name,
-                            hosts=host_list,
-                            user=user if user != default_user else None,
-                            distribution=dist_cfg,
-                            scheduler=NEW_CLUSTER_DEFAULT_SCHEDULER,
-                        )
-                        cluster_mgr.set_default(cluster_name)
-                        click.echo(new_cluster_scheduler_notice())
-                        results["cluster"] = "%s (%d hosts, set as default)" % (
+                    results["cluster"] = "%s (%d hosts, set as default)" % (cluster_name, len(host_list))
+                    click.echo(
+                        "Created cluster '%s' with %d host(s), set as default."
+                        % (
                             cluster_name,
                             len(host_list),
                         )
-                else:
-                    raise
+                    )
+                    click.echo(new_cluster_scheduler_notice())
+                except ClusterError as e:
+                    if "already exists" in str(e):
+                        if yes or click.confirm(
+                            "Cluster '%s' already exists. Update it?" % cluster_name,
+                            default=True,
+                        ):
+                            # Only override distribution prefs when we actually
+                            # detected a shared cache; otherwise leave the existing
+                            # cluster's prefs untouched (update() defaults to _UNSET).
+                            _update_kw = {}
+                            if dist_cfg is not None:
+                                _update_kw["distribution"] = dist_cfg
+                            cluster_mgr.update(
+                                name=cluster_name,
+                                hosts=host_list,
+                                user=user if user != default_user else None,
+                                **_update_kw,
+                            )
+                            if not dry_run:
+                                cluster_mgr.set_default(cluster_name)
+                            results["cluster"] = "%s (%d hosts, updated)" % (cluster_name, len(host_list))
+                            click.echo("Updated cluster '%s'." % cluster_name)
+                        else:
+                            cluster_name = click.prompt("Enter a different cluster name")
+                            _record_cluster()
+                            cluster_mgr.create(
+                                name=cluster_name,
+                                hosts=host_list,
+                                user=user if user != default_user else None,
+                                distribution=dist_cfg,
+                                scheduler=NEW_CLUSTER_DEFAULT_SCHEDULER,
+                            )
+                            if not dry_run:
+                                cluster_mgr.set_default(cluster_name)
+                            click.echo(new_cluster_scheduler_notice())
+                            results["cluster"] = "%s (%d hosts, set as default)" % (
+                                cluster_name,
+                                len(host_list),
+                            )
+                    else:
+                        raise
 
         click.echo()
 
@@ -458,20 +457,50 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         # access gate has not run yet — run it here before probing.
         user = _gate_ssh_access(user)
 
-        # Detect CX7 on cluster hosts if not already known (e.g. reusing
-        # an existing cluster skips the host-discovery path above).
-        if ssh_access_hosts and not cx7_detected_any and len(ssh_access_hosts) >= 2 and not dry_run:
-            ssh_kwargs_probe = build_ssh_kwargs(config)
-            if user:
-                ssh_kwargs_probe["ssh_user"] = user
+        ssh_kwargs = build_ssh_kwargs(config)
+        if user:
+            ssh_kwargs["ssh_user"] = user
+
+        def _refresh_plan():
+            nonlocal states, setup_context
             try:
-                probe = detect_cx7_for_hosts(ssh_access_hosts, ssh_kwargs=ssh_kwargs_probe)
-                cx7_detected_any = any(d.detected for d in probe.values())
-            except Exception as e:
-                logger.debug("CX7 probe on existing cluster failed: %s", e)
+                cluster_def = cluster_mgr.get(cluster_name) if cluster_name else None
+            except ClusterError:
+                cluster_def = None
+            if dry_run:
+                inventory = cluster_def.hosts_hardware if cluster_def else {}
+                states = {h: HostState(h, hardware=inventory.get(h)) for h in host_list}
+                setup_context = resolve_setup_context(states, config=config, cluster=cluster_def, cluster_name=cluster_name)
+            else:
+                # Never send setup probes to hosts that failed the SSH gate.
+                targets = [h for h in host_list if h in (ssh_access_hosts or [])]
+                states, setup_context = probe_setup_hosts(
+                    targets, ssh_kwargs=ssh_kwargs, config=config, cluster=cluster_def, cluster_name=cluster_name
+                )
+                for h in host_list:
+                    if h not in states:
+                        states[h] = HostState(h, reachable=False, error="SSH access was not established")
+                setup_context.multi_host = len(host_list) > 1
+                inventory = dict(cluster_def.hosts_hardware) if cluster_def else {}
+                inventory.update({h: state.hardware for h, state in states.items() if state.hardware is not None})
+                if inventory and cluster_def:
+                    cluster_mgr.update(cluster_name, hosts_hardware=inventory)
+            for host, state in states.items():
+                label = ", ".join(a.model for a in state.hardware.accelerators) if state.hardware else "hardware identification required"
+                click.echo("  %s: %s" % (host, label))
+
+        states = {}
+        setup_context = None
+        _refresh_plan()
+
+        def _selected(key, host):
+            entry = next(p for p in build_setup_plan(states[host], setup_context) if p.step.key == key)
+            return entry.selected and not entry.blocked_by
+
+        cx7_detected_any = any(state.cx7 and state.cx7.detected for state in states.values())
 
         # ── Phase 2: SSH Mesh ────────────────────────────────────────
-        if host_list:
+        if len(host_list) > 1 and all(_selected("ssh_mesh", h) for h in host_list):
             click.echo("Phase 2: SSH Mesh")
             click.echo("-" * 30)
 
@@ -561,6 +590,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         # After SSH mesh, detect each host's management IP and update the
         # cluster definition if the user provided CX7 or other non-mgmt IPs.
         if host_list and cluster_name and results.get("ssh") == "OK":
+            previous_hosts = list(host_list)
             prev_len = len(host_list)
             _detect_and_update_mgmt_ips(
                 host_list,
@@ -569,6 +599,9 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 ssh_kwargs,
                 dry_run=dry_run,
             )
+            if previous_hosts != host_list:
+                ssh_access_hosts = list(host_list)
+                _refresh_plan()
             # Refresh summary if hosts changed (dedup or mgmt IP correction)
             if len(host_list) != prev_len and results.get("cluster"):
                 results["cluster"] = "%s (%d hosts, updated)" % (cluster_name, len(host_list))
@@ -647,7 +680,14 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             return sudo_password
 
         # ── Phase 3: CX7 Configuration ───────────────────────────────
-        if cx7_detected_any and len(host_list) >= 2:
+        if (
+            cx7_detected_any
+            and len(host_list) >= 2
+            and all(
+                _selected("cx7", h) and states[h].cx7 and states[h].cx7.detected and states[h].facts.get("CHECK_NETPLAN") == "1"
+                for h in host_list
+            )
+        ):
             click.echo("Phase 3: CX7 Network Configuration")
             click.echo("-" * 30)
             click.echo("Configures high-speed CX7 networking between hosts.")
@@ -793,7 +833,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                 )
 
                     # Save topology to cluster definition
-                    if cluster_name and effective_topology != CX7Topology.UNKNOWN:
+                    if not dry_run and cluster_name and effective_topology != CX7Topology.UNKNOWN:
                         try:
                             cluster_mgr.update(cluster_name, topology=effective_topology.value)
                         except Exception:
@@ -855,288 +895,18 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     return
             click.echo()
 
-        # ── Phase 4: Docker Group ────────────────────────────────────
-        if host_list:
-            click.echo("Phase 4: Docker Group Membership")
-            click.echo("-" * 30)
-            click.echo("Ensures user can run Docker commands without sudo.")
-
-            run_docker = yes or click.confirm(
-                "Add '%s' to the docker group on all hosts?" % user,
-                default=True,
+        action_context = SetupActionContext(user=user, ssh_kwargs=ssh_kwargs, dry_run=dry_run, dispatch=_run_sudo_on_host)
+        results.update(
+            run_host_steps(
+                states,
+                setup_context,
+                action_context,
+                yes=yes,
+                manifest_mgr=manifest_mgr,
+                cluster_name=cluster_name,
+                ensure_password=_ensure_sudo_password,
             )
-
-            if run_docker:
-                try:
-                    dg_script = _DOCKER_GROUP_SCRIPT.format(user=user)
-                    dg_fallback = _DOCKER_GROUP_FALLBACK_SCRIPT.format(user=user)
-
-                    if dry_run:
-                        click.echo("  [dry-run] Would ensure docker group on %d host(s)." % len(host_list))
-                        results["docker"] = "dry-run"
-                    else:
-                        pw = _ensure_sudo_password()
-                        if _indirect_sudo_user:
-                            # Indirect sudo: SSH as cluster user, su to sudo user
-                            dg_result_map = {}
-                            for h in host_list:
-                                r = _run_sudo_on_host(h, dg_fallback, pw, timeout=30)
-                                dg_result_map[h] = r
-                        else:
-                            dg_result_map, dg_still_failed = run_with_sudo_fallback(
-                                host_list,
-                                dg_script,
-                                dg_fallback,
-                                sudo_ssh_kwargs,
-                                dry_run=dry_run,
-                            )
-                            if dg_still_failed:
-                                if pw:
-                                    for h in dg_still_failed:
-                                        r = _run_sudo_on_host(h, dg_fallback, pw, timeout=30)
-                                        dg_result_map[h] = r
-
-                        dg_ok = sum(1 for h in host_list if dg_result_map.get(h) and dg_result_map[h].success)
-                        results["docker"] = "OK (%d/%d)" % (dg_ok, len(host_list)) if dg_ok else "failed"
-                        if dg_ok and not dry_run and cluster_name:
-                            manifest_mgr.record_phase(cluster_name, user, host_list, "docker_group")
-                        for h in host_list:
-                            r = dg_result_map.get(h)
-                            if r and r.success:
-                                click.echo("  %s: %s" % (h, _docker_group_summary(r.stdout, user=user)))
-
-                        # Storage-driver consistency probe (issue #152) —
-                        # warn when hosts use different drivers so users
-                        # can normalize on overlay2 before image syncs.
-                        if dg_ok and not dry_run and len(host_list) > 1:
-                            from sparkrun.orchestration.docker_info import (
-                                check_driver_consistency,
-                                detect_docker_drivers,
-                                format_driver_warning,
-                            )
-
-                            driver_map = detect_docker_drivers(host_list, ssh_kwargs=ssh_kwargs)
-                            consistent, groups = check_driver_consistency(driver_map)
-                            if not consistent:
-                                click.echo()
-                                click.echo(format_driver_warning(groups), err=True)
-                                results["docker"] = "%s (driver drift)" % results["docker"]
-                except Exception as e:
-                    results["docker"] = "failed"
-                    click.echo("Docker group error: %s" % e, err=True)
-                    if not yes and not click.confirm("Continue?", default=True):
-                        return
-            else:
-                results["docker"] = "skipped"
-            click.echo()
-
-        # ── Phase 4b: NVIDIA CDI Spec ────────────────────────────────
-        # Generate /etc/cdi/nvidia.yaml so Docker can resolve the
-        # `--device nvidia.com/gpu=...` flags the docker executor emits.
-        # Some DGX Spark hosts need this generated explicitly for full CDI
-        # support; the script self-skips where nvidia-ctk is absent.
-        if host_list:
-            click.echo("Phase 4b: NVIDIA CDI (Container Device Interface)")
-            click.echo("-" * 30)
-            click.echo("Generates /etc/cdi/nvidia.yaml so Docker can access the GPU(s).")
-
-            run_cdi = yes or click.confirm(
-                "Generate the NVIDIA CDI spec on all hosts?",
-                default=True,
-            )
-
-            if run_cdi:
-                try:
-                    cdi_script = read_script("nvidia_cdi_generate.sh")
-                    cdi_fallback = read_script("nvidia_cdi_generate_fallback.sh")
-
-                    if dry_run:
-                        click.echo("  [dry-run] Would generate CDI spec on %d host(s)." % len(host_list))
-                        results["cdi"] = "dry-run"
-                    else:
-                        pw = _ensure_sudo_password()
-                        if _indirect_sudo_user:
-                            cdi_result_map = {}
-                            for h in host_list:
-                                cdi_result_map[h] = _run_sudo_on_host(h, cdi_fallback, pw, timeout=120)
-                        else:
-                            cdi_result_map, cdi_still_failed = run_with_sudo_fallback(
-                                host_list,
-                                cdi_script,
-                                cdi_fallback,
-                                sudo_ssh_kwargs,
-                                dry_run=dry_run,
-                                sudo_password=pw,
-                            )
-                            if cdi_still_failed and pw:
-                                for h in cdi_still_failed:
-                                    cdi_result_map[h] = _run_sudo_on_host(h, cdi_fallback, pw, timeout=120)
-
-                        cdi_ok = sum(1 for h in host_list if cdi_result_map.get(h) and cdi_result_map[h].success)
-                        results["cdi"] = "OK (%d/%d)" % (cdi_ok, len(host_list)) if cdi_ok else "failed"
-                        for h in host_list:
-                            r = cdi_result_map.get(h)
-                            if r and r.success:
-                                click.echo("  %s: %s" % (h, _cdi_summary(r.stdout)))
-                        if cdi_ok and cluster_name:
-                            manifest_mgr.record_phase(cluster_name, user, host_list, "nvidia_cdi")
-                except Exception as e:
-                    results["cdi"] = "failed"
-                    click.echo("CDI error: %s" % e, err=True)
-                    if not yes and not click.confirm("Continue?", default=True):
-                        return
-            else:
-                results["cdi"] = "skipped"
-            click.echo()
-
-        # ── Phase 5: Sudoers Entries ─────────────────────────────────
-        if host_list:
-            click.echo("Phase 5: Sudoers Entries")
-            click.echo("-" * 30)
-            click.echo("Scoped sudoers for fix-permissions + clear-cache (no broad sudo).")
-
-            run_sudoers = yes or click.confirm("Install sudoers entries?", default=True)
-
-            if run_sudoers:
-                try:
-                    pw = _ensure_sudo_password()
-
-                    from sparkrun.utils.shell import validate_unix_username
-
-                    validate_unix_username(user)
-                    sudoers_scripts = [
-                        (
-                            "fix-permissions",
-                            read_script("fix_permissions_sudoers.sh").format(
-                                user=user,
-                                cache_dir="",
-                            ),
-                        ),
-                        (
-                            "clear-cache",
-                            read_script("clear_cache_sudoers.sh").format(
-                                user=user,
-                            ),
-                        ),
-                    ]
-
-                    if dry_run:
-                        for label, _ in sudoers_scripts:
-                            click.echo(
-                                "  [dry-run] Would install %s sudoers on %d host(s)."
-                                % (
-                                    label,
-                                    len(host_list),
-                                )
-                            )
-                        results["sudoers"] = "dry-run"
-                    else:
-                        failed_any = False
-                        for label, script in sudoers_scripts:
-                            label_ok = 0
-                            for h in host_list:
-                                r = _run_sudo_on_host(h, script, pw or "", timeout=300)
-                                if r.success:
-                                    label_ok += 1
-                                else:
-                                    logger.debug(
-                                        "Sudoers %s failed on %s: %s",
-                                        label,
-                                        h,
-                                        r.stderr[:100],
-                                    )
-                            if label_ok < len(host_list):
-                                failed_any = True
-                            click.echo("  %s: %d/%d host(s)" % (label, label_ok, len(host_list)))
-                        results["sudoers"] = "installed (fix-permissions, clear-cache)" if not failed_any else "partial"
-                        if not dry_run and cluster_name:
-                            manifest_mgr.record_phase(
-                                cluster_name,
-                                user,
-                                host_list,
-                                "sudoers",
-                                files=[
-                                    "/etc/sudoers.d/sparkrun-chown-%s" % user,
-                                    "/etc/sudoers.d/sparkrun-dropcaches-%s" % user,
-                                ],
-                            )
-                except Exception as e:
-                    results["sudoers"] = "failed"
-                    click.echo("Sudoers error: %s" % e, err=True)
-                    if not yes and not click.confirm("Continue?", default=True):
-                        return
-            else:
-                results["sudoers"] = "skipped"
-            click.echo()
-
-        # ── Phase 6: earlyoom ────────────────────────────────────────
-        if host_list:
-            click.echo("Phase 6: earlyoom OOM Protection")
-            click.echo("-" * 30)
-            click.echo("Prevents system hangs by proactively managing memory pressure.")
-
-            run_earlyoom = yes or click.confirm("Install earlyoom?", default=True)
-
-            if run_earlyoom:
-                try:
-                    prefer_regex = _build_earlyoom_regex(EARLYOOM_PREFER_PATTERNS)
-                    avoid_regex = _build_earlyoom_regex(EARLYOOM_AVOID_PATTERNS)
-
-                    install_script = read_script("earlyoom_install.sh").format(
-                        prefer=prefer_regex,
-                        avoid=avoid_regex,
-                    )
-                    fallback_script = read_script("earlyoom_install_fallback.sh").format(
-                        prefer=prefer_regex,
-                        avoid=avoid_regex,
-                    )
-
-                    pw = _ensure_sudo_password()
-                    if _indirect_sudo_user:
-                        result_map = {}
-                        still_failed = []
-                        for h in host_list:
-                            r = _run_sudo_on_host(h, fallback_script, pw, timeout=300)
-                            result_map[h] = r
-                            if not r.success:
-                                still_failed.append(h)
-                    else:
-                        result_map, still_failed = run_with_sudo_fallback(
-                            host_list,
-                            install_script,
-                            fallback_script,
-                            sudo_ssh_kwargs,
-                            dry_run=dry_run,
-                            sudo_password=pw,
-                        )
-                        if still_failed and pw and not dry_run:
-                            for h in still_failed:
-                                r = _run_sudo_on_host(h, fallback_script, pw, timeout=300)
-                                result_map[h] = r
-
-                    ok_count = sum(1 for h in host_list if result_map.get(h) and result_map[h].success)
-                    if dry_run:
-                        results["earlyoom"] = "dry-run"
-                    else:
-                        results["earlyoom"] = "installed" if ok_count > 0 else "failed"
-                        click.echo("  earlyoom configured on %d/%d host(s)." % (ok_count, len(host_list)))
-                        if ok_count and cluster_name:
-                            installed_pkg = any("INSTALLING:" in (result_map.get(h) and result_map[h].stdout or "") for h in host_list)
-                            manifest_mgr.record_phase(
-                                cluster_name,
-                                user,
-                                host_list,
-                                "earlyoom",
-                                installed_package=installed_pkg,
-                            )
-                except Exception as e:
-                    results["earlyoom"] = "failed"
-                    click.echo("earlyoom error: %s" % e, err=True)
-                    if not yes and not click.confirm("Continue?", default=True):
-                        return
-            else:
-                results["earlyoom"] = "skipped"
-            click.echo()
+        )
 
     except (KeyboardInterrupt, click.Abort):
         click.echo()
@@ -1147,15 +917,18 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             for key, val in results.items():
                 click.echo("  %-10s %s" % (key + ":", val))
         click.echo()
-        click.echo("You can re-run 'sparkrun setup wizard' to resume, or configure")
-        click.echo("individual steps via 'sparkrun setup <command>'.")
+        click.echo(render_identity_text("You can re-run '{app_command} setup wizard' to resume, or configure"))
+        click.echo(render_identity_text("individual steps via '{app_command} setup <command>'."))
         click.echo("For manual setup instructions, see: https://sparkrun.dev")
         click.echo()
         return
 
+    finally:
+        recordings.close()
+
     # ── Phase 7: Summary ─────────────────────────────────────────
     click.echo()
-    click.echo("Setup Complete!")
+    click.echo("Setup preview complete (no changes made)." if dry_run else "Setup finished; review the readiness results above.")
     click.echo("=" * 48)
     click.echo()
     if results.get("cluster"):
@@ -1166,20 +939,19 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         click.echo("  CX7:        %s" % results["cx7"])
     if results.get("ssh_remesh"):
         click.echo("  SSH remesh: %s" % results["ssh_remesh"])
-    if results.get("docker"):
-        click.echo("  Docker:     %s" % results["docker"])
-    if results.get("cdi"):
-        click.echo("  CDI:        %s" % results["cdi"])
-    if results.get("sudoers"):
-        click.echo("  Sudoers:    %s" % results["sudoers"])
-    if results.get("earlyoom"):
-        click.echo("  earlyoom:   %s" % results["earlyoom"])
+    from sparkrun.core.setup_steps import all_setup_steps
+
+    for step in all_setup_steps():
+        if step.key not in {"ssh_mesh", "cx7"} and step.key in results:
+            click.echo("  %s: %s" % (step.label, results[step.key]))
+    if "readiness" in results:
+        click.echo("  Readiness: %s" % results["readiness"])
+
     click.echo()
     click.echo("Next steps:")
-    click.echo("  sparkrun list                            # Browse available recipes")
-    click.echo("  sparkrun show qwen3-1.7b-vllm           # Recipe details + VRAM estimate")
-    click.echo("  sparkrun run qwen3-1.7b-vllm --dry-run  # Preview a launch")
-    click.echo("  sparkrun run qwen3-1.7b-vllm            # Launch inference")
+    click.echo(render_identity_text("  {app_command} setup check                 # Review remaining setup gaps"))
+    click.echo(render_identity_text("  {app_command} list                        # Browse configured recipe registries"))
+    click.echo("  Select a recipe and container qualified for the detected target hardware.")
 
     from sparkrun.telemetry import emit_setup_wizard_event
 
@@ -1192,3 +964,6 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         cx7_detected=cx7_detected_any,
     )
     click.echo()
+
+    if any(value == "failed" for value in results.values()):
+        raise click.ClickException("One or more setup steps failed; see results above")

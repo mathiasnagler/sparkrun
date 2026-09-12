@@ -11,6 +11,9 @@ from typing import Any, Callable, NoReturn, TYPE_CHECKING
 
 import click
 
+from .ext import ExtensibleCommand
+from sparkrun.api._benchmark import _ProgressEmitter
+
 from ._common import (
     PROFILE_NAME,
     RECIPE_NAME,
@@ -29,6 +32,44 @@ DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
 
 if TYPE_CHECKING:
     from sparkrun.api._benchmark_models import ResumeMode
+
+
+class _CliEmitter(_ProgressEmitter):
+    """Shared terminal adapter for benchmark run, resume, and stop."""
+
+    def __init__(self, *, show_recipe=False):
+        super().__init__()
+        self.show_recipe = show_recipe
+
+    def on_recipe_resolved(self, recipe, overrides, *, local_cache_dir=None):
+        if self.show_recipe:
+            try:
+                _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=local_cache_dir)
+            except Exception:
+                logger.debug("Recipe display failed", exc_info=True)
+
+    def schedule_progress(self, **kwargs):
+        from sparkrun.benchmarking.progress_ui import BenchmarkProgressUI
+
+        return BenchmarkProgressUI(**kwargs)
+
+    def confirm(self, message: str, *, default: bool = False) -> bool:
+        if not sys.stdin.isatty():
+            click.echo("Not running interactively — continuing without confirmation.")
+            return True
+        return click.confirm(message, default=default)
+
+    def banner(self, line: str) -> None:
+        click.echo(line)
+
+    def info(self, msg: str) -> None:
+        click.echo(msg)
+
+    def warning(self, msg: str) -> None:
+        click.echo("Warning: %s" % msg, err=True)
+
+    def error(self, msg: str) -> None:
+        click.echo("Error: %s" % msg, err=True)
 
 
 def _resolve_resume_prompt(
@@ -139,19 +180,19 @@ def benchmark(ctx):
 
     Manage benchmark profiles via the registry subcommands:
 
-      sparkrun registry list-benchmark-profiles
+      {app_command} registry list-benchmark-profiles
 
-      sparkrun registry show-benchmark-profile <name>
+      {app_command} registry show-benchmark-profile <name>
 
     Examples:
 
-      sparkrun benchmark qwen3-1.7b-sglang --solo
+      {app_command} benchmark qwen3-1.7b-sglang --solo
 
-      sparkrun benchmark qwen3-1.7b-sglang --tp 2 --profile spark-arena-v1
+      {app_command} benchmark qwen3-1.7b-sglang --tp 2 --profile spark-arena-v1
 
-      sparkrun benchmark qwen3-1.7b-sglang -b depth=0,2048,4096 -b tg=32,128
+      {app_command} benchmark qwen3-1.7b-sglang -b depth=0,2048,4096 -b tg=32,128
 
-      sparkrun benchmark qwen3-1.7b-sglang --skip-run --solo
+      {app_command} benchmark qwen3-1.7b-sglang --skip-run --solo
     """
     pass
 
@@ -209,21 +250,6 @@ def _shared_run_options(f):
             default=False,
             help="Non-interactive resume: if existing state matches, resume from there; otherwise start fresh.",
         ),
-        click.option(
-            "--arena",
-            "arena_flag",
-            is_flag=True,
-            default=False,
-            help="Submit results to Spark Arena (requires `sparkrun arena login`).",
-        ),
-        click.option(
-            "--local-test",
-            "local_test",
-            is_flag=True,
-            default=False,
-            hidden=HIDE_ADVANCED_OPTIONS,
-            help="Arena local-test mode: skip auth and upload, simulate end-to-end.",
-        ),
         dry_run_option,
         click.option(
             "--scheduler",
@@ -253,15 +279,13 @@ def _invoke_benchmark(ctx, *, category, **kwargs):
     Resolves the ResumeMode from the ``resume_flag``/``fresh`` kwargs, then
     delegates to ``_run_benchmark`` with the pinned *category*.
 
-    When ``arena_flag`` is True, calls preflight_arena before the benchmark
-    and finalize_arena after a successful run.
+    Plugin-contributed options are decoded into generic integration settings.
     """
     from sparkrun.api._benchmark_models import ResumeMode
 
     resume_flag = kwargs.pop("resume_flag", False)
     fresh = kwargs.get("fresh", False)
-    arena_flag = kwargs.pop("arena_flag", False)
-    local_test = kwargs.pop("local_test", False)
+    integrations = ctx.command.pop_extension_values(ctx, kwargs)
 
     if resume_flag and fresh:
         raise click.UsageError("--resume and --fresh are mutually exclusive")
@@ -271,24 +295,6 @@ def _invoke_benchmark(ctx, *, category, **kwargs):
         _resume_mode = ResumeMode.FRESH
     else:
         _resume_mode = ResumeMode.AUTO
-
-    # Arena preflight: when --arena is set, do auth and submission_id generation
-    # before the benchmark runs so the same id flows through state.extras.
-    arena_submission_id: str | None = None
-    if arena_flag:
-        from sparkrun.cli._arena_flow import preflight_arena
-
-        arena_submission_id, arena_profile = preflight_arena(
-            local_test=local_test,
-            ctx=ctx,
-            recipe_name=kwargs.get("recipe_name"),
-            dry_run=kwargs.get("dry_run", False),
-        )
-        # Only override profile when user did not supply one explicitly
-        if not kwargs.get("profile") and arena_profile:
-            kwargs["profile"] = arena_profile
-
-    dry_run = kwargs.get("dry_run", False)
 
     bench_result = _run_benchmark(
         ctx,
@@ -326,25 +332,13 @@ def _invoke_benchmark(ctx, *, category, **kwargs):
         host_list=kwargs.pop("host_list", None),
         cluster_mgr=kwargs.pop("cluster_mgr", None),
         category=category,
-        submission_id_for_extras=arena_submission_id,
+        integrations=integrations,
     )
-
-    # Arena finalize: persist extras and upload (unless dry_run/local_test).
-    if arena_flag and bench_result and getattr(bench_result, "success", False):
-        from sparkrun.cli._arena_flow import finalize_arena
-
-        finalize_arena(
-            ctx=ctx,
-            bench_result=bench_result,
-            submission_id=arena_submission_id,
-            local_test=local_test,
-            dry_run=dry_run,
-        )
 
     return bench_result
 
 
-@benchmark.command("run")
+@benchmark.command("run", cls=ExtensibleCommand, extension_target="benchmark.run")
 @_shared_run_options
 @click.pass_context
 @with_host_context
@@ -361,7 +355,7 @@ def _make_category_command(category: str, *, doc: str | None = None):
     validation runs in ``_run_benchmark``.
     """
 
-    @click.command(category)
+    @click.command(category, cls=ExtensibleCommand, extension_target="benchmark.run")
     @_shared_run_options
     @click.pass_context
     @with_host_context
@@ -396,14 +390,14 @@ def _register_category_commands(group):
 # would pollute test fixtures and double-init the plugin registry.
 
 
-@benchmark.command("resume")
+@benchmark.command("resume", cls=ExtensibleCommand, extension_target="benchmark.resume")
 @click.argument("benchmark_id")
 @dry_run_option
 @click.pass_context
-def benchmark_resume(ctx, benchmark_id, dry_run):
+def benchmark_resume(ctx, benchmark_id, dry_run, **kwargs):
     """Resume a paused benchmark by id."""
     sctx = _get_context(ctx)
-    _resume_benchmark_run(ctx, benchmark_id, dry_run, sctx=sctx)
+    _resume_benchmark_run(ctx, benchmark_id, dry_run, sctx=sctx, integrations=ctx.command.pop_extension_values(ctx, kwargs))
 
 
 def _echo_benchmark_failure(e) -> "NoReturn":
@@ -426,36 +420,23 @@ def _echo_benchmark_failure(e) -> "NoReturn":
     sys.exit(e.exit_code if e.exit_code is not None else 1)
 
 
-def _resume_benchmark_run(ctx, benchmark_id: str, dry_run: bool, *, sctx=None):
+def _resume_benchmark_run(ctx, benchmark_id: str, dry_run: bool, *, sctx=None, integrations=None):
     """Thin CLI shell over ``sparkrun.api._benchmark.resume_benchmark``.
 
     Shared by ``benchmark resume`` and ``arena benchmark resume``.  Sets up
     the CLI progress emitter, delegates the orchestration to the API, and
     translates typed exceptions into ``click.echo`` + ``sys.exit``.  Returns
-    the ``results`` mapping (keys: ``rows``, ``csv``, ``json``, etc.) on
-    success; otherwise ``sys.exit`` is called and this never returns.
+    public ``BenchmarkResult`` on success; otherwise ``sys.exit`` is called
+    and this never returns.
     """
-    from sparkrun.api._benchmark import resume_benchmark, _ProgressEmitter
+    from sparkrun.api._benchmark import _resume_benchmark
     from sparkrun.api._errors import BenchmarkFailed, NoResumableState, SparkrunError
 
     if sctx is None:
         sctx = _get_context(ctx)
 
-    class _CliEmitter(_ProgressEmitter):
-        def banner(self, line: str) -> None:
-            click.echo(line)
-
-        def info(self, msg: str) -> None:
-            click.echo(msg)
-
-        def warning(self, msg: str) -> None:
-            click.echo("Warning: %s" % msg, err=True)
-
-        def error(self, msg: str) -> None:
-            click.echo("Error: %s" % msg, err=True)
-
     try:
-        return resume_benchmark(benchmark_id, dry_run=dry_run, sctx=sctx, emitter=_CliEmitter())
+        return _resume_benchmark(benchmark_id, dry_run=dry_run, sctx=sctx, emitter=_CliEmitter(), integrations=integrations)
     except KeyboardInterrupt:
         sys.exit(130)
     except BenchmarkFailed as e:
@@ -503,7 +484,7 @@ def _run_benchmark(
     resume_mode: "ResumeMode | None" = None,
     on_prompt_required: "Callable[[Any], bool] | None" = None,
     on_complete_state: "Callable[[Any], bool] | None" = None,
-    submission_id_for_extras: str | None = None,
+    integrations: dict[str, dict] | None = None,
     scheduler_name: str | None = None,
     host_list=None,
     cluster_mgr=None,
@@ -516,10 +497,10 @@ def _run_benchmark(
     back into ``click.echo`` + ``sys.exit``.
 
     Returns the internal ``sparkrun.benchmarking.base.BenchmarkResult`` so
-    existing callers (``_arena.py``, tests) don't break.
+    CLI callers can inspect the execution outcome.
     """
     from sparkrun.api._benchmark_models import ResumeMode as _ResumeMode, BenchmarkOptions
-    from sparkrun.api._benchmark import _execute_benchmark, _ProgressEmitter
+    from sparkrun.api._benchmark import _execute_benchmark
     from sparkrun.api._errors import (
         BenchmarkFailed,
         NoResumableState,
@@ -603,10 +584,6 @@ def _run_benchmark(
             sys.exit(1)
         _overrides_from_flags[k2] = coerce_value(v2.strip())
 
-    state_extras: dict = {}
-    if submission_id_for_extras:
-        state_extras["submission_id"] = submission_id_for_extras
-
     from ._common import resolve_cluster_config
 
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
@@ -630,7 +607,7 @@ def _run_benchmark(
         exit_on_first_fail=exit_on_first_fail,
         timeout=bench_timeout,
         api_key_env=api_key_env,
-        arena=False,
+        integrations=integrations or {},
         output_file=output_file,
         export_files=export_results_files,
         solo=solo,
@@ -641,41 +618,11 @@ def _run_benchmark(
         sync_tuning=bool(sync_tuning),
         extra_docker_opts=tuple(executor_args) if executor_args else None,
         progress_callback=None,
-        state_extras=state_extras,
         on_prompt_required=on_prompt_required,
         on_complete_state=on_complete_state,
     )
 
-    class _CliEmitter(_ProgressEmitter):
-        """CLI emitter: prints banners/info/warnings/errors via click.echo."""
-
-        def banner(self, line: str) -> None:
-            click.echo(line)
-
-        def info(self, msg: str) -> None:
-            click.echo(msg)
-
-        def warning(self, msg: str) -> None:
-            click.echo("Warning: %s" % msg, err=True)
-
-        def error(self, msg: str) -> None:
-            click.echo("Error: %s" % msg, err=True)
-
-        def progress_step(self, step_idx: int, total: int, label: str) -> None:
-            pass  # CLI uses logger.log(PROGRESS_LEVEL, ...) inside orchestration
-
-        def event(self, ev) -> None:
-            pass  # BenchmarkProgressUI handles scheduled-task progress
-
-        def on_recipe_resolved(self, recipe, overrides, *, local_cache_dir=None):
-            # CLI-side presentation: VRAM estimate using the recipe loaded
-            # once by the orchestration. Non-fatal on any failure.
-            try:
-                _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=local_cache_dir)
-            except Exception:
-                pass
-
-    emitter = _CliEmitter()
+    emitter = _CliEmitter(show_recipe=True)
 
     try:
         bench_result = _execute_benchmark(opts, sctx=sctx, emitter=emitter)
@@ -710,13 +657,6 @@ def _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=None):
     the launch path.  A click-backed emitter surfaces the dry-run notice and
     any warning to the console.
     """
-    from sparkrun.api._benchmark import _stop_inference as _api_stop_inference, _ProgressEmitter
-
-    class _CliEmitter(_ProgressEmitter):
-        def info(self, msg: str) -> None:
-            click.echo(msg)
-
-        def warning(self, msg: str) -> None:
-            click.echo("Warning: %s" % msg, err=True)
+    from sparkrun.api._benchmark import _stop_inference as _api_stop_inference
 
     _api_stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=_CliEmitter())

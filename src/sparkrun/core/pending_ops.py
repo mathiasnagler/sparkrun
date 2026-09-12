@@ -25,7 +25,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from sparkrun.core.config import DEFAULT_CACHE_DIR
+from sparkrun.core.config import resolve_sparkrun_cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ LOCK_MAX_AGE_SECONDS = 12 * 60 * 60  # 12 hours
 
 
 def _pending_dir(cache_dir: str | None = None) -> Path:
-    base = Path(cache_dir) if cache_dir else DEFAULT_CACHE_DIR
+    base = Path(cache_dir) if cache_dir else resolve_sparkrun_cache_dir()
     return base / PENDING_DIR_NAME
 
 

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 
-__all__ = ("open_private_write",)
+__all__ = ("open_private_write", "atomic_private_write", "file_lock")
 
 
 def open_private_write(path: str | os.PathLike) -> int:
@@ -29,3 +30,62 @@ def open_private_write(path: str | os.PathLike) -> int:
     flags |= getattr(os, "O_NOFOLLOW", 0)
     flags |= getattr(os, "O_BINARY", 0)
     return os.open(path, flags, 0o600)
+
+
+def atomic_private_write(path: str | os.PathLike, content: str, *, overwrite: bool = True) -> bool:
+    """Publish a complete owner-only text file atomically.
+
+    With ``overwrite=False``, concurrent creators agree on the first complete
+    file; return False when another creator already published it. The parent
+    directory must exist. Replacing a symlink replaces the link itself.
+    """
+    from pathlib import Path
+    import tempfile
+
+    path = Path(path)
+    fd, temporary = tempfile.mkstemp(prefix=".%s." % path.name, dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if overwrite:
+            os.replace(temporary, path)
+        else:
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                return False
+        return True
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+@contextmanager
+def file_lock(path):
+    """Hold an exclusive process lock; retain the lock file after release.
+
+    Callers handle reentrancy. The separate inode remains stable when the data
+    file is replaced or deleted. Opening refuses symlinks where supported.
+    """
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)

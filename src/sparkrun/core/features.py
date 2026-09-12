@@ -7,15 +7,18 @@ while staying off for ``stable`` users, without a code change per release.
 
 Resolution precedence (highest first):
 
-1. Environment override — ``SPARKRUN_FEATURE_<NAME>`` (dots/dashes → underscores,
+1. Environment override — ``<APP_PREFIX>_FEATURE_<NAME>`` (dots/dashes → underscores,
    upper-cased). Handy for CI and one-off debugging.
 2. Explicit config override — ``features.<name>: true|false`` in ``config.yaml``.
-3. Per-channel default declared on the flag (``channel_defaults``).
-4. The flag's baseline ``default`` (used when the active channel isn't listed).
-5. Unknown flag → ``False`` (fail closed).
+3. Application profile default for its release channel (``feature_channel_defaults``).
+4. Application profile baseline (``feature_defaults``).
+5. Core feature-channel default declared on the flag (``channel_defaults``).
+6. The flag's baseline ``default`` (used when the core channel isn't listed).
+7. Unknown flag → ``False`` (fail closed).
 
-The active channel defaults to the persisted self-update channel and can be
-overridden per-config via ``features.channel`` (see
+Application defaults follow the configured self-update channel. The independent
+core feature channel comes from the profile (stable for alternate applications;
+following self-update for Sparkrun) and can be overridden via ``features.channel`` (see
 :attr:`sparkrun.core.config.SparkrunConfig.feature_channel`).
 
 Plugins opt into gating by declaring ``required_feature_flag = "<flag-name>"``; the
@@ -25,13 +28,15 @@ bootstrap discovery loop skips registering a plugin whose flag resolves off (see
 
 from __future__ import annotations
 
+from sparkrun.core.registration import enlist_registry_state
+
 import os
 from dataclasses import dataclass, field
 from typing import Mapping, TYPE_CHECKING
 
 from scitrera_app_framework import ext_parse_bool
 
-from sparkrun.core.channels import CHANNEL_ALPHA, CHANNEL_BETA, CHANNEL_STABLE, normalize_channel
+from sparkrun.core.channels import CHANNEL_ALPHA, CHANNEL_BETA, CHANNEL_STABLE, normalize_feature_channel
 
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
@@ -41,7 +46,9 @@ _ENV_PREFIX = "SPARKRUN_FEATURE_"
 
 def _env_key(name: str) -> str:
     """Return the environment-variable key that overrides feature *name*."""
-    return _ENV_PREFIX + name.upper().replace(".", "_").replace("-", "_")
+    from sparkrun.core.application_profile import env_name
+
+    return env_name("FEATURE_") + name.upper().replace(".", "_").replace("-", "_")
 
 
 @dataclass(frozen=True)
@@ -64,7 +71,7 @@ class FeatureFlag:
 
     def default_for_channel(self, channel: str | None) -> bool:
         """Return the default value of this flag for *channel*."""
-        return bool(self.channel_defaults.get(normalize_channel(channel), self.default))
+        return bool(self.channel_defaults.get(normalize_feature_channel(channel), self.default))
 
 
 # --------------------------------------------------------------------------
@@ -72,6 +79,8 @@ class FeatureFlag:
 # --------------------------------------------------------------------------
 
 FEATURE_FLAGS: dict[str, FeatureFlag] = {}
+
+enlist_registry_state(globals(), "FEATURE_FLAGS")
 
 
 def register_feature(flag: FeatureFlag) -> FeatureFlag:
@@ -104,13 +113,30 @@ def all_features() -> list[FeatureFlag]:
 
 def _env_override(name: str, env: Mapping[str, str]) -> bool | None:
     """Return the env-var override for *name*, or ``None`` when unset."""
-    raw = env.get(_env_key(name))
+    from sparkrun.core.application_profile import product_env
+
+    raw = product_env("FEATURE_" + name.upper().replace(".", "_").replace("-", "_"), environ=env)
     if raw is None:
         return None
     try:
         return bool(ext_parse_bool(raw))
     except Exception:  # pragma: no cover - ext_parse_bool is permissive
         return None
+
+
+def _application_default(name: str, config: "SparkrunConfig | None") -> tuple[bool | None, str]:
+    """Resolve application policy without coupling it to core feature maturity."""
+    from sparkrun.core.application_profile import get_application_profile
+
+    profile = get_application_profile()
+    if profile.feature_channel_defaults:
+        channel = config.self_update_channel if config is not None else profile.default_channel
+        defaults = profile.feature_channel_defaults.get(channel, {})
+        if name in defaults:
+            return defaults[name], "distribution-channel"
+    if name in profile.feature_defaults:
+        return profile.feature_defaults[name], "distribution"
+    return None, "unset"
 
 
 def is_feature_enabled(
@@ -135,6 +161,10 @@ def is_feature_enabled(
         cfg_override = config.feature_override(name)
         if cfg_override is not None:
             return bool(cfg_override)
+
+    default, _source = _application_default(name, config)
+    if default is not None:
+        return default
 
     if channel is None:
         channel = config.feature_channel if config is not None else CHANNEL_STABLE
@@ -166,9 +196,9 @@ def _gate_config(v=None):
     be built, in which case resolution falls back to env + channel defaults.
     """
     try:
-        from sparkrun.core.config import SparkrunConfig, get_config_root
+        from sparkrun.core.config import SparkrunConfig, resolve_config_path
 
-        return SparkrunConfig(get_config_root(v) / "config.yaml")
+        return SparkrunConfig(resolve_config_path(v))
     except Exception:  # pragma: no cover - defensive; gate degrades to defaults
         return None
 
@@ -182,7 +212,8 @@ def feature_source(
 ) -> str:
     """Return where the effective value of *name* comes from.
 
-    One of ``"env"``, ``"config"``, ``"channel"``, or ``"unset"``. Used by the
+    One of ``"env"``, ``"config"``, ``"distribution-channel"``,
+    ``"distribution"``, ``"channel"``, or ``"unset"``. Used by the
     ``setup features list`` command to explain why a flag is on or off.
     """
     env = os.environ if env is None else env
@@ -190,6 +221,9 @@ def feature_source(
         return "env"
     if config is not None and config.feature_override(name) is not None:
         return "config"
+    default, source = _application_default(name, config)
+    if default is not None:
+        return source
     if get_feature(name) is not None:
         return "channel"
     return "unset"
@@ -225,14 +259,6 @@ FEATURE_EXECUTOR_LOCAL = register_feature(
     )
 )
 
-FEATURE_EXECUTOR_K8S = register_feature(
-    FeatureFlag(
-        name="executor.k8s",
-        description="Experimental Kubernetes (kubectl) executor draft",
-        default=False,
-    )
-)
-
 # The uv-venv builder provisions a Python venv on the target hosts (running
 # `uv` and installing packages there) instead of preparing a container image.
 # That is real host-side mutation outside a container, so stable keeps it off;
@@ -247,19 +273,24 @@ FEATURE_BUILDER_UV_VENV = register_feature(
     )
 )
 
-FEATURE_CLI_SETUP_K8S = register_feature(
+FEATURE_INTEGRATION_K8S = register_feature(
     FeatureFlag(
-        name="cli.setup.k8s",
-        description="Experimental 'sparkrun setup k8s' command group",
+        name="integration.k8s",
+        description="Kubernetes plugin: executor, cluster setup, and JobSet launches",
+        channel_defaults={CHANNEL_ALPHA: True},
         default=False,
     )
 )
 
-FEATURE_API_RUN_K8S = register_feature(
+FEATURE_INTEGRATION_ARENA = register_feature(
+    FeatureFlag(name="integration.arena", description="Spark Arena commands and benchmark submissions", default=True)
+)
+
+FEATURE_CLI_TUNE = register_feature(
     FeatureFlag(
-        name="api.run.k8s",
-        description="Experimental: route 'sparkrun run' with executor=k8s through the JobSet launch path",
-        default=False,
+        name="cli.tune",
+        description="Runtime kernel tuning commands",
+        default=True,
     )
 )
 
@@ -350,3 +381,20 @@ FEATURE_GATEWAY_SPARKROUTE = register_feature(
         default=False,
     )
 )
+
+# Setup policy is shared by readiness checks and the wizard. Hardware support
+# remains a separate prerequisite; these flags never qualify an unknown target.
+register_feature(FeatureFlag("cli.setup.wizard", "Guided hardware-aware host setup", default=True))
+for _setup_step, _setup_description in {
+    "docker": "Check Docker installation",
+    "docker_group": "Configure Docker access",
+    "nvidia_container": "Check NVIDIA Container Toolkit",
+    "nvidia_cdi": "Configure required NVIDIA CDI spec",
+    "host_ipc": "Check host IPC lifetime",
+    "earlyoom": "Configure earlyoom OOM protection",
+    "sudoers": "Configure scoped sudoers rules",
+    "ssh_mesh": "Configure peer SSH access",
+    "cx7": "Configure Spark CX7 networking",
+    "rdma": "Check RDMA fabric readiness",
+}.items():
+    register_feature(FeatureFlag("setup.steps." + _setup_step, _setup_description, default=True))

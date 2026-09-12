@@ -20,6 +20,13 @@ def load_env(tmp_path, monkeypatch):
     from sparkrun.core.cluster_manager import ClusterManager
     from sparkrun.core.config import DEFAULT_CONFIG_DIR
 
+    from sparkrun.orchestration.ssh import RemoteResult
+
+    monkeypatch.setattr(
+        "sparkrun.orchestration.ssh.run_remote_scripts_parallel",
+        lambda hosts, *args, **kwargs: [RemoteResult(host=h, returncode=0, stdout="", stderr="") for h in hosts],
+    )
+
     manager = ClusterManager(DEFAULT_CONFIG_DIR)
     manager.create("lab", ["10.0.4.30", "10.0.4.31"], user="model-user", scheduler="greedy")
     manager.set_default("lab")

@@ -181,12 +181,8 @@ def stop(
     from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers_by_host
 
     config = sctx.config if sctx is not None else maybe_load_config()
-    if config is not None and cluster_def.user:
-        # Apply cluster SSH user so downstream ssh_kwargs picks it up.
-        try:
-            config.ssh_user = cluster_def.user
-        except Exception:
-            logger.debug("Failed to apply cluster SSH user", exc_info=True)
+    if config is not None:
+        config = config.for_cluster(cluster_def)
     ssh_kwargs = build_ssh_kwargs(config) if config else {}
 
     errors: list[str] = []

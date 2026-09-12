@@ -7,6 +7,9 @@ import sys
 
 import click
 
+from sparkrun.core.application_profile import render_identity_text
+from sparkrun.core.features import feature_gate_enabled
+
 from ._common import (
     RECIPE_NAME,
     _get_context,
@@ -44,11 +47,12 @@ def _require_runtime_family(recipe, v, family: str, requirement: str):
     return runtime
 
 
-@click.group()
+@click.group(hidden=not feature_gate_enabled("cli.tune"))
 @click.pass_context
 def tune(ctx):
     """Tune runtime kernels for optimal performance."""
-    pass
+    if not _get_context(ctx).config.is_feature_enabled("cli.tune"):
+        raise click.ClickException(render_identity_text("Tuning is disabled. Enable it with: {app_command} setup features enable cli.tune"))
 
 
 @tune.command("sglang")
@@ -95,10 +99,10 @@ def tune_sglang(
 
     \b
     Examples:
-      sparkrun tune sglang qwen3.5-35b-bf16-sglang -H 192.168.11.13
-      sparkrun tune sglang qwen3.5-35b-bf16-sglang --cluster mylab --tp 4
-      sparkrun tune sglang qwen3.5-35b-bf16-sglang -H myhost --tp 1 --tp 2 --tp 4
-      sparkrun tune sglang qwen3.5-35b-bf16-sglang -H myhost --parallel 2
+      {app_command} tune sglang qwen3.5-35b-bf16-sglang -H 192.168.11.13
+      {app_command} tune sglang qwen3.5-35b-bf16-sglang --cluster mylab --tp 4
+      {app_command} tune sglang qwen3.5-35b-bf16-sglang -H myhost --tp 1 --tp 2 --tp 4
+      {app_command} tune sglang qwen3.5-35b-bf16-sglang -H myhost --parallel 2
     """
     from sparkrun.tuning.sglang import SglangTuner, DEFAULT_TP_SIZES
 
@@ -203,7 +207,7 @@ def tune_vllm(
     Shells out to https://github.com/SeraphimSerapis/vllm-tune on the target
     host.  Tunes both fused MoE kernels and FP8 dense GEMM kernels by default
     (override with ``--mode``).  Produced configs land in the same flat cache
-    directory that vLLM runtimes auto-mount, so subsequent ``sparkrun run``
+    directory that vLLM runtimes auto-mount, so subsequent ``{app_command} run``
     invocations pick them up without further action.
 
     RECIPE_NAME provides the model name and container image.  vllm-tune
@@ -214,11 +218,11 @@ def tune_vllm(
 
     \b
     Examples:
-      sparkrun tune vllm qwen3-moe-vllm -H 192.168.11.13
-      sparkrun tune vllm qwen3-moe-vllm --cluster mylab --tp 4 --mode moe
-      sparkrun tune vllm qwen3-4b-fp8 -H myhost --mode fp8 --tp 1
-      sparkrun tune vllm qwen3-moe-vllm -H myhost --tp 1 --tp 2 --tp 4
-      sparkrun tune vllm qwen3-moe-vllm -H myhost --parallel 2
+      {app_command} tune vllm qwen3-moe-vllm -H 192.168.11.13
+      {app_command} tune vllm qwen3-moe-vllm --cluster mylab --tp 4 --mode moe
+      {app_command} tune vllm qwen3-4b-fp8 -H myhost --mode fp8 --tp 1
+      {app_command} tune vllm qwen3-moe-vllm -H myhost --tp 1 --tp 2 --tp 4
+      {app_command} tune vllm qwen3-moe-vllm -H myhost --parallel 2
     """
     from sparkrun.tuning.vllm import VllmTuner, DEFAULT_TP_SIZES
 

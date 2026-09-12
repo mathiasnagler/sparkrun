@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from sparkrun import __version__
+from sparkrun.core.application_profile import get_application_profile
 from .ext import PluggableGroup
 from ._common import (
     RECIPE_NAME,
@@ -19,7 +20,6 @@ from ._common import (
     json_option,
 )
 from ._adv import adv
-from ._arena import arena
 from ._benchmark import benchmark
 from ._cluster import cluster, cluster_status
 from ._export import export
@@ -43,11 +43,15 @@ def _print_version(ctx, param, value):
         rendered = display_version(SparkrunConfig())
     except Exception:
         rendered = __version__
-    click.echo("sparkrun, version %s" % rendered)
+    click.echo("%s, version %s" % (get_application_profile().command, rendered))
     ctx.exit()
 
 
-@click.group(cls=PluggableGroup)
+@click.group(
+    cls=PluggableGroup,
+    help=get_application_profile().description,
+    epilog="\n".join(link for link in (get_application_profile().documentation_url, get_application_profile().support_url) if link) or None,
+)
 @click.option("-v", "--verbose", count=True, help="Increase verbosity (-v detail, -vv timestamps, -vvv debug)")
 @click.option("-q", "--quiet", is_flag=True, help="Suppress all output except errors (for scripting)")
 @click.option(
@@ -60,7 +64,7 @@ def _print_version(ctx, param, value):
 )
 @click.pass_context
 def main(ctx, verbose, quiet):
-    """sparkrun — Launch inference workloads on NVIDIA DGX Spark systems."""
+    """{app_command} — Launch inference workloads on NVIDIA DGX Spark systems."""
     ctx.ensure_object(dict)
     if quiet:
         verbose = -1  # sentinel: WARNING+ only
@@ -85,7 +89,6 @@ main.add_command(registry)
 main.add_command(benchmark)
 main.add_command(export)
 main.add_command(proxy)
-main.add_command(arena)
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +143,7 @@ def search_cmd(ctx, registry, runtime, query):
 @json_option()
 @click.pass_context
 def status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json):
-    """Show sparkrun containers running on cluster hosts (alias for 'cluster status')."""
+    """Show {app_command} containers running on cluster hosts (alias for 'cluster status')."""
     ctx.invoke(
         cluster_status,
         hosts=hosts,
@@ -152,25 +155,26 @@ def status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json):
 
 
 @main.command("update")
-@click.option("--stable", is_flag=True, help="Switch to and update the stable channel (PyPI)")
-@click.option("--beta", is_flag=True, help="Switch to and update the beta channel (develop branch)")
-@click.option("--alpha", is_flag=True, help="Switch to and update the alpha channel (develop-next branch)")
+@click.option("--stable", is_flag=True, help="Switch to and update the stable channel from its configured source")
+@click.option("--beta", is_flag=True, help="Switch to and update the beta channel from its configured source")
+@click.option("--alpha", is_flag=True, help="Switch to and update the alpha channel from its configured source")
 @click.option("--yolo", is_flag=True, help="Alias for --alpha")
 @click.pass_context
 def update(ctx, stable, beta, alpha, yolo):
-    """Update sparkrun and recipe registries.
+    """Update {app_command} and recipe registries.
 
-    Attempts to upgrade sparkrun via uv if it was installed that way, then
+    Attempts to upgrade {app_command} via uv if it was installed that way, then
     always updates recipe registries from git. With no channel flag, updates
     the currently configured channel; a channel flag switches channels.
 
-    If sparkrun was not installed via uv (e.g. pip, pipx, editable
+    If {app_command} was not installed via uv (e.g. pip, pipx, editable
     install), the self-upgrade step is skipped and only registries
     are updated.
     """
     import subprocess
 
     from sparkrun.cli._self_update import (
+        owning_executable,
         capture_old_identity,
         channel_from_flags,
         describe_change,
@@ -211,7 +215,7 @@ def update(ctx, stable, beta, alpha, yolo):
         if switching:
             warn_if_downgrade(current, channel)
             click.echo("Switching to the %s channel..." % channel)
-        click.echo("Checking for sparkrun updates (current: %s)..." % old_version)
+        click.echo(f"Checking for {get_application_profile().command} updates (current: %s)..." % old_version)
         result = subprocess.run(
             install_argv(uv, channel) if switching else update_argv(uv, channel),
             capture_output=True,
@@ -229,10 +233,10 @@ def update(ctx, stable, beta, alpha, yolo):
             # update` subprocess (a full git fetch of every registry) below.
             upgraded = identity_changed(channel, old_identity, new_identity)
         else:
-            click.echo("Warning: sparkrun upgrade failed: %s" % result.stderr.strip(), err=True)
+            click.echo(f"Warning: {get_application_profile().command} upgrade failed: %s" % result.stderr.strip(), err=True)
             click.echo("Continuing with registry update...", err=True)
     elif uv:
-        click.echo("sparkrun not installed via uv tool — skipping self-upgrade.")
+        click.echo(f"{get_application_profile().command} not installed via uv tool — skipping self-upgrade.")
     else:
         click.echo("uv not found — skipping self-upgrade.")
 
@@ -243,7 +247,7 @@ def update(ctx, stable, beta, alpha, yolo):
         click.echo()
         click.echo("Updating recipe registries...")
         reg_result = subprocess.run(
-            ["sparkrun", "registry", "update"],
+            [owning_executable(), "registry", "update"],
             capture_output=False,
         )
         if reg_result.returncode != 0:
@@ -256,7 +260,7 @@ def update(ctx, stable, beta, alpha, yolo):
         try:
             emit_update_event(
                 config,
-                command="sparkrun update",
+                command=f"{get_application_profile().command} update",
                 old_version=old_version,
                 new_version=new_version,
                 upgraded=upgraded,

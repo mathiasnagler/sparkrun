@@ -470,7 +470,9 @@ class SparkrouteEngine(GatewaySupervisor):
         self._warn_admin_exposure()
         self._warn_insecure_bind()
 
-        env = os.environ.copy()
+        from ._application_profile import child_environment
+
+        env = child_environment(self.sctx.config.config_path if self.sctx is not None else None)
 
         if foreground:
             proc = subprocess.Popen(cmd, env=env)

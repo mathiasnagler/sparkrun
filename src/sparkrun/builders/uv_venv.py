@@ -44,6 +44,8 @@ the venv exists and the hash matches, and re-runs when anything changes.
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import remote_cache_path
+
 import hashlib
 import logging
 import os
@@ -207,7 +209,7 @@ def _resolve_spec(recipe: "Recipe") -> _Spec:
     )
     # Self-determined default venv path: shared per dep_hash so recipes with identical deps
     # reuse one venv. $HOME-relative — the local executor expands it (+ env_file) at source time.
-    spec.venv_path = str(cfg.get("venv_path") or "").strip() or ("$HOME/.cache/sparkrun/uv-venv/%s" % spec.dep_hash())
+    spec.venv_path = str(cfg.get("venv_path") or "").strip() or (remote_cache_path("uv-venv/%s" % spec.dep_hash()))
     spec.env_file = str(cfg.get("env_file") or "").strip() or ("%s/sparkrun-env.sh" % spec.venv_path.rstrip("/"))
     _validate_host_path(spec.venv_path, field_name="venv_path")
     _validate_host_path(spec.env_file, field_name="env_file")

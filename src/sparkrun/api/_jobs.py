@@ -32,7 +32,7 @@ def list_jobs(
         cache_dir: Override for the sparkrun cache root.  Takes
             precedence when set.  Otherwise falls back to
             ``sctx.config.cache_dir`` (when *sctx* is provided), then
-            to :data:`sparkrun.core.config.DEFAULT_CACHE_DIR`.
+            to :data:`sparkrun.core.config.resolve_sparkrun_cache_dir()`.
         limit: Return at most this many of the most recent jobs, and —
             crucially — only parse that many files.  See below.
         sctx: Optional shared :class:`SparkrunContext`.
@@ -64,9 +64,9 @@ def list_jobs(
         except Exception:
             cache_dir = None
     if cache_dir is None:
-        from sparkrun.core.config import DEFAULT_CACHE_DIR
+        from sparkrun.core.config import resolve_sparkrun_cache_dir
 
-        cache_dir = DEFAULT_CACHE_DIR
+        cache_dir = resolve_sparkrun_cache_dir()
 
     jobs_dir = Path(cache_dir) / "jobs"
     if not jobs_dir.is_dir():
@@ -146,7 +146,13 @@ def _job_info_from_file(meta_path: Path) -> JobInfo | None:
     if not isinstance(data, dict):
         return None
 
+    from sparkrun.core.ownership import owns_metadata
+
     cluster_id = data.get("cluster_id") or _cluster_id_from_filename(meta_path)
+    # Legacy metadata omitted cluster_id; its filename in the active metadata
+    # directory supplies the historical Sparkrun identity. An explicit owner wins.
+    if not owns_metadata({**data, "cluster_id": cluster_id}):
+        return None
     if not cluster_id:
         return None
 

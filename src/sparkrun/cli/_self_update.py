@@ -15,6 +15,11 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import re
+import sys
+from pathlib import Path
+
+from sparkrun.core.application_profile import get_application_profile
 
 import click
 
@@ -32,13 +37,31 @@ def resolve_uv() -> str | None:
     return shutil.which("uv")
 
 
-def is_uv_tool_install(uv: str) -> bool:
-    """Return whether sparkrun is installed as a uv tool."""
+def owning_executable() -> str:
+    """The executable inside the running tool environment, independent of PATH."""
+    return str(Path(sys.prefix) / "bin" / get_application_profile().command)
+
+
+def installed_tool_executable(uv: str) -> Path | None:
+    """Resolve the owning installed tool, including after an install from uvx."""
     try:
-        check = subprocess.run([uv, "tool", "list"], capture_output=True, text=True)
+        check = subprocess.run([uv, "tool", "list", "--show-paths"], capture_output=True, text=True)
     except OSError:
-        return False
-    return check.returncode == 0 and "sparkrun" in check.stdout
+        return None
+    if check.returncode:
+        return None
+    expected = re.sub(r"[-_.]+", "-", get_application_profile().package).lower()
+    for line in check.stdout.splitlines():
+        match = re.fullmatch(r"([^ ]+) v[^ ]+ \((.+)\)", line.strip())
+        if match and re.sub(r"[-_.]+", "-", match[1]).lower() == expected:
+            return Path(match[2]).resolve() / "bin" / get_application_profile().command
+    return None
+
+
+def is_uv_tool_install(uv: str) -> bool:
+    """Require an exact owning package AND the current interpreter environment."""
+    executable = installed_tool_executable(uv)
+    return executable is not None and executable.parent.parent == Path(sys.prefix).resolve()
 
 
 def channel_from_flags(stable: bool, beta: bool, alpha: bool, yolo: bool) -> str | None:
@@ -76,8 +99,8 @@ def update_argv(uv: str, channel: str) -> list[str]:
     Stable uses ``uv tool upgrade``; git channels reinstall with ``--force`` so
     the mutable branch re-resolves to its newest commit.
     """
-    if normalize_channel(channel) == CHANNEL_STABLE:
-        return [uv, "tool", "upgrade", "sparkrun"]
+    if not is_git_channel(channel) and channel_requirement(channel) == get_application_profile().package:
+        return [uv, "tool", "upgrade", get_application_profile().package]
     return install_argv(uv, channel)
 
 
@@ -89,7 +112,7 @@ def new_binary_identity() -> tuple[str | None, str | None]:
     """
     try:
         res = subprocess.run(
-            ["sparkrun", "setup", "version", "--json"],
+            [owning_executable(), "setup", "version", "--json"],
             capture_output=True,
             text=True,
         )
@@ -100,6 +123,9 @@ def new_binary_identity() -> tuple[str | None, str | None]:
     try:
         data = json.loads(res.stdout.strip() or "{}")
     except ValueError:
+        return None, None
+    identity = data.get("distribution")
+    if identity is not None and identity.get("id") != get_application_profile().id:
         return None, None
     return data.get("version"), data.get("commit")
 
@@ -138,17 +164,17 @@ def describe_change(channel: str, old: tuple[str | None, str | None], new: tuple
     new_version, new_commit = new
     if is_git_channel(channel):
         if new_commit is None:
-            return "sparkrun %s updated (could not determine new commit)." % channel
+            return f"{get_application_profile().command} %s updated (could not determine new commit)." % channel
         if old_commit == new_commit:
-            return "sparkrun %s is already on the latest commit (%s)." % (channel, new_commit[:7])
+            return f"{get_application_profile().command} %s is already on the latest commit (%s)." % (channel, new_commit[:7])
         old_disp = old_commit[:7] if old_commit else "unknown"
-        return "sparkrun %s updated: commit %s -> %s" % (channel, old_disp, new_commit[:7])
+        return f"{get_application_profile().command} %s updated: commit %s -> %s" % (channel, old_disp, new_commit[:7])
     # stable / PyPI
     if new_version is None:
-        return "sparkrun updated (could not determine new version)."
+        return f"{get_application_profile().command} updated (could not determine new version)."
     if old_version == new_version:
-        return "sparkrun %s is already the latest version." % new_version
-    return "sparkrun updated: %s -> %s" % (old_version, new_version)
+        return f"{get_application_profile().command} %s is already the latest version." % new_version
+    return f"{get_application_profile().command} updated: %s -> %s" % (old_version, new_version)
 
 
 def warn_if_downgrade(current_channel: str, requested_channel: str) -> None:

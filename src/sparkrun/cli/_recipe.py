@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import render_identity_text
+
 import sys
 
 import click
@@ -169,7 +171,7 @@ def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem, output_json
 def recipe_validate(ctx, recipe_name, strict, fail_on, output_json, config_path=None):
     """Validate a recipe file.
 
-    Findings come in three severities. ERRORS are things sparkrun cannot honor
+    Findings come in three severities. ERRORS are things {app_command} cannot honor
     (a missing field, a runtime that rejects the recipe, a builder or executor
     that does not resolve) and always exit 1. WARNINGS mean the recipe runs but
     breaks or behaves differently off the cluster it was written on (NCCL pinned
@@ -248,11 +250,11 @@ def recipe_vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_au
 
     Examples:
 
-      sparkrun recipe vram glm-4.7-flash-awq
+      {app_command} recipe vram glm-4.7-flash-awq
 
-      sparkrun recipe vram glm-4.7-flash-awq --tp 2
+      {app_command} recipe vram glm-4.7-flash-awq --tp 2
 
-      sparkrun recipe vram my-recipe.yaml --max-model-len 8192 --gpu-mem 0.9
+      {app_command} recipe vram my-recipe.yaml --max-model-len 8192 --gpu-mem 0.9
     """
     config, _ = _get_config_and_registry(config_path)
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
@@ -282,7 +284,12 @@ def recipe_vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_au
 @click.pass_context
 def recipe_update(ctx, registry):
     """Update recipe registries from git."""
-    click.echo("Warning: 'sparkrun recipe update' is deprecated. Use 'sparkrun registry update' or 'sparkrun update' instead.", err=True)
+    click.echo(
+        render_identity_text(
+            "Warning: '{app_command} recipe update' is deprecated. Use '{app_command} registry update' or '{app_command} update' instead."
+        ),
+        err=True,
+    )
     from sparkrun.cli._registry import registry_update
 
     ctx.invoke(registry_update, name=registry)

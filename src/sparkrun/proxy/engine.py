@@ -231,9 +231,9 @@ def write_config(config_dict: dict[str, Any], config_path: Path | None = None) -
         Path to the written config file.
     """
     if config_path is None:
-        from sparkrun.core.config import DEFAULT_CACHE_DIR
+        from sparkrun.core.config import resolve_sparkrun_cache_dir
 
-        config_path = DEFAULT_CACHE_DIR / "proxy" / "litellm_config.yaml"
+        config_path = resolve_sparkrun_cache_dir() / "proxy" / "litellm_config.yaml"
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     _restrict_dir_permissions(config_path.parent)
@@ -307,7 +307,9 @@ class ProxyEngine(GatewaySupervisor):
         """
         config_dict = build_litellm_config(endpoints, self.master_key, aliases=aliases)
         applied = {entry["model_name"] for entry in config_dict["model_list"]} & set(aliases)
-        path = write_config(config_dict) if write else None
+        if write:
+            self.claim_state_directory()
+        path = write_config(config_dict, self.config_path) if write else None
         return path, applied, set(aliases) - applied
 
     def start(
@@ -355,6 +357,7 @@ class ProxyEngine(GatewaySupervisor):
             logger.info("[dry-run] Would run: %s", " ".join(cmd))
             return 0
 
+        self.claim_state_directory()
         self._warn_insecure_bind()
 
         if self.is_running():

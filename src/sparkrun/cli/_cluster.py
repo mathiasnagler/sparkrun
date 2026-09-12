@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import render_identity_text
+
 import sys
 
 import click
@@ -185,7 +187,7 @@ def cluster_create(
 @dry_run_option
 @click.pass_context
 def cluster_import(ctx, svd_env, name, set_default, dry_run):
-    """Import an external cluster config into a sparkrun cluster.
+    """Import an external cluster config into a {app_command} cluster.
 
     Subcommands:
 
@@ -202,7 +204,7 @@ def cluster_import(ctx, svd_env, name, set_default, dry_run):
         return
     if svd_env:
         click.echo(
-            "Warning: --from-spark-vllm-docker-env is deprecated; use `sparkrun cluster import svd PATH`.",
+            render_identity_text("Warning: --from-spark-vllm-docker-env is deprecated; use `{app_command} cluster import svd PATH`."),
             err=True,
         )
         _do_svd_import(ctx, svd_env, name, set_default, dry_run)
@@ -426,12 +428,12 @@ def cluster_update(
 
     \b
     Examples:
-      sparkrun cluster update mylab --add-host 10.0.0.5
-      sparkrun cluster update mylab --add-host 10.0.0.5 --add-host 10.0.0.6
-      sparkrun cluster update mylab --add-host 10.0.0.5,10.0.0.6
-      sparkrun cluster update mylab --remove-host 10.0.0.2
-      sparkrun cluster update mylab --hosts 10.0.0.1,10.0.0.2,10.0.0.3
-      sparkrun cluster update mylab --user ubuntu --transfer-mode push
+      {app_command} cluster update mylab --add-host 10.0.0.5
+      {app_command} cluster update mylab --add-host 10.0.0.5 --add-host 10.0.0.6
+      {app_command} cluster update mylab --add-host 10.0.0.5,10.0.0.6
+      {app_command} cluster update mylab --remove-host 10.0.0.2
+      {app_command} cluster update mylab --hosts 10.0.0.1,10.0.0.2,10.0.0.3
+      {app_command} cluster update mylab --user ubuntu --transfer-mode push
     """
     from sparkrun.core.cluster_manager import ClusterError
     from sparkrun.core.hosts import parse_hosts_file
@@ -831,15 +833,15 @@ def cluster_monitor(ctx, hosts, hosts_file, cluster_name, dry_run, interval, sim
 
     Examples:
 
-      sparkrun cluster monitor --hosts 192.168.11.13,192.168.11.14
+      {app_command} cluster monitor --hosts 192.168.11.13,192.168.11.14
 
-      sparkrun cluster monitor --cluster mylab
+      {app_command} cluster monitor --cluster mylab
 
-      sparkrun cluster monitor --cluster mylab --interval 5
+      {app_command} cluster monitor --cluster mylab --interval 5
 
-      sparkrun cluster monitor --cluster mylab --simple
+      {app_command} cluster monitor --cluster mylab --simple
 
-      sparkrun cluster monitor --cluster mylab --json
+      {app_command} cluster monitor --cluster mylab --json
     """
     from sparkrun.core.monitoring import stream_cluster_monitor
     from sparkrun.orchestration.primitives import build_ssh_kwargs
@@ -943,16 +945,16 @@ def cluster_monitor(ctx, hosts, hosts_file, cluster_name, dry_run, interval, sim
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
 def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, config_path=None):
-    """Show sparkrun containers running on cluster hosts.
+    """Show {app_command} containers running on cluster hosts.
 
     Lists all Docker containers whose names start with sparkrun_ on each
     host.  Accepts the same host-resolution flags as run/stop/logs.
 
     Examples:
 
-      sparkrun cluster status --hosts 192.168.11.13,192.168.11.14
+      {app_command} cluster status --hosts 192.168.11.13,192.168.11.14
 
-      sparkrun cluster status --cluster mylab
+      {app_command} cluster status --cluster mylab
     """
     from sparkrun.utils.cli_formatters import format_job_label, format_job_commands, format_host_display, format_pending_op
     from sparkrun.orchestration.primitives import build_ssh_kwargs
@@ -965,7 +967,7 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, c
     ssh_kwargs = build_ssh_kwargs(config)
 
     if dry_run:
-        docker_cmd = "docker ps --filter 'name=sparkrun_' --format '{{.Names}}\\t{{.Status}}\\t{{.Image}}'"
+        docker_cmd = "docker ps --format '{{.Names}}\\t{{.Status}}\\t{{.Image}}'"
         click.echo("[dry-run] Would run on %d host(s): %s" % (len(host_list), docker_cmd))
         return
 
@@ -1042,7 +1044,7 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, c
 
     # Display idle hosts
     if result.idle_hosts:
-        click.echo("Idle hosts (no sparkrun containers, nothing pending):")
+        click.echo(render_identity_text("Idle hosts (no {app_command} containers, nothing pending):"))
         for h in result.idle_hosts:
             click.echo(f"  {h}")
         click.echo()
@@ -1066,9 +1068,9 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, c
 
     # Summary
     if result.total_containers == 0 and not result.errors and not result.pending_ops:
-        click.echo("No sparkrun containers running.")
+        click.echo(render_identity_text("No {app_command} containers running."))
     elif result.total_containers == 0 and not result.errors and result.pending_ops:
-        click.echo("No sparkrun containers running yet (pending operations above).")
+        click.echo(render_identity_text("No {app_command} containers running yet (pending operations above)."))
     else:
         click.echo(f"Total: {result.total_containers} container(s) across {result.host_count} host(s)")
 
@@ -1087,7 +1089,7 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, c
 @json_option()
 @click.pass_context
 def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override, port, served_model_name, check_http_models, output_json):
-    """Check if a sparkrun job is running.
+    """Check if a {app_command} job is running.
 
     TARGET can be a cluster ID (sparkrun_<hex>) or a recipe name.
 
@@ -1095,13 +1097,13 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
 
     Examples:
 
-      sparkrun cluster check-job sparkrun_abc123def456
+      {app_command} cluster check-job sparkrun_abc123def456
 
-      sparkrun cluster check-job my-recipe --hosts 10.0.0.1,10.0.0.2
+      {app_command} cluster check-job my-recipe --hosts 10.0.0.1,10.0.0.2
 
-      sparkrun cluster check-job my-recipe --cluster mylab --check-health
+      {app_command} cluster check-job my-recipe --cluster mylab --check-health
 
-      sparkrun cluster check-job my-recipe --cluster mylab --json
+      {app_command} cluster check-job my-recipe --cluster mylab --json
     """
     from sparkrun.orchestration.job_metadata import check_job_running
     from sparkrun.orchestration.primitives import build_ssh_kwargs
@@ -1294,15 +1296,15 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
 
     Also reports the head node's hardware and driver/software versions
     (platform, OS/kernel, CPU/RAM, GPU + driver, CUDA, Docker).  Run
-    `sparkrun setup diagnose` for the full per-host inventory.
+    `{app_command} setup diagnose` for the full per-host inventory.
 
     NAME is an optional cluster name (equivalent to --cluster NAME).
 
     \b
     Examples:
-      sparkrun cluster inspect mylab
-      sparkrun cluster inspect mylab --json
-      sparkrun cluster inspect --hosts 192.168.11.13,192.168.11.14
+      {app_command} cluster inspect mylab
+      {app_command} cluster inspect mylab --json
+      {app_command} cluster inspect --hosts 192.168.11.13,192.168.11.14
     """
     # Allow positional name as shorthand for --cluster
     if name and cluster_name:
@@ -1374,10 +1376,9 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
     # TODO: remote sparkrun cache path should go through same effective route as remote hf cache resolution
     # Resolve remote sparkrun cache path the same way as before: explicit
     # for a known cluster user, otherwise $HOME-relative.
-    if cluster_cfg.user:
-        remote_sparkrun = "/home/%s/.cache/sparkrun" % cluster_cfg.user
-    else:
-        remote_sparkrun = "$HOME/.cache/sparkrun"
+    from sparkrun.core.application_profile import remote_cache_path
+
+    remote_sparkrun = remote_cache_path()
 
     from sparkrun.orchestration.disk_info import probe_cache_status, probe_local_cache_status
     from sparkrun.utils.cli_formatters import format_cache_status_table
@@ -1500,7 +1501,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
         for label, value in _format_head_hardware(head_hardware):
             click.echo("  %-19s %s" % (label + ":", value))
     else:
-        click.echo("  (hardware probe failed — see `sparkrun setup diagnose` for details)")
+        click.echo(render_identity_text("  (hardware probe failed — see `{app_command} setup diagnose` for details)"))
     click.echo()
 
     # NCCL env section
@@ -1514,7 +1515,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
 
     # Cache paths section
     click.echo("Cache Paths:")
-    click.echo("  sparkrun (local):   %s" % local_sparkrun)
+    click.echo(render_identity_text("  {app_command} (local):   %s" % local_sparkrun))
     click.echo("  HF cache (local):   %s" % local_hf)
     click.echo("  HF cache (remote):  %s" % remote_hf)
     if local_hf != remote_hf:

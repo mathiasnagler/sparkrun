@@ -10,6 +10,10 @@ from __future__ import annotations
 from sparkrun.api._errors import SparkrunError
 
 
+class SetupFailed(SparkrunError):
+    """Setup could not complete its preflight, recording, or orchestration."""
+
+
 class SshAccessError(SparkrunError):
     """SSH access to the cluster could not be established or verified."""
 
@@ -32,6 +36,7 @@ class RdmaTestError(SparkrunError):
 
 
 __all__ = [
+    "SetupFailed",
     "SshAccessError",
     "SshKeyError",
     "OpenSshUnavailable",

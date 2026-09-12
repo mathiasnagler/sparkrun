@@ -9,7 +9,7 @@ from unittest import mock
 import pytest
 from click.testing import CliRunner
 
-from sparkrun.arena.auth import (
+from sparkrun.plugins.sparkarena.auth import (
     ExchangeResult,
     generate_challenge_id,
     save_refresh_token,
@@ -19,7 +19,7 @@ from sparkrun.arena.auth import (
     is_logged_in,
     _can_open_browser,
 )
-from sparkrun.arena.upload import (
+from sparkrun.plugins.sparkarena.upload import (
     generate_submission_id,
     upload_file,
     upload_benchmark_results,
@@ -34,7 +34,7 @@ from sparkrun.cli import main
 
 class TestTokenPersistence:
     def test_save_and_load(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("sparkrun.arena.auth.get_token_path", lambda: tmp_path / "token")
+        monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.get_token_path", lambda: tmp_path / "token")
         save_refresh_token("test-refresh-token-123")
 
         token = load_refresh_token()
@@ -45,25 +45,25 @@ class TestTokenPersistence:
         assert oct(path.stat().st_mode & 0o777) == "0o600"
 
     def test_load_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("sparkrun.arena.auth.get_token_path", lambda: tmp_path / "nonexistent")
+        monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.get_token_path", lambda: tmp_path / "nonexistent")
         assert load_refresh_token() is None
 
     def test_load_empty(self, tmp_path, monkeypatch):
         path = tmp_path / "token"
         path.write_text("")
-        monkeypatch.setattr("sparkrun.arena.auth.get_token_path", lambda: path)
+        monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.get_token_path", lambda: path)
         assert load_refresh_token() is None
 
     def test_clear(self, tmp_path, monkeypatch):
         path = tmp_path / "token"
         path.write_text("some-token")
-        monkeypatch.setattr("sparkrun.arena.auth.get_token_path", lambda: path)
+        monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.get_token_path", lambda: path)
 
         clear_refresh_token()
         assert not path.exists()
 
     def test_clear_missing(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("sparkrun.arena.auth.get_token_path", lambda: tmp_path / "nonexistent")
+        monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.get_token_path", lambda: tmp_path / "nonexistent")
         # Should not raise
         clear_refresh_token()
 
@@ -102,7 +102,7 @@ class TestExchangeToken:
             }
         ).encode()
 
-        with mock.patch("sparkrun.arena.auth.urlopen") as mock_urlopen:
+        with mock.patch("sparkrun.plugins.sparkarena.auth.urlopen") as mock_urlopen:
             mock_resp = mock.MagicMock()
             mock_resp.read.return_value = mock_response
             mock_resp.__enter__ = mock.MagicMock(return_value=mock_resp)
@@ -120,7 +120,7 @@ class TestExchangeToken:
     def test_http_error(self):
         from urllib.error import HTTPError
 
-        with mock.patch("sparkrun.arena.auth.urlopen") as mock_urlopen:
+        with mock.patch("sparkrun.plugins.sparkarena.auth.urlopen") as mock_urlopen:
             error = HTTPError(
                 url="https://auth.sparkrun.dev/exchange",
                 code=401,
@@ -137,7 +137,7 @@ class TestExchangeToken:
     def test_incomplete_response(self):
         mock_response = json.dumps({"id_token": "tok"}).encode()  # missing user_id, bucket
 
-        with mock.patch("sparkrun.arena.auth.urlopen") as mock_urlopen:
+        with mock.patch("sparkrun.plugins.sparkarena.auth.urlopen") as mock_urlopen:
             mock_resp = mock.MagicMock()
             mock_resp.read.return_value = mock_response
             mock_resp.__enter__ = mock.MagicMock(return_value=mock_resp)
@@ -155,23 +155,25 @@ class TestExchangeToken:
 
 class TestIsLoggedIn:
     def test_no_token(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("sparkrun.arena.auth.get_token_path", lambda: tmp_path / "nonexistent")
+        monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.get_token_path", lambda: tmp_path / "nonexistent")
         assert is_logged_in() is False
 
     def test_valid_token(self, tmp_path, monkeypatch):
         path = tmp_path / "token"
         path.write_text("valid-token")
-        monkeypatch.setattr("sparkrun.arena.auth.get_token_path", lambda: path)
+        monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.get_token_path", lambda: path)
 
-        with mock.patch("sparkrun.arena.auth.exchange_token", return_value=ExchangeResult(id_token="id", user_id="uid", bucket="bucket")):
+        with mock.patch(
+            "sparkrun.plugins.sparkarena.auth.exchange_token", return_value=ExchangeResult(id_token="id", user_id="uid", bucket="bucket")
+        ):
             assert is_logged_in() is True
 
     def test_invalid_token(self, tmp_path, monkeypatch):
         path = tmp_path / "token"
         path.write_text("expired-token")
-        monkeypatch.setattr("sparkrun.arena.auth.get_token_path", lambda: path)
+        monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.get_token_path", lambda: path)
 
-        with mock.patch("sparkrun.arena.auth.exchange_token", side_effect=RuntimeError("expired")):
+        with mock.patch("sparkrun.plugins.sparkarena.auth.exchange_token", side_effect=RuntimeError("expired")):
             assert is_logged_in() is False
 
 
@@ -221,7 +223,7 @@ class TestBrowserCallbackStateBinding:
         import threading
         from urllib.parse import urlparse, parse_qs
 
-        from sparkrun.arena import auth
+        from sparkrun.plugins.sparkarena import auth
 
         captured: dict[str, str] = {}
         done = threading.Event()
@@ -340,7 +342,7 @@ class TestUploadFile:
         test_file = tmp_path / "test.csv"
         test_file.write_text("col1,col2\n1,2\n")
 
-        with mock.patch("sparkrun.arena.upload.urlopen") as mock_urlopen:
+        with mock.patch("sparkrun.plugins.sparkarena.upload.urlopen") as mock_urlopen:
             mock_resp = mock.MagicMock()
             mock_resp.status = 200
             mock_resp.__enter__ = mock.MagicMock(return_value=mock_resp)
@@ -370,7 +372,7 @@ class TestUploadFile:
 
         from urllib.error import HTTPError
 
-        with mock.patch("sparkrun.arena.upload.urlopen") as mock_urlopen:
+        with mock.patch("sparkrun.plugins.sparkarena.upload.urlopen") as mock_urlopen:
             error = HTTPError(
                 url="https://example.com",
                 code=403,
@@ -413,8 +415,8 @@ class TestUploadBenchmarkResults:
         ]
 
         with (
-            mock.patch("sparkrun.arena.upload.exchange_token") as mock_exchange,
-            mock.patch("sparkrun.arena.upload.upload_file", return_value=True) as mock_upload,
+            mock.patch("sparkrun.plugins.sparkarena.upload.exchange_token") as mock_exchange,
+            mock.patch("sparkrun.plugins.sparkarena.upload.upload_file", return_value=True) as mock_upload,
         ):
             mock_exchange.return_value = ExchangeResult(id_token="id-tok", user_id="uid-123", bucket="bucket-name")
 
@@ -432,8 +434,8 @@ class TestUploadBenchmarkResults:
         csv_file.write_text("data")
 
         with (
-            mock.patch("sparkrun.arena.upload.exchange_token") as mock_exchange,
-            mock.patch("sparkrun.arena.upload.upload_file", return_value=True),
+            mock.patch("sparkrun.plugins.sparkarena.upload.exchange_token") as mock_exchange,
+            mock.patch("sparkrun.plugins.sparkarena.upload.upload_file", return_value=True),
         ):
             mock_exchange.return_value = ExchangeResult(id_token="id-tok", user_id="uid-123", bucket="bucket-name")
 
@@ -452,8 +454,8 @@ class TestUploadBenchmarkResults:
         missing = tmp_path / "nonexistent.csv"
 
         with (
-            mock.patch("sparkrun.arena.upload.exchange_token") as mock_exchange,
-            mock.patch("sparkrun.arena.upload.upload_file", return_value=True) as mock_upload,
+            mock.patch("sparkrun.plugins.sparkarena.upload.exchange_token") as mock_exchange,
+            mock.patch("sparkrun.plugins.sparkarena.upload.upload_file", return_value=True) as mock_upload,
         ):
             mock_exchange.return_value = ExchangeResult(id_token="id-tok", user_id="uid-123", bucket="bucket-name")
 
@@ -462,8 +464,8 @@ class TestUploadBenchmarkResults:
                 upload_files=[(existing, "logs"), (missing, "logs")],
             )
 
-            assert success is True
-            assert mock_upload.call_count == 1  # only the existing file
+            assert success is False
+            assert mock_upload.call_count == 1  # missing artifacts cannot count as a successful submission
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +491,7 @@ class TestArenaCLI:
         assert result.exit_code == 0
 
     def test_logout_not_logged_in(self, runner, monkeypatch):
-        monkeypatch.setattr("sparkrun.arena.auth.get_token_path", lambda: Path("/tmp/nonexistent_sparkrun_token"))
+        monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.get_token_path", lambda: Path("/tmp/nonexistent_sparkrun_token"))
         result = runner.invoke(main, ["arena", "logout"])
         assert result.exit_code == 0
         assert "Not logged in" in result.output
@@ -497,7 +499,7 @@ class TestArenaCLI:
     def test_logout_clears_token(self, runner, tmp_path, monkeypatch):
         token_path = tmp_path / "token"
         token_path.write_text("some-token")
-        monkeypatch.setattr("sparkrun.arena.auth.get_token_path", lambda: token_path)
+        monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.get_token_path", lambda: token_path)
 
         result = runner.invoke(main, ["arena", "logout"])
         assert result.exit_code == 0
@@ -505,7 +507,7 @@ class TestArenaCLI:
         assert not token_path.exists()
 
     def test_status_not_logged_in(self, runner, monkeypatch):
-        monkeypatch.setattr("sparkrun.arena.auth.get_token_path", lambda: Path("/tmp/nonexistent_sparkrun_token"))
+        monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.get_token_path", lambda: Path("/tmp/nonexistent_sparkrun_token"))
         result = runner.invoke(main, ["arena", "status"])
         assert result.exit_code == 0
         assert "Not logged in" in result.output
@@ -513,10 +515,10 @@ class TestArenaCLI:
     def test_status_logged_in(self, runner, tmp_path, monkeypatch):
         token_path = tmp_path / "token"
         token_path.write_text("valid-token")
-        monkeypatch.setattr("sparkrun.arena.auth.get_token_path", lambda: token_path)
+        monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.get_token_path", lambda: token_path)
 
         with mock.patch(
-            "sparkrun.arena.auth.exchange_token",
+            "sparkrun.plugins.sparkarena.auth.exchange_token",
             return_value=ExchangeResult(
                 id_token="id-tok",
                 user_id="user-abc",
@@ -533,9 +535,9 @@ class TestArenaCLI:
     def test_status_expired_token(self, runner, tmp_path, monkeypatch):
         token_path = tmp_path / "token"
         token_path.write_text("expired-token")
-        monkeypatch.setattr("sparkrun.arena.auth.get_token_path", lambda: token_path)
+        monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.get_token_path", lambda: token_path)
 
-        with mock.patch("sparkrun.arena.auth.exchange_token", side_effect=RuntimeError("token expired")):
+        with mock.patch("sparkrun.plugins.sparkarena.auth.exchange_token", side_effect=RuntimeError("token expired")):
             result = runner.invoke(main, ["arena", "status"])
             assert result.exit_code == 0
             assert "invalid or expired" in result.output.lower()

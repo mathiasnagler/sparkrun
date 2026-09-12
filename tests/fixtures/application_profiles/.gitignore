@@ -1,0 +1,5 @@
+# Intermediates from the opt-in wheel composition tests.
+*.egg-info/
+build/
+dist/
+__pycache__/

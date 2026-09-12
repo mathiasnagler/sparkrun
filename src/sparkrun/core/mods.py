@@ -31,6 +31,8 @@ same shape the eugr builder used historically):
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import remote_cache_path
+
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,7 +52,10 @@ logger = logging.getLogger(__name__)
 
 EUGR_FALLBACK_REGISTRY = "eugr"
 _CONTAINER_MODS_BASE = "/workspace/mods"
-_HEAD_STAGING_BASE = "~/.cache/sparkrun/mods-staging"
+
+
+def head_staging_base():
+    return remote_cache_path("mods-staging", home="~")
 
 
 class ModNotFoundError(Exception):
@@ -257,7 +262,7 @@ def _rsync_to_head(
 
     Returns the head-side absolute path (with ``~`` left for shell to expand).
     """
-    dest = "%s/%s" % (_HEAD_STAGING_BASE, name)
+    dest = "%s/%s" % (head_staging_base(), name)
     logger.info("Staging mod %r to %s:%s", name, head, dest)
     kw = ssh_kwargs or {}
     if dry_run:

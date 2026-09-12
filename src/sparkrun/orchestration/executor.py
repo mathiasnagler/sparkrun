@@ -222,10 +222,6 @@ def get_executor(name: str, v: Variables | None = None) -> type[Executor]:
         from sparkrun.orchestration.executors.local import LocalExecutor
 
         return LocalExecutor
-    if name == "k8s":
-        from sparkrun.orchestration.executors.k8s import K8sExecutor
-
-        return K8sExecutor
 
     raise ValueError("Unknown executor: %r" % name)
 
@@ -420,7 +416,7 @@ def _known_executor_names(v: Variables | None = None) -> set[str]:
             logger.debug("Falling back to static executor name set", exc_info=True)
 
     # Static fallback (matches get_executor's hardcoded branch).
-    return {"docker", "local", "k8s"}
+    return {"docker", "local"}
 
 
 def _resolve_executor_name(
@@ -549,12 +545,12 @@ def _gated_off_feature(name: str, config: "SparkrunConfig | None") -> str | None
     """
     from sparkrun.core.features import get_feature, is_feature_enabled
 
-    feature = "executor.%s" % name
-    if get_feature(feature) is None:
-        return None
-    if is_feature_enabled(feature, config=config):
-        return None  # enabled — absence must be a different problem
-    return feature
+    from sparkrun.core.in_tree_plugins import plugin_feature_flag
+
+    for feature in (plugin_feature_flag(name), "executor.%s" % name):
+        if feature and get_feature(feature) is not None and not is_feature_enabled(feature, config=config):
+            return feature
+    return None
 
 
 def resolve_executor(
@@ -631,7 +627,7 @@ def resolve_executor(
         ),
         env_placement=EnvPlacement.IGNORED,
     )
-    exec_cfg = ExecutorConfig.from_chain(chain)
+    exec_cfg = cls.config_class.from_chain(chain)
     executor = cls(exec_cfg)
     # Post-construction enrichment that needs the SparkrunConfig / Variables
     # the executor-agnostic chain can't carry (e.g. the k8s executor

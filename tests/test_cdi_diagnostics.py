@@ -14,7 +14,7 @@ import subprocess
 
 import pytest
 
-from sparkrun.cli._setup._check import (
+from sparkrun.core.setup_checks import (
     FAIL,
     OK,
     SKIP,

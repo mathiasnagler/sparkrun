@@ -58,7 +58,12 @@ def read_script(name: str) -> str:
     Returns:
         Script content as a string.
     """
-    return _resolve_includes(load_resource(__package__, name))
+    from sparkrun.core.application_profile import get_application_profile
+
+    script = _resolve_includes(load_resource(__package__, name))
+    return script.replace("@RESOURCE_NAMESPACE@", get_application_profile().resource_namespace).replace(
+        "@CACHE_NAMESPACE@", get_application_profile().cache_namespace
+    )
 
 
 def inject_shell_vars(script: str, **values: str | None) -> str:

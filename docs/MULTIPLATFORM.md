@@ -85,6 +85,24 @@ connection per host, all concurrent. Replaces the older two-trip pattern
 `fingerprint_host` (`core/fingerprint.py`) is now a thin shim retained for
 callers that only want accelerator data and don't pay for the IB section.
 
+### Plugin-owned hardware probes
+
+Selected integrations can call
+`core.hardware_probe_extensions.register_hardware_probe(name, script=..., enrich=...)`
+in their `register(v)` hook. The script is a read-only Bash fragment that emits
+namespaced facts using core's `emit` function. Both the standalone fingerprint
+script and combined accelerator/IB script include these fragments. Each fragment
+runs in a subshell; the combined path places it inside the accelerator section
+without adding another SSH connection.
+
+`enrich(parsed, hardware)` returns a `HostHardware`, preserving unrelated
+accelerators and metadata. Core computes the final accelerator fingerprint after
+all enrichers run. Parser errors propagate rather than silently accepting partial
+hardware. Registration is idempotent for identical providers, rejects conflicting
+names, and participates in installed-plugin transaction rollback. Applications
+must initialize selected integrations before generating or parsing probes.
+Registration itself never detects controller hardware.
+
 ## `select_backends` → `BackendBundle`
 
 `core/backend_select.py`:
@@ -222,3 +240,30 @@ Apple MLX and pure-CPU hosts have `accelerator_vendor_for(...) in {"apple",
    doesn't run inside Docker.
 
 This work is unstarted — the seams exist, the scaffolds don't.
+
+
+## Application profiles and hardware integrations
+
+Application identity does not detect hardware. An integration installed into
+ordinary Sparkrun must provide the same target-host behavior it provides under
+an alternate launcher. Application profile defaults only supply site policy beneath
+explicit recipe, cluster and invocation choices.
+
+Operational missing-hardware paths use `resolve_fallback_hardware()`. Built-in
+Sparkrun retains its legacy DGX Spark fallback; alternate application profiles default
+to requiring metadata. The scheduler, resource limits, cluster hardware access,
+runtime fallback and executor status paths must not invent GB10 capabilities
+for an unidentified alternate target.
+
+Hardware integrations own device-specific detection, measured memory policies,
+software-stack diagnostics, platform registration and compatibility validation.
+`core.hardware_probe_extensions.register_hardware_probe` lets a selected plugin
+contribute target facts and enrich the shared hardware model. The same plugin
+can be selected by Sparkrun or required by an alternate application.
+
+Readiness and wizard behavior use shared setup steps with per-host applicability.
+Plugins can add checks/actions and register constraints that exclude unsupported
+core steps on their hardware. Application defaults select policy; they do not
+establish hardware or container qualification. See [SETUP_STEPS.md](SETUP_STEPS.md)
+for setup extensions and [APPLICATION_PROFILES.md](APPLICATION_PROFILES.md) for
+the application composition contract.

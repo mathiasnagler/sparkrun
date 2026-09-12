@@ -243,3 +243,33 @@ def test_no_published_release_does_not_fall_back_or_modify_the_host(import_targe
     monkeypatch.setattr(import_target.subprocess, "run", missing)
     assert import_target.main(["update", "--latest", "--initial"]) == 1
     assert list(import_target.ROOT.iterdir()) == []
+
+
+@pytest.mark.parametrize("value", ["true", "0", '"1"'])
+def test_importer_rejects_invalid_application_profile_api(vendor_module, monkeypatch, value):
+    def show(_repository, *arguments, **_kwargs):
+        return (
+            '[project]\nversion = "0.1.0"\n'
+            if arguments[-1].endswith(":pyproject.toml")
+            else _manifest_text() + "application_profile_api = " + value + "\n"
+        )
+
+    monkeypatch.setattr(vendor_module, "_run_git", show)
+    with pytest.raises(vendor_module.VendorError, match="application_profile_api"):
+        vendor_module._manifest(Path("unused"), "a" * 40)
+
+
+def test_importer_preserves_application_profile_api_without_importing_code(vendor_module, monkeypatch):
+    def show(_repository, *arguments, **_kwargs):
+        return (
+            '[project]\nversion = "0.1.0"\n'
+            if arguments[-1].endswith(":pyproject.toml")
+            else _manifest_text() + "application_profile_api = 1\n"
+        )
+
+    monkeypatch.setattr(vendor_module, "_run_git", show)
+    manifest = vendor_module._manifest(Path("unused"), "a" * 40)
+    assert manifest.application_profile_api == 1
+    parameters = dict(manifest=manifest, commit="a" * 40, tree="b" * 40, digest="c" * 64)
+    assert tomllib.loads(vendor_module._render_lock(**parameters, files=[]))["application_profile_api"] == 1
+    assert tomllib.loads(vendor_module._render_provenance(**parameters))["application_profile_api"] == 1

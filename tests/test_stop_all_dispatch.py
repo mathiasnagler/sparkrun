@@ -369,6 +369,7 @@ def test_teardown_script_reports_removed_count():
     stub = (
         "_state=$(mktemp)\n"
         "docker() {\n"
+        '  if [ "$1" = "inspect" ]; then echo sparkrun; return 0; fi\n'
         '  if [ "$1" = "ps" ]; then [ -s "$_state" ] || echo a; return 0; fi\n'
         '  if [ "$1" = "rm" ]; then echo removed > "$_state"; return 0; fi\n'
         "  return 0\n"

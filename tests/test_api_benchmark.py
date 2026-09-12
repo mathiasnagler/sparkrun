@@ -21,7 +21,9 @@ from sparkrun.api._errors import BenchmarkFailed
 
 def _fake_internal_result(**overrides):
     """Build a stand-in for the internal sparkrun.benchmarking.base.BenchmarkResult."""
-    obj = MagicMock()
+    from sparkrun.benchmarking.base import BenchmarkExecution
+
+    obj = BenchmarkExecution()
     obj.success = True
     obj.benchmark_id = "bench_test123"
     # framework is a BenchmarkingPlugin object on the internal type; simulate that
@@ -42,7 +44,11 @@ def _fake_internal_result(**overrides):
     obj.benchmark_args = {"pp": [2048]}
     obj.state_dir = "/tmp/state"
     obj.resumed = False
-    obj.submission_id = None
+    obj.integration_results = {}
+    obj.integration_errors = {}
+    obj.framework_name = "llama-benchy"
+    obj.category = "performance"
+    obj.run_result = None
     for k, v in overrides.items():
         setattr(obj, k, v)
     return obj
@@ -157,8 +163,8 @@ def test_benchmark_resolves_category_from_framework_primary():
     assert result.category == "performance"
 
 
-def test_benchmark_honors_explicit_category():
-    fake = _fake_internal_result()
+def test_benchmark_preserves_resolved_category():
+    fake = _fake_internal_result(category="evals")
     with patch("sparkrun.api._benchmark._execute_benchmark", return_value=fake):
         result = benchmark(BenchmarkOptions(recipe="my-recipe", category="evals"))
     assert result.category == "evals"
@@ -230,7 +236,7 @@ def test_benchmark_threads_submission_id_through_state_extras():
         benchmark(
             BenchmarkOptions(
                 recipe="my-recipe",
-                arena=True,
+                integrations={"arena": {}},
                 state_extras={"submission_id": "sub-abc-123"},
             )
         )
@@ -252,8 +258,8 @@ def test_benchmark_null_state_extras_gives_no_submission_id():
 
 
 def test_benchmark_framework_string_in_result_when_internal_has_none():
-    """When bench_result.framework is None, fall back to options.framework."""
-    fake = _fake_internal_result()
+    """Completed retries retain the recorded framework without a live plugin."""
+    fake = _fake_internal_result(framework_name="my-fw")
     fake.framework = None
     with patch("sparkrun.api._benchmark._execute_benchmark", return_value=fake):
         result = benchmark(BenchmarkOptions(recipe="my-recipe", framework="my-fw"))
@@ -304,7 +310,7 @@ def test_benchmark_threads_category_to_execute():
 
     def _capture(options, *, sctx, emitter):
         received.append(options)
-        return MagicMock(success=True)
+        return _fake_internal_result()
 
     with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
         from sparkrun.api import benchmark
@@ -320,7 +326,7 @@ def test_benchmark_no_category_threads_none():
 
     def _capture(options, *, sctx, emitter):
         received.append(options)
-        return MagicMock(success=True)
+        return _fake_internal_result()
 
     with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
         from sparkrun.api import benchmark

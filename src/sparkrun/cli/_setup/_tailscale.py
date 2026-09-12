@@ -14,6 +14,8 @@ sudo, call the api, and render results.
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import render_identity_text
+
 import click
 
 from .._common import _get_context, _resolve_setup_context, host_options
@@ -38,7 +40,7 @@ def _setup_tailscale_enabled_at_import() -> bool:
 def setup_tailscale(ctx):
     """Tailscale: join nodes to a tailnet and publish inference endpoints.
 
-    sparkrun mints short-lived, tagged auth keys from a Tailscale OAuth client
+    {app_command} mints short-lived, tagged auth keys from a Tailscale OAuth client
     and joins hosts non-interactively, then surfaces a run's serve port (or the
     proxy) to the rest of your tailnet.
 
@@ -46,8 +48,10 @@ def setup_tailscale(ctx):
     """
     if not _get_context(ctx).config.is_feature_enabled(SETUP_TAILSCALE_FEATURE):
         raise click.ClickException(
-            "The 'setup tailscale' commands are experimental and disabled. "
-            "Enable them with: sparkrun setup features enable cli.setup.tailscale"
+            render_identity_text(
+                "The 'setup tailscale' commands are experimental and disabled. "
+                "Enable them with: {app_command} setup features enable cli.setup.tailscale"
+            )
         )
 
 
@@ -167,7 +171,7 @@ def setup_tailscale_status(ctx, hosts, hosts_file, cluster_name, user):
 def setup_tailscale_expose(ctx, proxy, head_host, cluster, port, set_proxy_host, user):
     """Publish the inference endpoint on the tailnet.
 
-    ``--proxy`` reports the local sparkrun proxy's tailnet URL. ``--head`` /
+    ``--proxy`` reports the local {app_command} proxy's tailnet URL. ``--head`` /
     ``--cluster`` configure a ``tailscale serve --tcp`` forward on the head host
     (the inbound path that works in userspace-networking mode) and print the
     ``http://<tailnet-ip>:<port>/v1`` endpoint.

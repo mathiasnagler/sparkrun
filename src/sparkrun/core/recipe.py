@@ -845,10 +845,10 @@ def _url_cache_path(url: str) -> Path:
     """Return the local cache path for a remote recipe URL."""
     import hashlib
 
-    from sparkrun.core.config import DEFAULT_CACHE_DIR
+    from sparkrun.core.config import resolve_sparkrun_cache_dir
 
     url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
-    return DEFAULT_CACHE_DIR / "remote-recipes" / ("%s.yaml" % url_hash)
+    return resolve_sparkrun_cache_dir() / "remote-recipes" / ("%s.yaml" % url_hash)
 
 
 def fetch_and_cache_recipe(url: str, *, allow_untrusted_host: bool = False) -> Path:

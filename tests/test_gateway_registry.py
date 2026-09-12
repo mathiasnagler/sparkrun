@@ -146,14 +146,17 @@ def test_the_sole_enabled_gateway_wins_when_default_is_off(fake_gateway, monkeyp
     assert resolve_gateway() == FAKE_GATEWAY
 
 
-def test_registration_replaces_by_name(fake_gateway):
-    """What lets an out-of-tree plugin substitute an in-tree implementation."""
+def test_registration_rejects_distinct_provider_by_name(fake_gateway):
+    """Installation order cannot reinterpret a shared gateway selector."""
 
     class Replacement(FakeGateway):
         pass
 
-    register_gateway(FAKE_GATEWAY, feature_flag=FAKE_FLAG, loader=lambda: Replacement)
-    assert gateway_class(FAKE_GATEWAY) is Replacement
+    from sparkrun.core.installed_plugins import PluginConflictError
+
+    with pytest.raises(PluginConflictError, match="claimed by both"):
+        register_gateway(FAKE_GATEWAY, feature_flag=FAKE_FLAG, loader=lambda: Replacement)
+    assert gateway_class(FAKE_GATEWAY) is FakeGateway
 
 
 # --------------------------------------------------------------------------

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import render_identity_text
+
 import sys
 
 import click
@@ -123,8 +125,8 @@ def _report_status(host_list, ssh_kwargs, dry_run) -> int:
         click.echo("      A lock shows up as SM CLOCK capped below MAX SM while the GPU is busy.")
         click.echo("      AT BOOT is the %s unit, which reapplies a lock after reboot." % UNIT_NAME)
         click.echo()
-        click.echo("Cap the clock:  sparkrun setup throttle-gpu-clock %d" % SUGGESTED_MAX_CLOCK_MHZ)
-        click.echo("Remove a cap:   sparkrun setup throttle-gpu-clock --clear")
+        click.echo(render_identity_text("Cap the clock:  {app_command} setup throttle-gpu-clock %d" % SUGGESTED_MAX_CLOCK_MHZ))
+        click.echo(render_identity_text("Remove a cap:   {app_command} setup throttle-gpu-clock --clear"))
 
     for host, message in failures:
         click.echo("  [FAIL] %s: %s" % (host, message), err=True)
@@ -173,7 +175,7 @@ def setup_throttle_gpu_clock(ctx, max_clock, hosts, hosts_file, cluster_name, us
     reasonable starting point on DGX Spark.
 
     Passing ``0`` or ``--clear`` removes the lock (``--reset-gpu-clocks``) and
-    any boot-time unit sparkrun installed.
+    any boot-time unit {app_command} installed.
 
     A lock is driver state: it does not survive a reboot, and it is dropped
     when the driver unloads (which on Linux happens once the last client
@@ -185,13 +187,13 @@ def setup_throttle_gpu_clock(ctx, max_clock, hosts, hosts_file, cluster_name, us
 
     Examples:
 
-      sparkrun setup throttle-gpu-clock --cluster mylab
+      {app_command} setup throttle-gpu-clock --cluster mylab
 
-      sparkrun setup throttle-gpu-clock 2150 --cluster mylab
+      {app_command} setup throttle-gpu-clock 2150 --cluster mylab
 
-      sparkrun setup throttle-gpu-clock 2150 --persistent --cluster mylab
+      {app_command} setup throttle-gpu-clock 2150 --persistent --cluster mylab
 
-      sparkrun setup throttle-gpu-clock --clear --cluster mylab
+      {app_command} setup throttle-gpu-clock --clear --cluster mylab
     """
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host

@@ -190,11 +190,11 @@ def test_benchmark_event_is_anonymous_and_low_cardinality():
         metadata={"bench_args": {"depth": 4, "prompt_file": "/home/drew/private/prompts.txt"}},
         state_dir="/home/drew/private/state",
         resumed=True,
-        submission_id="sub-secret",
+        integration_results={"arena": {"submission_id": "sub-secret", "uploaded": True}},
     )
     options = api.BenchmarkOptions(
         recipe=recipe,
-        arena=True,
+        integrations={"arena": {}},
         dry_run=True,
         overrides={"tensor_parallel": 2},
     )
@@ -210,7 +210,8 @@ def test_benchmark_event_is_anonymous_and_low_cardinality():
     assert event["recipe_source"]["from_file"] is True
     assert event["parallelism"]["tensor_parallel"] == 2
     assert event["model_quantization"] == {"quantization": "nvfp4", "quant_bits": 4, "model_dtype": "nvfp4", "kv_dtype": "fp8"}
-    assert event["submission_id_present"] is True
+    assert event["integrations"] == ["arena"]
+    assert "arena" not in event and "submission_id_present" not in event
     payload = json.dumps(event, sort_keys=True)
     for private_value in ("host-a", "host-b", "bench_secret", "sparkrun_secret", "sub-secret", "/home/drew/private"):
         assert private_value not in payload

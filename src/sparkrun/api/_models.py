@@ -166,6 +166,16 @@ class RunOptions:
     recipe_ref: str | None = None
     """Simplified recipe reference for display (e.g. ``@spark-arena/UUID``)."""
 
+    def executor_overrides(self) -> dict[str, Any]:
+        """Return caller settings for the shared executor resolution chain.
+
+        An executor selector in executor_config retains its existing precedence
+        over the shorthand executor field. The returned mapping is independent.
+        """
+        values = {"executor": self.executor} if self.executor else {}
+        values.update(self.executor_config or {})
+        return values
+
 
 @dataclass(frozen=True)
 class RunPlan:

@@ -1,5 +1,5 @@
-"""Allow running sparkrun as: python -m sparkrun"""
+"""Run the selected distribution through the public early entry point."""
 
-from sparkrun.cli import main
+from sparkrun.application import main
 
 main()

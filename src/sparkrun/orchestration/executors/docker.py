@@ -23,6 +23,8 @@ from sparkrun.orchestration.executors._base import (
     LABEL_RUNTIME,
     Executor,
 )
+from sparkrun.core.application_profile import get_application_profile
+from sparkrun.core.ownership import OWNER_LABEL, owns_resource, docker_owner_guard
 from sparkrun.core.log_source import MODE_FILE, SERVE_LOG_PATH
 from sparkrun.orchestration.job_metadata import INTENT_ID_LEN, PLACEMENT_TOKEN_LEN
 from sparkrun.utils.shell import args_list_to_shell_str, assert_safe_mount_source, b64_wrap_bash, quote
@@ -202,7 +204,7 @@ def _optional_device_arg(dev: str) -> str:
 # ``cluster`` captures the full ``sparkrun_...`` cluster_id; ``intent``
 # captures the intent_id prefix.
 _CONTAINER_NAME_RE = re.compile(
-    r"^(?P<cluster>sparkrun_(?P<intent>[0-9a-f]{%d})_[0-9a-f]{%d})_(?P<role>solo|head|worker|node_(?P<rank>\d+))$"
+    r"^(?P<cluster>[a-z][a-z0-9-]{0,47}_(?P<intent>[0-9a-f]{%d})_[0-9a-f]{%d})_(?P<role>solo|head|worker|node_(?P<rank>\d+))$"
     % (INTENT_ID_LEN, PLACEMENT_TOKEN_LEN)
 )
 
@@ -476,6 +478,8 @@ class DockerExecutor(Executor):
         if container_name:
             parts.extend(["--name", quote(container_name)])
 
+        sparkrun_labels = dict(sparkrun_labels or {})
+        sparkrun_labels[OWNER_LABEL] = get_application_profile().id
         if sparkrun_labels:
             for key, value in sorted(sparkrun_labels.items()):
                 parts.extend(["--label", quote("%s=%s" % (key, value))])
@@ -533,8 +537,8 @@ class DockerExecutor(Executor):
         """Generate a docker stop/rm command string."""
         quoted = quote(container_name)
         if force:
-            return "docker rm -f %s 2>/dev/null || true" % quoted
-        return "docker stop %s 2>/dev/null || true" % quoted
+            return "%s && { docker rm -f %s 2>/dev/null || true; }" % (docker_owner_guard(container_name, allow_missing=True), quoted)
+        return "%s && { docker stop %s 2>/dev/null || true; }" % (docker_owner_guard(container_name, allow_missing=True), quoted)
 
     def logs_cmd(
         self,
@@ -690,7 +694,7 @@ class DockerExecutor(Executor):
         callers can detect this via ``status.for_host(h) is None``.
         """
         from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy
-        from sparkrun.core.hardware import default_dgx_spark_hardware
+        from sparkrun.core.hardware import resolve_fallback_hardware
         from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
         if not hosts:
@@ -726,7 +730,7 @@ class DockerExecutor(Executor):
                 errors[host] = (getattr(r, "stderr", "") or "").strip() or "unreachable"
                 continue
 
-            hw = (host_hardware or {}).get(host) or default_dgx_spark_hardware()
+            hw = (host_hardware or {}).get(host) or resolve_fallback_hardware()
             capacity = hw.total_gpus
 
             workloads, used = _parse_docker_ps_output(r.stdout, host)
@@ -1057,6 +1061,7 @@ def _parse_docker_ps_output(stdout: str, host: str) -> tuple[list, int]:
 
     # Group sightings by cluster_id so we can aggregate ranks_on_host.
     by_cluster: dict[str, dict] = {}
+    foreign_slots = 0
 
     for line in stdout.splitlines():
         line = line.strip()
@@ -1084,6 +1089,9 @@ def _parse_docker_ps_output(stdout: str, host: str) -> tuple[list, int]:
         role = m.group("role") or "?"
 
         labels = _parse_docker_labels(entry.get("Labels") or "")
+        if not owns_resource(name, labels):
+            foreign_slots += 1
+            continue
         # Labels take precedence when present (future-proof for richer
         # tagging); fall back to name-derived rank otherwise.
         rank = int(labels[LABEL_RANK]) if LABEL_RANK in labels else rank_from_name
@@ -1147,7 +1155,7 @@ def _parse_docker_ps_output(stdout: str, host: str) -> tuple[list, int]:
             )
         )
 
-    return workloads, total_ranks_on_host
+    return workloads, total_ranks_on_host + foreign_slots
 
 
 def _load_metadata_safely(cluster_id: str) -> dict | None:

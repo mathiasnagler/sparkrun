@@ -3,7 +3,7 @@
 # Params: {user}
 set -euo pipefail
 
-SUDOERS_FILE="/etc/sudoers.d/sparkrun-dropcaches-{user}"
+SUDOERS_FILE="/etc/sudoers.d/@RESOURCE_NAMESPACE@-dropcaches-{user}"
 
 cat > "$SUDOERS_FILE" << SUDOERS_EOF
 # Installed by: sparkrun setup clear-cache --save-sudo

@@ -22,7 +22,7 @@ from sparkrun.core.validation import check_readiness
 from sparkrun.orchestration.executors._base import ExecutorConfig
 from sparkrun.orchestration.executors.docker import DockerExecutor
 from sparkrun.orchestration.executors.local import LocalExecutor
-from sparkrun.orchestration.executors.k8s import K8sExecutor
+from sparkrun.plugins.k8s.executor import K8sExecutor
 from sparkrun.orchestration.startup import validate_observation
 from sparkrun.scripts import startup_probe
 

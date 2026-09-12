@@ -6,7 +6,7 @@ import hashlib
 import logging
 import math
 from abc import abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from logging import Logger
 from pathlib import Path
@@ -18,6 +18,7 @@ from scitrera_app_framework import Plugin, Variables
 from sparkrun.core.bootstrap import EXT_BENCHMARKING_FRAMEWORKS
 
 if TYPE_CHECKING:
+    from sparkrun.api._models import RunResult
     from sparkrun.core.recipe import Recipe
     from sparkrun.core.launcher import LaunchResult, ServeReadiness
     from sparkrun.benchmarking.scheduler import BenchTask
@@ -159,7 +160,10 @@ class BenchmarkingPlugin(Plugin):
             result_file: Path to saved results file (if any).
 
         Returns:
-            Structured results dict.
+            Structured results dict. API results support string-keyed mappings,
+            lists/tuples, and primitive scalars. Date/datetime and pathlib paths
+            are normalized to strings before export, persistence, and hooks;
+            other application objects are rejected at the framework boundary.
         """
         ...
 
@@ -402,8 +406,13 @@ def startup_timing_metadata(readiness: ServeReadiness | None, *, resumed: bool =
 
 
 @dataclass
-class BenchmarkResult:
-    """Result of a benchmark run with output file paths."""
+class BenchmarkExecution:
+    """Mutable orchestration record, distinct from public API BenchmarkResult.
+
+    Integrations receive a detached BenchmarkMeasurement snapshot. Recipe,
+    framework and launch_result can be absent during a completed-measurement
+    publication retry. This record remains private orchestration state.
+    """
 
     # benchmark results
     success: bool = False
@@ -423,6 +432,10 @@ class BenchmarkResult:
     host_list: Optional[list[str]] = None
     container_image: Optional[str] = None
 
+    benchmark_id: str = ""
+    state_dir: Optional[str] = None
+    integration_results: Optional[dict[str, dict[str, Any]]] = None
+
     # benchmark info
     framework: Optional["BenchmarkingPlugin"] = None
     profile: Optional[str] = None
@@ -439,9 +452,10 @@ class BenchmarkResult:
     # invocation*, which for a run that re-emitted recorded results is not
     # when anything was measured — so a stale result was indistinguishable
     # from a fresh measurement in the exported artifact (issue #267).
-    # ``measured_at`` carries the reused state's last-write time.
+    # ``measured_at`` is the first measurement time (a pinned fallback for legacy state).
     resumed: bool = False
     measured_at: Optional[str] = None
+    measurement_completed_at: Optional[str] = None
 
     # Launch-stage timing. ``readiness`` carries endpoint wait durations and,
     # when supported, a separate Docker-start observation. The span timeline
@@ -449,6 +463,13 @@ class BenchmarkResult:
     # launched) and are omitted from the metadata rather than zeroed — a
     # recorded 0.0s would read as an instantaneous launch.
     readiness: Optional["ServeReadiness"] = None
+
+    run_result: Optional["RunResult"] = None
+    framework_name: str = ""
+    category: str = ""
+    integration_errors: dict[str, str] = field(default_factory=dict)
+    container_image_sha: str | None = None
+    container_image_sha_pinned: bool = False
 
     @property
     def output_csv(self):
@@ -508,16 +529,19 @@ class BenchmarkResult:
             meta["launch"] = timeline.export()
         return meta
 
-    def generate_metadata(self, *, redact_hosts: bool = True):
+    def generate_metadata(self, *, redact_hosts: bool = True, resolve_image: bool = True):
         """Build the provenance mapping for this result.
 
         *redact_hosts* pseudonymises the recorded host set.  It defaults to
         ``True`` because this mapping's consumer is the Spark Arena
         submission — a published artifact must fail closed on host identity,
-        so a caller that genuinely wants real addresses has to ask.
+        so callers wanting real addresses must ask. ``resolve_image=False``
+        builds provenance solely from recorded values and does no image
+        resolution; plugin snapshots use that mode. Legacy direct callers may
+        retain best-effort builder resolution with the default True.
         """
         from sparkrun.models.download import parse_gguf_model_spec
-        from sparkrun.utils.cli_formatters import RUNTIME_DISPLAY as _RUNTIME_DISPLAY
+        from sparkrun.utils.runtime_display import RUNTIME_DISPLAY as _RUNTIME_DISPLAY
 
         # Use launch_result fields when available, fall back to direct fields
         # (e.g. when --skip-run was used and no launch occurred).
@@ -547,7 +571,7 @@ class BenchmarkResult:
             # Pre-resolved (and persisted) on first launch of this resumable run.
             recipe_container = self.longterm_image_ref
             container_pinned = self.longterm_image_pinned
-        elif launch_result and launch_result.builder:
+        elif resolve_image and launch_result and launch_result.builder:
             try:
                 resolved_image, pinned = launch_result.builder.resolve_long_term_image(
                     container_image=launch_result.container_image,
@@ -601,9 +625,9 @@ class BenchmarkResult:
                 "hash": recipe_hash,
             },
             "timing": {
-                "start": self.start_time.isoformat(),
-                "end": self.end_time.isoformat(),
-                "duration": (self.end_time - self.start_time).total_seconds(),
+                "start": self.start_time.isoformat() if self.start_time else None,
+                "end": self.end_time.isoformat() if self.end_time else None,
+                "duration": (self.end_time - self.start_time).total_seconds() if self.start_time and self.end_time else None,
                 **self._launch_timing_meta(),
             },
             "cluster": _build_cluster_meta(recipe, overrides, cluster_id, host_list, redact=redact_hosts),
@@ -630,6 +654,10 @@ class BenchmarkResult:
             pass
 
         return metadata
+
+
+# Compatibility for existing framework consumers; new code names the execution record.
+BenchmarkResult = BenchmarkExecution
 
 
 def export_results(

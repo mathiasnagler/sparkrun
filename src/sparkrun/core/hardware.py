@@ -214,3 +214,14 @@ def default_dgx_spark_hardware() -> HostHardware:
         ],
         notes="default (no explicit hardware metadata)",
     )
+
+
+def resolve_fallback_hardware() -> HostHardware:
+    """Legacy fallback is an explicit distribution policy, never device detection."""
+    from sparkrun.core.application_profile import get_application_profile
+
+    if get_application_profile().hardware_fallback != "dgx-spark":
+        raise ValueError(
+            "Target hardware metadata is required by %s; probe the target hosts before launching" % get_application_profile().id
+        )
+    return default_dgx_spark_hardware()

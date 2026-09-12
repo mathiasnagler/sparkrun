@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sparkrun.core.config import DEFAULT_CACHE_DIR
+from sparkrun.core.config import resolve_sparkrun_cache_dir
 from sparkrun.utils import format_duration as _format_duration  # noqa: F401 — re-exported for local callers
 from sparkrun.utils.shell import quote, safe_remote_path
 
@@ -79,7 +79,7 @@ def describe_tuning_timeout(timeout: int) -> str:
 
 def _get_tuning_dir(cache_subdir: str) -> Path:
     """Return the host-side directory for tuning configs under *cache_subdir*."""
-    return DEFAULT_CACHE_DIR / cache_subdir
+    return resolve_sparkrun_cache_dir() / cache_subdir
 
 
 def tuning_configs_present(tuning_dir: Path) -> bool:
@@ -200,7 +200,7 @@ class BaseTuner:
         """Derive the remote-host output directory.
 
         When the control machine is non-Linux (e.g. macOS) or the SSH user
-        differs from the local user, the local ``DEFAULT_CACHE_DIR`` path
+        differs from the local user, the local ``resolve_sparkrun_cache_dir()`` path
         won't exist on remote Linux hosts.  This method replaces the local
         cache prefix with a Linux-appropriate path derived from the SSH user.
 
@@ -214,6 +214,14 @@ class BaseTuner:
         if self.__dict__.get("_custom_output_dir"):
             return self.output_dir
 
+        from sparkrun.core.application_profile import get_application_profile
+
+        if get_application_profile().id != "sparkrun":
+            from sparkrun.orchestration.primitives import probe_remote_sparkrun_cache
+
+            relative = Path(self.output_dir).relative_to(resolve_sparkrun_cache_dir())
+            return str(Path(probe_remote_sparkrun_cache(self.host, dry_run=self.dry_run, **self.ssh_kwargs)) / relative)
+
         ssh_user = self.ssh_kwargs.get("ssh_user")
         local_user = os.environ.get("USER")
 
@@ -221,7 +229,7 @@ class BaseTuner:
             _user = ssh_user or local_user or "user"
             # Replace the local cache prefix with the remote user's cache dir.
             # output_dir is always under DEFAULT_CACHE_DIR/<subdir>.
-            local_prefix = str(DEFAULT_CACHE_DIR)
+            local_prefix = str(resolve_sparkrun_cache_dir())
             if self.output_dir.startswith(local_prefix):
                 suffix = self.output_dir[len(local_prefix) :]
                 return "/home/%s/.cache/sparkrun%s" % (_user, suffix)

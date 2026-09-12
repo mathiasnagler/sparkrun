@@ -4,7 +4,8 @@ Concrete executor implementations live in sibling modules:
 
 - :mod:`.docker` — :class:`DockerExecutor` (default).
 - :mod:`.local` — :class:`LocalExecutor` (experimental, no container).
-- :mod:`.k8s` — :class:`K8sExecutor` (experimental draft, kubectl-driven).
+Optional executors are registered by their owning integrations, including
+:mod:`sparkrun.plugins.k8s`.
 
 The common ABC + config + extension-point constant live in
 :mod:`._base` and are re-exported by

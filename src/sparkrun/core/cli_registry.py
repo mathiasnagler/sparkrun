@@ -18,6 +18,8 @@ which legitimately needs Click.
 
 from __future__ import annotations
 
+from sparkrun.core.registration import enlist_registry_state, register_unique
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -48,6 +50,8 @@ class CliCommandSpec:
 
 _CLI_EXTENSIONS: list[CliCommandSpec] = []
 
+enlist_registry_state(globals(), "_CLI_EXTENSIONS")
+
 
 def register_cli_command(
     command: "click.Command | Callable[[], click.Command]",
@@ -68,8 +72,8 @@ def register_cli_command(
         name: Command name. Required with a callable (idempotence must not
             have to build the command); inferred from a ``click.Command``.
 
-    Idempotent by ``(parent, name)`` so repeated plugin loads — which happen
-    routinely in tests — don't double-register.
+    Repeated registration by the same callback or loader is idempotent.
+    A different provider claiming the same path and name is an error.
     """
     resolved_name = name or getattr(command, "name", None)
     if not resolved_name:
@@ -78,6 +82,16 @@ def register_cli_command(
     spec = CliCommandSpec(name=resolved_name, command=command, parent=tuple(parent))
     for existing in _CLI_EXTENSIONS:
         if existing.parent == spec.parent and existing.name == spec.name:
+
+            def provider(value):
+                callback = getattr(value, "callback", None) or value
+                return (getattr(callback, "__module__", None), getattr(callback, "__qualname__", None))
+
+            same_provider = provider(existing.command) == provider(spec.command) != (None, None)
+            if existing.command is not spec.command and not same_provider:
+                from sparkrun.core.installed_plugins import PluginConflictError
+
+                raise PluginConflictError("CLI command %r is claimed by both %r and %r" % (resolved_name, existing.command, spec.command))
             return
     _CLI_EXTENSIONS.append(spec)
 
@@ -87,4 +101,46 @@ def registered_cli_commands() -> list[CliCommandSpec]:
     return list(_CLI_EXTENSIONS)
 
 
-__all__ = ["CliCommandSpec", "register_cli_command", "registered_cli_commands"]
+__all__ = [
+    "CliCommandSpec",
+    "register_cli_command",
+    "registered_cli_commands",
+    "CliOptionSpec",
+    "register_cli_options",
+    "registered_cli_options",
+]
+
+
+@dataclass(frozen=True)
+class CliOptionSpec:
+    """Lazy options for an extensible command target, grouped by integration."""
+
+    owner: str
+    target: str
+    loader: Callable[[], list[Any]]
+    decode: Callable[[dict[str, Any]], dict[str, Any] | None]
+    feature_flag: str | None = None
+
+
+_CLI_OPTIONS: dict[tuple[str, str], CliOptionSpec] = {}
+
+enlist_registry_state(globals(), "_CLI_OPTIONS")
+
+
+def register_cli_options(spec: CliOptionSpec) -> None:
+    if not spec.owner or not spec.target:
+        raise ValueError("CLI options require an owner and target")
+    if not callable(spec.loader) or not callable(spec.decode):
+        raise TypeError("CLI option loader and decoder must be callable")
+    key = (spec.target, spec.owner)
+    register_unique(_CLI_OPTIONS, key, spec, description="CLI options")
+
+
+def registered_cli_options(target: str) -> list[CliOptionSpec]:
+    from sparkrun.core.features import feature_gate_enabled
+
+    return [
+        spec
+        for spec in _CLI_OPTIONS.values()
+        if spec.target == target and (not spec.feature_flag or feature_gate_enabled(spec.feature_flag))
+    ]

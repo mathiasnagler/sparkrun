@@ -6,11 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
-# Collapse vllm variants into a single display runtime for the website / metadata export.
-RUNTIME_DISPLAY: dict[str, str] = {
-    "vllm-distributed": "vllm",
-    "vllm-ray": "vllm",
-}
+from sparkrun.utils.runtime_display import RUNTIME_DISPLAY  # noqa: F401 — presentation export
 
 if TYPE_CHECKING:
     from collections.abc import Container

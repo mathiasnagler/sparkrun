@@ -25,7 +25,7 @@ from sparkrun.orchestration.executor import (
     resolve_executor,
 )
 from sparkrun.orchestration.executors.docker import DockerExecutor
-from sparkrun.orchestration.executors.k8s import K8sExecutor
+from sparkrun.plugins.k8s.executor import K8sExecutor, K8sExecutorConfig
 from sparkrun.orchestration.executors.local import LocalExecutor
 
 
@@ -36,7 +36,7 @@ from sparkrun.orchestration.executors.local import LocalExecutor
 
 class TestExecutorConfigK8sFields:
     def test_k8s_selector_via_executor_key(self):
-        cfg = ExecutorConfig.from_chain({"executor": "k8s"})
+        cfg = K8sExecutorConfig.from_chain({"executor": "k8s"})
         assert cfg.executor_type == "k8s"
 
     def test_k8s_fields_round_trip(self):
@@ -48,7 +48,7 @@ class TestExecutorConfigK8sFields:
             "k8s_image_pull_policy": "Always",
             "kubeconfig": "/etc/sparkrun/kubeconfig",
         }
-        cfg = ExecutorConfig.from_chain(chain)
+        cfg = K8sExecutorConfig.from_chain(chain)
         assert cfg.executor_type == "k8s"
         assert cfg.k8s_namespace == "inference"
         assert cfg.k8s_context == "prod-cluster"
@@ -57,7 +57,7 @@ class TestExecutorConfigK8sFields:
         assert cfg.kubeconfig == "/etc/sparkrun/kubeconfig"
 
     def test_k8s_fields_default_to_none(self):
-        cfg = ExecutorConfig()
+        cfg = K8sExecutorConfig()
         assert cfg.k8s_namespace is None
         assert cfg.k8s_context is None
         assert cfg.k8s_node_selector is None
@@ -93,7 +93,7 @@ class TestResolveExecutorK8sDispatch:
 
 def _k8s(**cfg_kwargs) -> K8sExecutor:
     cfg_kwargs.setdefault("executor_type", "k8s")
-    return K8sExecutor(ExecutorConfig(**cfg_kwargs))
+    return K8sExecutor(K8sExecutorConfig(**cfg_kwargs))
 
 
 class TestK8sExecutorBasics:

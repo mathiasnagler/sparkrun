@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 from sparkrun.cli import main
 from sparkrun.cli._self_update import (
+    owning_executable,
     channel_from_flags,
     describe_change,
     identity_changed,
@@ -198,8 +199,10 @@ def _run(monkeypatch, tmp_path, args, *, stored=None, new_json='{"version": "9.9
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
         if cmd[1:3] == ["tool", "list"]:
-            return mock.Mock(returncode=0, stdout="sparkrun v1\n", stderr="")
-        if cmd == ["sparkrun", "setup", "version", "--json"]:
+            import sys
+
+            return mock.Mock(returncode=0, stdout="sparkrun v1 (%s)\n" % sys.prefix, stderr="")
+        if cmd == [owning_executable(), "setup", "version", "--json"]:
             return mock.Mock(returncode=0, stdout=new_json, stderr="")
         return mock.Mock(returncode=0, stdout="", stderr="")
 
@@ -321,7 +324,7 @@ def test_update_noop_skips_the_registry_update_subprocess(monkeypatch, tmp_path)
 
     _, calls, _ = _captured_update_event(monkeypatch, tmp_path, ["update"], new_json=same)
 
-    assert ["sparkrun", "registry", "update"] not in calls
+    assert [owning_executable(), "registry", "update"] not in calls
 
 
 def test_update_with_a_real_upgrade_still_reports_and_shells_out(monkeypatch, tmp_path):
@@ -331,7 +334,7 @@ def test_update_with_a_real_upgrade_still_reports_and_shells_out(monkeypatch, tm
     _, calls, event = _captured_update_event(monkeypatch, tmp_path, ["update"], new_json=changed)
 
     assert event["upgraded"] is True
-    assert ["sparkrun", "registry", "update"] in calls
+    assert [owning_executable(), "registry", "update"] in calls
 
 
 def test_top_update_survives_telemetry_failure(monkeypatch, tmp_path):

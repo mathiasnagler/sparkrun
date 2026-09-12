@@ -8,16 +8,20 @@ cluster or network — urllib / subprocess are stubbed.
 
 from __future__ import annotations
 
+from sparkrun import api
+from sparkrun.plugins.k8s import api as k8s_api
+from sparkrun.plugins.k8s.config import K8sSettings
+
 import hashlib
 import os
 
 import pytest
 
-from sparkrun.orchestration.k8s import kubectl, manifests, serviceaccount
-from sparkrun.orchestration.k8s.client import KubectlClient
-from sparkrun.orchestration.k8s.connect import ClusterInfo, probe_cluster
-from sparkrun.orchestration.k8s.context import resolve_kube_target
-from sparkrun.orchestration.k8s.errors import KubectlDownloadError, KubectlNotFoundError
+from sparkrun.plugins.k8s.orchestration import kubectl, manifests, serviceaccount
+from sparkrun.plugins.k8s.orchestration.client import KubectlClient
+from sparkrun.plugins.k8s.orchestration.connect import ClusterInfo, probe_cluster
+from sparkrun.plugins.k8s.orchestration.context import resolve_kube_target
+from sparkrun.plugins.k8s.orchestration.errors import KubectlDownloadError, KubectlNotFoundError
 from sparkrun.orchestration.ssh import RemoteResult
 
 
@@ -193,7 +197,7 @@ def test_client_run_returns_remote_result(monkeypatch):
         stderr = ""
 
     monkeypatch.setattr(
-        "sparkrun.orchestration.k8s.client.subprocess.run",
+        "sparkrun.plugins.k8s.orchestration.client.subprocess.run",
         lambda *a, **k: _Proc(),
     )
     result = client.run(["get", "pods"])
@@ -209,7 +213,7 @@ def test_client_run_json_parses(monkeypatch):
         stdout = '{"a": 1}'
         stderr = ""
 
-    monkeypatch.setattr("sparkrun.orchestration.k8s.client.subprocess.run", lambda *a, **k: _Proc())
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.client.subprocess.run", lambda *a, **k: _Proc())
     assert client.run_json(["version", "-o", "json"]) == {"a": 1}
 
 
@@ -232,7 +236,7 @@ def test_client_exec_builds_kubectl_exec(monkeypatch):
         captured["cmd"] = cmd
         return _Proc()
 
-    monkeypatch.setattr("sparkrun.orchestration.k8s.client.subprocess.run", _run)
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.client.subprocess.run", _run)
     client.exec("mypod", "echo hi", container="c1")
     cmd = captured["cmd"]
     assert "exec" in cmd and "mypod" in cmd and "-c" in cmd and "c1" in cmd and "--" in cmd
@@ -400,17 +404,17 @@ def test_config_kubectl_accessors_and_pin(tmp_path):
     from sparkrun.core.config import SparkrunConfig
 
     cfg = SparkrunConfig(tmp_path / "config.yaml")
-    assert cfg.k8s_defaults == {}
-    assert cfg.kubectl_path is None
+    assert K8sSettings(cfg).k8s_defaults == {}
+    assert K8sSettings(cfg).kubectl_path is None
     cfg.set("k8s", {"kubectl": {"path": "/x/kubectl", "version": "v1.31.0"}})
-    assert cfg.kubectl_path == "/x/kubectl"
-    assert cfg.kubectl_version == "v1.31.0"
+    assert K8sSettings(cfg).kubectl_path == "/x/kubectl"
+    assert K8sSettings(cfg).kubectl_version == "v1.31.0"
 
-    cfg.pin_kubectl_version("prod-ctx", "v1.30.2")
-    assert cfg.kubectl_pinned_version("prod-ctx") == "v1.30.2"
-    assert cfg.kubectl_pinned_version("other") is None
+    K8sSettings(cfg).pin_kubectl_version("prod-ctx", "v1.30.2")
+    assert K8sSettings(cfg).kubectl_pinned_version("prod-ctx") == "v1.30.2"
+    assert K8sSettings(cfg).kubectl_pinned_version("other") is None
     # existing kubectl settings preserved after pin
-    assert cfg.kubectl_path == "/x/kubectl"
+    assert K8sSettings(cfg).kubectl_path == "/x/kubectl"
 
 
 # ---------------------------------------------------------------------------
@@ -431,16 +435,14 @@ def _sctx(tmp_path):
 
 
 def test_api_ensure_kubectl_translates_error(tmp_path):
-    from sparkrun import api
 
     sctx = _sctx(tmp_path)
-    with pytest.raises(api.k8s.KubectlUnavailable):
-        api.k8s.ensure_kubectl(sctx, version="v9.9.9", download=False)
+    with pytest.raises(k8s_api.KubectlUnavailable):
+        k8s_api.ensure_kubectl(sctx, version="v9.9.9", download=False)
 
 
 def test_api_cluster_info_pins_server_version(tmp_path, monkeypatch):
-    from sparkrun import api
-    from sparkrun.api import k8s as apik8s
+    from sparkrun.plugins.k8s import api as apik8s
 
     sctx = _sctx(tmp_path)
 
@@ -448,10 +450,10 @@ def test_api_cluster_info_pins_server_version(tmp_path, monkeypatch):
     monkeypatch.setattr(apik8s._ops, "make_client", lambda *a, **k: object())
     monkeypatch.setattr(apik8s._ops, "probe_cluster", lambda client: fake)
 
-    info = api.k8s.cluster_info(sctx)
+    info = k8s_api.cluster_info(sctx)
     assert info.server_version == "v1.30.2+ck1"
     # normalized (+ck1 stripped) pin persisted
-    assert sctx.config.kubectl_pinned_version("prod") == "v1.30.2"
+    assert K8sSettings(sctx.config).kubectl_pinned_version("prod") == "v1.30.2"
 
 
 # ---------------------------------------------------------------------------
@@ -460,10 +462,9 @@ def test_api_cluster_info_pins_server_version(tmp_path, monkeypatch):
 
 
 def test_k8s_executor_prefix_uses_resolved_path():
-    from sparkrun.orchestration.executors._base import ExecutorConfig
-    from sparkrun.orchestration.executors.k8s import K8sExecutor
+    from sparkrun.plugins.k8s.executor import K8sExecutor, K8sExecutorConfig
 
-    ex = K8sExecutor(ExecutorConfig(kubectl_path="/opt/kubectl", k8s_context="ctx", k8s_namespace="ns"))
+    ex = K8sExecutor(K8sExecutorConfig(kubectl_path="/opt/kubectl", k8s_context="ctx", k8s_namespace="ns"))
     cmd = ex.run_cmd(image="img:tag", command="echo hi", container_name="pod1")
     assert cmd.startswith("/opt/kubectl ")
     assert "--context ctx" in cmd
@@ -471,18 +472,16 @@ def test_k8s_executor_prefix_uses_resolved_path():
 
 
 def test_k8s_executor_prefix_falls_back_to_bare_kubectl():
-    from sparkrun.orchestration.executors._base import ExecutorConfig
-    from sparkrun.orchestration.executors.k8s import K8sExecutor
+    from sparkrun.plugins.k8s.executor import K8sExecutor, K8sExecutorConfig
 
-    ex = K8sExecutor(ExecutorConfig(executor_type="k8s"))
+    ex = K8sExecutor(K8sExecutorConfig(executor_type="k8s"))
     cmd = ex.run_cmd(image="img:tag", command="echo hi", container_name="pod1")
     assert cmd.startswith("kubectl ")
 
 
 def test_k8s_executor_finalize_config_resolves_cached_binary(tmp_path):
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.orchestration.executors._base import ExecutorConfig
-    from sparkrun.orchestration.executors.k8s import K8sExecutor
+    from sparkrun.plugins.k8s.executor import K8sExecutor, K8sExecutorConfig
 
     os_name, arch = kubectl.detect_os(), kubectl.detect_arch()
     binary = kubectl.cached_binary_path(tmp_path, "v1.31.0", os_name, arch)
@@ -492,20 +491,19 @@ def test_k8s_executor_finalize_config_resolves_cached_binary(tmp_path):
     cfg = SparkrunConfig(tmp_path / "config.yaml")
     cfg.set("cache_dir", str(tmp_path))
 
-    ex = K8sExecutor(ExecutorConfig(executor_type="k8s"))
+    ex = K8sExecutor(K8sExecutorConfig(executor_type="k8s"))
     ex.finalize_config(config=cfg)
     assert ex.config.kubectl_path == str(binary)
 
 
 def test_k8s_executor_finalize_config_skips_partial_config(tmp_path):
-    from sparkrun.orchestration.executors._base import ExecutorConfig
-    from sparkrun.orchestration.executors.k8s import K8sExecutor
+    from sparkrun.plugins.k8s.executor import K8sExecutor, K8sExecutorConfig
 
     class _PartialConfig:
         default_executor = "k8s"
         executor_config: dict = {}
 
-    ex = K8sExecutor(ExecutorConfig(executor_type="k8s"))
+    ex = K8sExecutor(K8sExecutorConfig(executor_type="k8s"))
     ex.finalize_config(config=_PartialConfig())  # must not raise
     assert ex.config.kubectl_path is None
 
@@ -513,7 +511,7 @@ def test_k8s_executor_finalize_config_skips_partial_config(tmp_path):
 def test_resolve_executor_wires_kubectl_path(tmp_path):
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.executor import resolve_executor
-    from sparkrun.orchestration.executors.k8s import K8sExecutor
+    from sparkrun.plugins.k8s.executor import K8sExecutor
 
     os_name, arch = kubectl.detect_os(), kubectl.detect_arch()
     binary = kubectl.cached_binary_path(tmp_path, "v1.31.0", os_name, arch)
@@ -535,7 +533,7 @@ def test_resolve_executor_wires_kubectl_path(tmp_path):
 
 
 def test_launcher_job_command_form():
-    from sparkrun.orchestration.k8s.job import LauncherJobSpec, build_launcher_manifests
+    from sparkrun.plugins.k8s.orchestration.job import LauncherJobSpec, build_launcher_manifests
 
     spec = LauncherJobSpec(
         name="cl-abc",
@@ -558,7 +556,7 @@ def test_launcher_job_command_form():
 
 
 def test_launcher_job_script_form_mounts_configmap():
-    from sparkrun.orchestration.k8s.job import LauncherJobSpec, build_launcher_manifests
+    from sparkrun.plugins.k8s.orchestration.job import LauncherJobSpec, build_launcher_manifests
 
     spec = LauncherJobSpec(name="cl-def", image="kubectl:1", namespace="ns", script="echo hi")
     docs = build_launcher_manifests(spec)
@@ -571,7 +569,7 @@ def test_launcher_job_script_form_mounts_configmap():
 
 
 def test_launcher_job_requires_exactly_one_payload():
-    from sparkrun.orchestration.k8s.job import LauncherJobSpec
+    from sparkrun.plugins.k8s.orchestration.job import LauncherJobSpec
 
     with pytest.raises(ValueError, match="exactly one"):
         LauncherJobSpec(name="x", image="i")
@@ -580,7 +578,7 @@ def test_launcher_job_requires_exactly_one_payload():
 
 
 def test_launcher_job_active_deadline_optional():
-    from sparkrun.orchestration.k8s.job import LauncherJobSpec, job_manifest
+    from sparkrun.plugins.k8s.orchestration.job import LauncherJobSpec, job_manifest
 
     without = job_manifest(LauncherJobSpec(name="j", image="i", command=["a"]))
     assert "activeDeadlineSeconds" not in without["spec"]
@@ -589,7 +587,7 @@ def test_launcher_job_active_deadline_optional():
 
 
 def test_client_run_launcher_job_applies(monkeypatch):
-    from sparkrun.orchestration.k8s.job import LauncherJobSpec
+    from sparkrun.plugins.k8s.orchestration.job import LauncherJobSpec
 
     client = KubectlClient("/usr/bin/kubectl", namespace="ns")
     captured = {}
@@ -611,27 +609,24 @@ def test_client_follow_job_logs_dry_run_noop():
 
 
 def test_api_run_launcher_job_requires_image(tmp_path):
-    from sparkrun import api
 
     sctx = _sctx(tmp_path)
-    with pytest.raises(api.k8s.LauncherJobError, match="launcher image"):
-        api.k8s.run_launcher_job(sctx, name="cl-1", command=["sparkrun"], dry_run=True)
+    with pytest.raises(k8s_api.LauncherJobError, match="launcher image"):
+        k8s_api.run_launcher_job(sctx, name="cl-1", command=["sparkrun"], dry_run=True)
 
 
 def test_api_run_launcher_job_uses_config_image(tmp_path):
-    from sparkrun import api
 
     sctx = _sctx(tmp_path)
     sctx.config.set("k8s", {"launcher_image": "ghcr.io/x/sparkrun:pinned"})
-    result = api.k8s.run_launcher_job(sctx, name="cl-1", command=["sparkrun", "run"], dry_run=True)
+    result = k8s_api.run_launcher_job(sctx, name="cl-1", command=["sparkrun", "run"], dry_run=True)
     assert result.dry_run and not result.applied
     assert result.image == "ghcr.io/x/sparkrun:pinned"
     assert "kind: Job" in result.manifests_yaml
 
 
 def test_api_run_launcher_job_dry_run_does_not_build_client(tmp_path, monkeypatch):
-    from sparkrun import api
-    from sparkrun.api import k8s as apik8s
+    from sparkrun.plugins.k8s import api as apik8s
 
     sctx = _sctx(tmp_path)
 
@@ -639,7 +634,7 @@ def test_api_run_launcher_job_dry_run_does_not_build_client(tmp_path, monkeypatc
         raise AssertionError("dry-run must not build a client / resolve kubectl")
 
     monkeypatch.setattr(apik8s._ops, "make_client", _boom)
-    result = api.k8s.run_launcher_job(sctx, name="cl-1", image="img", command=["x"], dry_run=True)
+    result = k8s_api.run_launcher_job(sctx, name="cl-1", image="img", command=["x"], dry_run=True)
     assert result.dry_run
 
 
@@ -675,7 +670,7 @@ _RTX_LABELS = {
 
 
 def test_inventory_dgx_spark_node_maps_to_gb10():
-    from sparkrun.orchestration.k8s.inventory import build_node_info
+    from sparkrun.plugins.k8s.orchestration.inventory import build_node_info
     from sparkrun.platforms import resolve_platform
 
     info = build_node_info(_node("spark-0", _SPARK_LABELS, capacity_gpu=1, allocatable_gpu=1))
@@ -689,7 +684,7 @@ def test_inventory_dgx_spark_node_maps_to_gb10():
 
 
 def test_inventory_rtx_pro_6000_maps_to_generic_nvidia():
-    from sparkrun.orchestration.k8s.inventory import build_node_info
+    from sparkrun.plugins.k8s.orchestration.inventory import build_node_info
     from sparkrun.platforms import resolve_platform
 
     info = build_node_info(_node("rtx-0", _RTX_LABELS, capacity_gpu=1, allocatable_gpu=1))
@@ -701,7 +696,7 @@ def test_inventory_rtx_pro_6000_maps_to_generic_nvidia():
 
 
 def test_inventory_hybrid_cluster_distinguishes_node_classes():
-    from sparkrun.orchestration.k8s.inventory import parse_nodes
+    from sparkrun.plugins.k8s.orchestration.inventory import parse_nodes
     from sparkrun.platforms import resolve_platform
 
     nodes = parse_nodes({"items": [_node("spark-0", _SPARK_LABELS, capacity_gpu=1), _node("rtx-0", _RTX_LABELS, capacity_gpu=1)]})
@@ -713,7 +708,7 @@ def test_inventory_hybrid_cluster_distinguishes_node_classes():
 
 
 def test_inventory_cordoned_and_allocatable():
-    from sparkrun.orchestration.k8s.inventory import build_node_info
+    from sparkrun.plugins.k8s.orchestration.inventory import build_node_info
 
     info = build_node_info(_node("rtx-0", _RTX_LABELS, capacity_gpu=1, allocatable_gpu=0, unschedulable=True))
     assert info.schedulable is False
@@ -722,7 +717,7 @@ def test_inventory_cordoned_and_allocatable():
 
 
 def test_inventory_count_falls_back_to_capacity_when_label_absent():
-    from sparkrun.orchestration.k8s.inventory import build_node_info
+    from sparkrun.plugins.k8s.orchestration.inventory import build_node_info
 
     labels = {"nvidia.com/gpu.present": "true", "nvidia.com/gpu.product": "NVIDIA-H200"}
     info = build_node_info(_node("h200-0", labels, capacity_gpu=8, allocatable_gpu=8))
@@ -731,7 +726,7 @@ def test_inventory_count_falls_back_to_capacity_when_label_absent():
 
 
 def test_inventory_cpu_node_has_no_accelerators():
-    from sparkrun.orchestration.k8s.inventory import build_node_info
+    from sparkrun.plugins.k8s.orchestration.inventory import build_node_info
 
     info = build_node_info(_node("cpu-0", {"kubernetes.io/arch": "amd64"}))
     assert info.hardware.accelerators == []
@@ -739,8 +734,8 @@ def test_inventory_cpu_node_has_no_accelerators():
 
 
 def test_probe_nodes_passes_selector_and_filters_gpu_only(monkeypatch):
-    from sparkrun.orchestration.k8s.client import KubectlClient
-    from sparkrun.orchestration.k8s.inventory import probe_nodes
+    from sparkrun.plugins.k8s.orchestration.client import KubectlClient
+    from sparkrun.plugins.k8s.orchestration.inventory import probe_nodes
 
     client = KubectlClient("/usr/bin/kubectl")
     captured = {}
@@ -757,8 +752,8 @@ def test_probe_nodes_passes_selector_and_filters_gpu_only(monkeypatch):
 
 def test_probe_node_hardware_returns_hosthardware_map(monkeypatch):
     from sparkrun.core.hardware import HostHardware
-    from sparkrun.orchestration.k8s.client import KubectlClient
-    from sparkrun.orchestration.k8s.inventory import probe_node_hardware
+    from sparkrun.plugins.k8s.orchestration.client import KubectlClient
+    from sparkrun.plugins.k8s.orchestration.inventory import probe_node_hardware
 
     client = KubectlClient("/usr/bin/kubectl")
     monkeypatch.setattr(client, "run_json", lambda args, **k: {"items": [_node("spark-0", _SPARK_LABELS, capacity_gpu=1)]})
@@ -768,9 +763,8 @@ def test_probe_node_hardware_returns_hosthardware_map(monkeypatch):
 
 
 def test_api_list_nodes_translates_error(tmp_path, monkeypatch):
-    from sparkrun import api
-    from sparkrun.api import k8s as apik8s
-    from sparkrun.orchestration.k8s.errors import K8sError
+    from sparkrun.plugins.k8s import api as apik8s
+    from sparkrun.plugins.k8s.orchestration.errors import K8sError
 
     sctx = _sctx(tmp_path)
     monkeypatch.setattr(apik8s._ops, "make_client", lambda *a, **k: object())
@@ -779,23 +773,23 @@ def test_api_list_nodes_translates_error(tmp_path, monkeypatch):
         raise K8sError("connection refused")
 
     # list_nodes imports probe_nodes from the inventory module at call time.
-    monkeypatch.setattr("sparkrun.orchestration.k8s.inventory.probe_nodes", _boom)
-    with pytest.raises(api.k8s.ClusterUnreachable, match="connection refused"):
-        api.k8s.list_nodes(sctx)
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.inventory.probe_nodes", _boom)
+    with pytest.raises(k8s_api.ClusterUnreachable, match="connection refused"):
+        k8s_api.list_nodes(sctx)
 
 
 def test_cli_setup_k8s_nodes_renders(tmp_path, monkeypatch):
     from click.testing import CliRunner
 
     from sparkrun.cli import main
-    from sparkrun.orchestration.k8s.inventory import build_node_info
+    from sparkrun.plugins.k8s.orchestration.inventory import build_node_info
 
     monkeypatch.setenv("STATEFUL_ROOT", str(tmp_path / "stateful"))
     fake = [
         build_node_info(_node("spark-0", _SPARK_LABELS, capacity_gpu=1, allocatable_gpu=1)),
         build_node_info(_node("rtx-0", _RTX_LABELS, capacity_gpu=1, allocatable_gpu=1)),
     ]
-    monkeypatch.setattr("sparkrun.api.k8s.list_nodes", lambda *a, **k: fake)
+    monkeypatch.setattr("sparkrun.plugins.k8s.api.list_nodes", lambda *a, **k: fake)
     result = CliRunner().invoke(main, ["setup", "k8s", "nodes"])
     assert result.exit_code == 0, result.output
     assert "spark-0" in result.output and "gb10" in result.output
@@ -809,8 +803,8 @@ def test_cli_setup_k8s_nodes_renders(tmp_path, monkeypatch):
 
 
 def test_kueue_derive_flavors_groups_by_product():
-    from sparkrun.orchestration.k8s.inventory import build_node_info
-    from sparkrun.orchestration.k8s.kueue import derive_flavors
+    from sparkrun.plugins.k8s.orchestration.inventory import build_node_info
+    from sparkrun.plugins.k8s.orchestration.kueue import derive_flavors
 
     nodes = [
         build_node_info(_node("spark-0", _SPARK_LABELS, capacity_gpu=1)),
@@ -825,8 +819,8 @@ def test_kueue_derive_flavors_groups_by_product():
 
 
 def test_kueue_provision_manifests_shape():
-    from sparkrun.orchestration.k8s.inventory import build_node_info
-    from sparkrun.orchestration.k8s.kueue import build_provision_manifests
+    from sparkrun.plugins.k8s.orchestration.inventory import build_node_info
+    from sparkrun.plugins.k8s.orchestration.kueue import build_provision_manifests
 
     nodes = [build_node_info(_node("spark-0", _SPARK_LABELS, capacity_gpu=1)), build_node_info(_node("rtx-0", _RTX_LABELS, capacity_gpu=1))]
     docs, flavors = build_provision_manifests(nodes, namespace="sparkrun")
@@ -841,8 +835,8 @@ def test_kueue_provision_manifests_shape():
 
 
 def test_kueue_provision_raises_without_gpu_product_labels():
-    from sparkrun.orchestration.k8s.inventory import build_node_info
-    from sparkrun.orchestration.k8s.kueue import KueueError, build_provision_manifests
+    from sparkrun.plugins.k8s.orchestration.inventory import build_node_info
+    from sparkrun.plugins.k8s.orchestration.kueue import KueueError, build_provision_manifests
 
     nodes = [build_node_info(_node("cpu-0", {"kubernetes.io/arch": "amd64"}))]
     with pytest.raises(KueueError, match="GPU Feature Discovery"):
@@ -850,8 +844,8 @@ def test_kueue_provision_raises_without_gpu_product_labels():
 
 
 def test_kueue_detect_reads_crds(monkeypatch):
-    from sparkrun.orchestration.k8s.client import KubectlClient
-    from sparkrun.orchestration.k8s.kueue import CRD_CLUSTERQUEUE, CRD_JOBSET, detect
+    from sparkrun.plugins.k8s.orchestration.client import KubectlClient
+    from sparkrun.plugins.k8s.orchestration.kueue import CRD_CLUSTERQUEUE, CRD_JOBSET, detect
 
     client = KubectlClient("/usr/bin/kubectl")
     present = {CRD_CLUSTERQUEUE: True, CRD_JOBSET: False}
@@ -862,26 +856,25 @@ def test_kueue_detect_reads_crds(monkeypatch):
 
 
 def test_kueue_fetch_manifest_rejects_non_https():
-    from sparkrun.orchestration.k8s.kueue import KueueError, fetch_manifest
+    from sparkrun.plugins.k8s.orchestration.kueue import KueueError, fetch_manifest
 
     with pytest.raises(KueueError, match="non-https"):
         fetch_manifest("http://example.com/manifests.yaml")
 
 
 def test_api_setup_kueue_dry_run_renders_without_install(tmp_path, monkeypatch):
-    from sparkrun import api
-    from sparkrun.api import k8s as apik8s
-    from sparkrun.orchestration.k8s.inventory import build_node_info
+    from sparkrun.plugins.k8s import api as apik8s
+    from sparkrun.plugins.k8s.orchestration.inventory import build_node_info
 
-    from sparkrun.orchestration.k8s import kueue as kmod
+    from sparkrun.plugins.k8s.orchestration import kueue as kmod
 
     sctx = _sctx(tmp_path)
     nodes = [build_node_info(_node("spark-0", _SPARK_LABELS, capacity_gpu=1))]
     monkeypatch.setattr(apik8s._ops, "make_client", lambda *a, **k: object())
     monkeypatch.setattr(kmod, "detect", lambda client: kmod.KueueStatus(False, False))
-    monkeypatch.setattr("sparkrun.orchestration.k8s.inventory.probe_nodes", lambda client, **k: nodes)
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.inventory.probe_nodes", lambda client, **k: nodes)
 
-    result = api.k8s.setup_kueue(sctx, dry_run=True)
+    result = k8s_api.setup_kueue(sctx, dry_run=True)
     assert result.dry_run and not result.provisioned
     assert not result.installed_kueue and not result.installed_jobset
     assert {f.name for f in result.flavors} == {"sparkrun-gb10"}
@@ -889,29 +882,28 @@ def test_api_setup_kueue_dry_run_renders_without_install(tmp_path, monkeypatch):
 
 
 def test_api_setup_kueue_missing_without_install_raises(tmp_path, monkeypatch):
-    from sparkrun import api
-    from sparkrun.api import k8s as apik8s
-    from sparkrun.orchestration.k8s import kueue as kmod
+    from sparkrun.plugins.k8s import api as apik8s
+    from sparkrun.plugins.k8s.orchestration import kueue as kmod
 
     sctx = _sctx(tmp_path)
     monkeypatch.setattr(apik8s._ops, "make_client", lambda *a, **k: object())
     monkeypatch.setattr(kmod, "detect", lambda client: kmod.KueueStatus(False, False))
-    with pytest.raises(api.k8s.KueueSetupError, match="not installed"):
-        api.k8s.setup_kueue(sctx, install=False, dry_run=False)
+    with pytest.raises(k8s_api.KueueSetupError, match="not installed"):
+        k8s_api.setup_kueue(sctx, install=False, dry_run=False)
 
 
 def test_cli_setup_k8s_kueue_dry_run(tmp_path, monkeypatch):
     from click.testing import CliRunner
 
     from sparkrun.cli import main
-    from sparkrun.orchestration.k8s import kueue as kmod
-    from sparkrun.orchestration.k8s.inventory import build_node_info
+    from sparkrun.plugins.k8s.orchestration import kueue as kmod
+    from sparkrun.plugins.k8s.orchestration.inventory import build_node_info
 
     monkeypatch.setenv("STATEFUL_ROOT", str(tmp_path / "stateful"))
     nodes = [build_node_info(_node("spark-0", _SPARK_LABELS, capacity_gpu=1)), build_node_info(_node("rtx-0", _RTX_LABELS, capacity_gpu=1))]
-    monkeypatch.setattr("sparkrun.api.k8s._ops.make_client", lambda *a, **k: object())
+    monkeypatch.setattr("sparkrun.plugins.k8s.api._ops.make_client", lambda *a, **k: object())
     monkeypatch.setattr(kmod, "detect", lambda client: kmod.KueueStatus(True, True))
-    monkeypatch.setattr("sparkrun.orchestration.k8s.inventory.probe_nodes", lambda client, **k: nodes)
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.inventory.probe_nodes", lambda client, **k: nodes)
 
     result = CliRunner().invoke(main, ["setup", "k8s", "kueue", "--dry-run"])
     assert result.exit_code == 0, result.output
@@ -926,7 +918,7 @@ def test_cli_setup_k8s_kueue_dry_run(tmp_path, monkeypatch):
 
 def _nodes_for(spec):
     """spec: list of (name, labels, capacity_gpu, allocatable_gpu, unschedulable)."""
-    from sparkrun.orchestration.k8s.inventory import build_node_info
+    from sparkrun.plugins.k8s.orchestration.inventory import build_node_info
 
     return [
         build_node_info(_node(n, labels, capacity_gpu=cap, allocatable_gpu=alloc, unschedulable=unsched))
@@ -935,7 +927,7 @@ def _nodes_for(spec):
 
 
 def test_aggregate_gpu_classes_sums_allocatable_from_schedulable_only():
-    from sparkrun.orchestration.k8s.scheduling import aggregate_gpu_classes
+    from sparkrun.plugins.k8s.orchestration.scheduling import aggregate_gpu_classes
 
     nodes = _nodes_for(
         [
@@ -953,7 +945,7 @@ def test_aggregate_gpu_classes_sums_allocatable_from_schedulable_only():
 
 
 def test_check_feasibility_hybrid_ok():
-    from sparkrun.orchestration.k8s.scheduling import GpuRequest, check_feasibility
+    from sparkrun.plugins.k8s.orchestration.scheduling import GpuRequest, check_feasibility
 
     nodes = _nodes_for(
         [("spark-0", _SPARK_LABELS, 1, 1, False), ("spark-1", _SPARK_LABELS, 1, 1, False), ("rtx-0", _RTX_LABELS, 1, 1, False)]
@@ -964,7 +956,7 @@ def test_check_feasibility_hybrid_ok():
 
 
 def test_check_feasibility_shortfall():
-    from sparkrun.orchestration.k8s.scheduling import GpuRequest, check_feasibility
+    from sparkrun.plugins.k8s.orchestration.scheduling import GpuRequest, check_feasibility
 
     nodes = _nodes_for([("spark-0", _SPARK_LABELS, 1, 1, False)])
     report = check_feasibility(nodes, [GpuRequest("gb10", 2)])
@@ -975,7 +967,7 @@ def test_check_feasibility_shortfall():
 
 
 def test_check_feasibility_unknown_model():
-    from sparkrun.orchestration.k8s.scheduling import GpuRequest, check_feasibility
+    from sparkrun.plugins.k8s.orchestration.scheduling import GpuRequest, check_feasibility
 
     nodes = _nodes_for([("spark-0", _SPARK_LABELS, 1, 1, False)])
     report = check_feasibility(nodes, [GpuRequest("h200", 8)])
@@ -985,7 +977,7 @@ def test_check_feasibility_unknown_model():
 
 
 def test_check_feasibility_aggregates_multiple_requests_same_model():
-    from sparkrun.orchestration.k8s.scheduling import GpuRequest, check_feasibility
+    from sparkrun.plugins.k8s.orchestration.scheduling import GpuRequest, check_feasibility
 
     nodes = _nodes_for([("spark-0", _SPARK_LABELS, 1, 1, False), ("spark-1", _SPARK_LABELS, 1, 1, False)])
     # two rank-groups on gb10 summing to 2 → fits exactly
@@ -995,14 +987,13 @@ def test_check_feasibility_aggregates_multiple_requests_same_model():
 
 
 def test_api_check_feasibility_reads_inventory(tmp_path, monkeypatch):
-    from sparkrun import api
-    from sparkrun.api import k8s as apik8s
+    from sparkrun.plugins.k8s import api as apik8s
 
     sctx = _sctx(tmp_path)
     nodes = _nodes_for([("spark-0", _SPARK_LABELS, 1, 1, False)])
     monkeypatch.setattr(apik8s._ops, "make_client", lambda *a, **k: object())
-    monkeypatch.setattr("sparkrun.orchestration.k8s.inventory.probe_nodes", lambda client, **k: nodes)
-    report = api.k8s.check_feasibility(sctx, requests=[api.k8s.GpuRequest("gb10", 1)])
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.inventory.probe_nodes", lambda client, **k: nodes)
+    report = k8s_api.check_feasibility(sctx, requests=[k8s_api.GpuRequest("gb10", 1)])
     assert report.feasible is True
 
 
@@ -1012,8 +1003,8 @@ def test_api_check_feasibility_reads_inventory(tmp_path, monkeypatch):
 
 
 def test_node_selectors_from_inventory():
-    from sparkrun.orchestration.k8s.inventory import build_node_info
-    from sparkrun.orchestration.k8s.jobset import node_selectors_from_nodes
+    from sparkrun.plugins.k8s.orchestration.inventory import build_node_info
+    from sparkrun.plugins.k8s.orchestration.jobset import node_selectors_from_nodes
 
     nodes = [build_node_info(_node("s0", _SPARK_LABELS, capacity_gpu=1)), build_node_info(_node("r0", _RTX_LABELS, capacity_gpu=1))]
     selectors = node_selectors_from_nodes(nodes)
@@ -1022,7 +1013,7 @@ def test_node_selectors_from_inventory():
 
 
 def test_plan_from_rank_models_groups_by_class():
-    from sparkrun.orchestration.k8s.jobset import plan_from_rank_models
+    from sparkrun.plugins.k8s.orchestration.jobset import plan_from_rank_models
 
     plan = plan_from_rank_models(
         "job-1",
@@ -1041,7 +1032,7 @@ def test_plan_from_rank_models_groups_by_class():
 
 
 def test_build_jobset_hybrid_shape():
-    from sparkrun.orchestration.k8s.jobset import QUEUE_LABEL, build_jobset, plan_from_rank_models
+    from sparkrun.plugins.k8s.orchestration.jobset import QUEUE_LABEL, build_jobset, plan_from_rank_models
 
     plan = plan_from_rank_models(
         "job-1",
@@ -1067,7 +1058,7 @@ def test_build_jobset_hybrid_shape():
 
 
 def test_plan_multi_gpu_per_pod():
-    from sparkrun.orchestration.k8s.jobset import build_jobset, plan_from_rank_models
+    from sparkrun.plugins.k8s.orchestration.jobset import build_jobset, plan_from_rank_models
 
     # single-node tp=4 on one RTX box → 1 pod requesting 4 GPUs
     plan = plan_from_rank_models("job-2", ["rtx-pro-6000-blackwell"], image="img", gpus_per_pod={"rtx-pro-6000-blackwell": 4})
@@ -1079,7 +1070,7 @@ def test_plan_multi_gpu_per_pod():
 
 
 def test_plan_command_and_env_threaded_into_pod():
-    from sparkrun.orchestration.k8s.jobset import PodSetPlan, JobSetPlan, build_jobset
+    from sparkrun.plugins.k8s.orchestration.jobset import PodSetPlan, JobSetPlan, build_jobset
 
     plan = JobSetPlan(
         name="job-3",
@@ -1096,8 +1087,8 @@ def test_plan_command_and_env_threaded_into_pod():
 
 
 def test_jobset_gpu_requests_feed_feasibility():
-    from sparkrun.orchestration.k8s.jobset import plan_from_rank_models
-    from sparkrun.orchestration.k8s.scheduling import check_feasibility
+    from sparkrun.plugins.k8s.orchestration.jobset import plan_from_rank_models
+    from sparkrun.plugins.k8s.orchestration.scheduling import check_feasibility
 
     # the plan's own gpu_requests drive the precheck against inventory
     plan = plan_from_rank_models("job-4", ["gb10", "gb10"], image="img")
@@ -1113,14 +1104,14 @@ def test_jobset_gpu_requests_feed_feasibility():
 
 
 def test_nccl_headless_dns_and_master():
-    from sparkrun.orchestration.k8s import nccl
+    from sparkrun.plugins.k8s.orchestration import nccl
 
     assert nccl.headless_pod_dns("job-x", "gb10", job_index=0, pod_index=0) == "job-x-gb10-0-0.job-x"
     assert nccl.master_addr("job-x", "gb10") == "job-x-gb10-0-0.job-x"
 
 
 def test_nccl_base_env_forces_tcp():
-    from sparkrun.orchestration.k8s import nccl
+    from sparkrun.plugins.k8s.orchestration import nccl
 
     env = nccl.base_tcp_nccl_env(4, "job-x-gb10-0-0.job-x", master_port=29500)
     assert env["WORLD_SIZE"] == "4"
@@ -1130,7 +1121,7 @@ def test_nccl_base_env_forces_tcp():
 
 
 def test_nccl_rank_prelude_offsets_base():
-    from sparkrun.orchestration.k8s import nccl
+    from sparkrun.plugins.k8s.orchestration import nccl
 
     prelude = nccl.rank_prelude(2)
     assert "RANK=$(( 2 + SPARKRUN_JOB_INDEX ))" in prelude
@@ -1138,7 +1129,7 @@ def test_nccl_rank_prelude_offsets_base():
 
 
 def test_group_contiguous_ranks_rejects_interleaving():
-    from sparkrun.orchestration.k8s.launch import group_contiguous_ranks
+    from sparkrun.plugins.k8s.orchestration.launch import group_contiguous_ranks
 
     groups = group_contiguous_ranks(["gb10", "gb10", "rtx-pro-6000-blackwell"])
     assert [(g.model, g.base_rank, g.count) for g in groups] == [("gb10", 0, 2), ("rtx-pro-6000-blackwell", 2, 1)]
@@ -1147,8 +1138,8 @@ def test_group_contiguous_ranks_rejects_interleaving():
 
 
 def test_build_launch_jobset_hybrid_wires_ranks_and_master():
-    from sparkrun.orchestration.k8s.jobset import build_jobset
-    from sparkrun.orchestration.k8s.launch import build_launch_jobset
+    from sparkrun.plugins.k8s.orchestration.jobset import build_jobset
+    from sparkrun.plugins.k8s.orchestration.launch import build_launch_jobset
 
     selectors = {
         "gb10": {"nvidia.com/gpu.product": "NVIDIA-GB10"},
@@ -1174,49 +1165,46 @@ def test_build_launch_jobset_hybrid_wires_ranks_and_master():
 
 
 def test_build_launch_jobset_empty_rejected():
-    from sparkrun.orchestration.k8s.launch import build_launch_jobset
+    from sparkrun.plugins.k8s.orchestration.launch import build_launch_jobset
 
     with pytest.raises(ValueError, match="non-empty"):
         build_launch_jobset("j", [], image="img", serve_command="x")
 
 
 def test_api_launch_jobset_dry_run_reports_feasibility(tmp_path, monkeypatch):
-    from sparkrun import api
-    from sparkrun.api import k8s as apik8s
+    from sparkrun.plugins.k8s import api as apik8s
 
     sctx = _sctx(tmp_path)
     nodes = _nodes_for([("s0", _SPARK_LABELS, 1, 1, False), ("s1", _SPARK_LABELS, 1, 1, False)])
     monkeypatch.setattr(apik8s._ops, "make_client", lambda *a, **k: object())
-    monkeypatch.setattr("sparkrun.orchestration.k8s.inventory.probe_nodes", lambda client, **k: nodes)
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.inventory.probe_nodes", lambda client, **k: nodes)
 
-    result = api.k8s.launch_jobset(sctx, name="job-x", rank_models=["gb10", "gb10"], image="img", serve_command="serve", dry_run=True)
+    result = k8s_api.launch_jobset(sctx, name="job-x", rank_models=["gb10", "gb10"], image="img", serve_command="serve", dry_run=True)
     assert result.dry_run and not result.submitted
     assert result.feasible is True
     assert "kind: JobSet" in result.manifests_yaml
 
 
 def test_api_launch_jobset_infeasible_raises(tmp_path, monkeypatch):
-    from sparkrun import api
-    from sparkrun.api import k8s as apik8s
+    from sparkrun.plugins.k8s import api as apik8s
 
     sctx = _sctx(tmp_path)
     nodes = _nodes_for([("s0", _SPARK_LABELS, 1, 1, False)])  # only 1 gb10 GPU
     monkeypatch.setattr(apik8s._ops, "make_client", lambda *a, **k: object())
-    monkeypatch.setattr("sparkrun.orchestration.k8s.inventory.probe_nodes", lambda client, **k: nodes)
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.inventory.probe_nodes", lambda client, **k: nodes)
 
-    with pytest.raises(api.k8s.JobSetLaunchError, match="infeasible"):
-        api.k8s.launch_jobset(sctx, name="job-x", rank_models=["gb10", "gb10"], image="img", serve_command="serve")
+    with pytest.raises(k8s_api.JobSetLaunchError, match="infeasible"):
+        k8s_api.launch_jobset(sctx, name="job-x", rank_models=["gb10", "gb10"], image="img", serve_command="serve")
 
 
 def test_api_launch_jobset_submits(tmp_path, monkeypatch):
-    from sparkrun import api
-    from sparkrun.api import k8s as apik8s
-    from sparkrun.orchestration.k8s import launch as launch_mod
+    from sparkrun.plugins.k8s import api as apik8s
+    from sparkrun.plugins.k8s.orchestration import launch as launch_mod
 
     sctx = _sctx(tmp_path)
     nodes = _nodes_for([("s0", _SPARK_LABELS, 1, 1, False)])
     monkeypatch.setattr(apik8s._ops, "make_client", lambda *a, **k: object())
-    monkeypatch.setattr("sparkrun.orchestration.k8s.inventory.probe_nodes", lambda client, **k: nodes)
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.inventory.probe_nodes", lambda client, **k: nodes)
     submitted = {}
 
     def _submit(client, plan, **k):
@@ -1224,7 +1212,7 @@ def test_api_launch_jobset_submits(tmp_path, monkeypatch):
         return RemoteResult(host="k8s", returncode=0, stdout="created", stderr="")
 
     monkeypatch.setattr(launch_mod, "submit_jobset", _submit)
-    result = api.k8s.launch_jobset(sctx, name="job-x", rank_models=["gb10"], image="img", serve_command="serve")
+    result = k8s_api.launch_jobset(sctx, name="job-x", rank_models=["gb10"], image="img", serve_command="serve")
     assert result.submitted and submitted["name"] == "job-x"
 
 
@@ -1235,8 +1223,8 @@ def test_cli_setup_k8s_launch_dry_run(tmp_path, monkeypatch):
 
     monkeypatch.setenv("STATEFUL_ROOT", str(tmp_path / "stateful"))
     nodes = _nodes_for([("s0", _SPARK_LABELS, 1, 1, False), ("s1", _SPARK_LABELS, 1, 1, False)])
-    monkeypatch.setattr("sparkrun.api.k8s._ops.make_client", lambda *a, **k: object())
-    monkeypatch.setattr("sparkrun.orchestration.k8s.inventory.probe_nodes", lambda client, **k: nodes)
+    monkeypatch.setattr("sparkrun.plugins.k8s.api._ops.make_client", lambda *a, **k: object())
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.inventory.probe_nodes", lambda client, **k: nodes)
 
     result = CliRunner().invoke(
         main,
@@ -1252,7 +1240,7 @@ def test_cli_setup_k8s_launch_dry_run(tmp_path, monkeypatch):
 
 
 def test_rdma_available_detection():
-    from sparkrun.orchestration.k8s import nccl
+    from sparkrun.plugins.k8s.orchestration import nccl
 
     assert nccl.rdma_available({"feature.node.kubernetes.io/pci-15b3.present": "true"}, {"rdma/rdma_shared_device_a": "8"}) is True
     assert nccl.rdma_available({"feature.node.kubernetes.io/pci-15b3.present": "true"}, {}) is False  # no rdma resource
@@ -1260,7 +1248,7 @@ def test_rdma_available_detection():
 
 
 def test_rdma_nccl_env_enables_ib():
-    from sparkrun.orchestration.k8s import nccl
+    from sparkrun.plugins.k8s.orchestration import nccl
 
     env = nccl.base_rdma_nccl_env(2, "m", hca="mlx5_2")
     assert env["NCCL_IB_HCA"] == "mlx5_2"
@@ -1268,8 +1256,8 @@ def test_rdma_nccl_env_enables_ib():
 
 
 def test_build_launch_jobset_rdma_requests_resource_and_caps():
-    from sparkrun.orchestration.k8s.jobset import build_jobset
-    from sparkrun.orchestration.k8s.launch import build_launch_jobset
+    from sparkrun.plugins.k8s.orchestration.jobset import build_jobset
+    from sparkrun.plugins.k8s.orchestration.launch import build_launch_jobset
 
     plan = build_launch_jobset("j", ["gb10", "gb10"], image="img", serve_command="serve", transport="rdma")
     pod = build_jobset(plan)["spec"]["replicatedJobs"][0]["template"]["spec"]["template"]["spec"]
@@ -1281,8 +1269,8 @@ def test_build_launch_jobset_rdma_requests_resource_and_caps():
 
 
 def test_build_launch_jobset_tcp_has_no_rdma_bits():
-    from sparkrun.orchestration.k8s.jobset import build_jobset
-    from sparkrun.orchestration.k8s.launch import build_launch_jobset
+    from sparkrun.plugins.k8s.orchestration.jobset import build_jobset
+    from sparkrun.plugins.k8s.orchestration.launch import build_launch_jobset
 
     plan = build_launch_jobset("j", ["gb10"], image="img", serve_command="serve", transport="tcp")
     pod = build_jobset(plan)["spec"]["replicatedJobs"][0]["template"]["spec"]["template"]["spec"]
@@ -1292,7 +1280,7 @@ def test_build_launch_jobset_tcp_has_no_rdma_bits():
 
 
 def test_build_launch_jobset_rejects_bad_transport():
-    from sparkrun.orchestration.k8s.launch import build_launch_jobset
+    from sparkrun.plugins.k8s.orchestration.launch import build_launch_jobset
 
     with pytest.raises(ValueError, match="transport"):
         build_launch_jobset("j", ["gb10"], image="img", serve_command="s", transport="magic")
@@ -1304,7 +1292,7 @@ def test_build_launch_jobset_rejects_bad_transport():
 
 
 def test_probe_job_manifest_is_privileged_and_pinned():
-    from sparkrun.orchestration.k8s.probe import probe_job_manifest
+    from sparkrun.plugins.k8s.orchestration.probe import probe_job_manifest
 
     manifest = probe_job_manifest("gpu-node-1", namespace="sparkrun", image="cuda:12")
     assert manifest["metadata"]["name"] == "sparkrun-probe-gpu-node-1"
@@ -1316,7 +1304,7 @@ def test_probe_job_manifest_is_privileged_and_pinned():
 
 
 def test_probe_output_parsed_with_ssh_fingerprint_parser():
-    from sparkrun.orchestration.k8s.probe import parse_probe_output
+    from sparkrun.plugins.k8s.orchestration.probe import parse_probe_output
 
     stdout = (
         "SPARKRUN_PROBE_ACCEL_START\n"
@@ -1335,8 +1323,8 @@ def test_probe_output_parsed_with_ssh_fingerprint_parser():
 
 
 def test_probe_nodes_fallback_collects_per_node(monkeypatch):
-    from sparkrun.orchestration.k8s.client import KubectlClient
-    from sparkrun.orchestration.k8s import probe as probe_mod
+    from sparkrun.plugins.k8s.orchestration.client import KubectlClient
+    from sparkrun.plugins.k8s.orchestration import probe as probe_mod
 
     client = KubectlClient("/usr/bin/kubectl")
     calls = []
@@ -1364,14 +1352,13 @@ def test_probe_nodes_fallback_collects_per_node(monkeypatch):
 
 
 def test_api_probe_nodes_fallback(tmp_path, monkeypatch):
-    from sparkrun import api
-    from sparkrun.api import k8s as apik8s
+    from sparkrun.plugins.k8s import api as apik8s
     from sparkrun.core.hardware import HostHardware
 
     sctx = _sctx(tmp_path)
     monkeypatch.setattr(apik8s._ops, "make_client", lambda *a, **k: object())
-    monkeypatch.setattr("sparkrun.orchestration.k8s.probe.probe_nodes_fallback", lambda client, nodes, **k: {"n": HostHardware()})
-    out = api.k8s.probe_nodes_fallback(sctx, node_names=["n"], image="cuda:12")
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.probe.probe_nodes_fallback", lambda client, nodes, **k: {"n": HostHardware()})
+    out = k8s_api.probe_nodes_fallback(sctx, node_names=["n"], image="cuda:12")
     assert set(out) == {"n"}
 
 
@@ -1391,6 +1378,7 @@ class _FakeRuntime:
 
 
 class _FakeRecipe:
+    executor = "k8s"
     env = {"HF_TOKEN": "x"}
     model = "M"
     name = "r"
@@ -1398,12 +1386,12 @@ class _FakeRecipe:
 
 
 def _run_k8s_common(tmp_path, monkeypatch, nodes):
-    from sparkrun.api import k8s as apik8s
-    from sparkrun.orchestration.k8s.launch import LaunchJobsetResult
+    from sparkrun.plugins.k8s import api as apik8s
+    from sparkrun.plugins.k8s.orchestration.launch import LaunchJobsetResult
 
     sctx = _sctx(tmp_path)
     monkeypatch.setattr(apik8s._ops, "make_client", lambda *a, **k: object())
-    monkeypatch.setattr("sparkrun.orchestration.k8s.inventory.probe_nodes", lambda client, **k: nodes)
+    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.inventory.probe_nodes", lambda client, **k: nodes)
 
     captured = {}
 
@@ -1418,8 +1406,7 @@ def _run_k8s_common(tmp_path, monkeypatch, nodes):
 
 
 def test_run_k8s_solo_homogeneous(tmp_path, monkeypatch):
-    from sparkrun import api
-    from sparkrun.api._run_k8s import run_k8s
+    from sparkrun.plugins.k8s.run import run_k8s
 
     nodes = _nodes_for([("s0", _SPARK_LABELS, 1, 1, False)])
     sctx, captured = _run_k8s_common(tmp_path, monkeypatch, nodes)
@@ -1427,16 +1414,19 @@ def test_run_k8s_solo_homogeneous(tmp_path, monkeypatch):
     result = run_k8s(
         api.RunOptions(recipe=_FakeRecipe(), overrides={"port": 8000}, dry_run=True),
         sctx,
-        recipe=_FakeRecipe(),
-        runtime=_FakeRuntime(),
-        cluster_def=None,
-        host_list=["s0"],
-        placement=None,
-        is_solo=True,
-        cluster_id="intent-token",
-        intent_id="intent",
-        placement_token="token",
-        effective_scheduler=None,
+        plan=api.RunPlan(
+            recipe=_FakeRecipe(),
+            runtime=_FakeRuntime(),
+            cluster=None,
+            candidate_hosts=tuple(["s0"]),
+            host_list=tuple(["s0"]),
+            placement=None,
+            is_solo=True,
+            cluster_id="intent-token",
+            intent_id="intent",
+            placement_token="token",
+            scheduler="greedy",
+        ),
         started_at=0.0,
     )
     assert result.executor == "k8s" and result.is_solo
@@ -1450,8 +1440,7 @@ def test_run_k8s_solo_homogeneous(tmp_path, monkeypatch):
 
 
 def test_run_k8s_rejects_multinode(tmp_path, monkeypatch):
-    from sparkrun import api
-    from sparkrun.api._run_k8s import run_k8s
+    from sparkrun.plugins.k8s.run import run_k8s
 
     nodes = _nodes_for([("s0", _SPARK_LABELS, 1, 1, False)])
     sctx, _ = _run_k8s_common(tmp_path, monkeypatch, nodes)
@@ -1463,23 +1452,25 @@ def test_run_k8s_rejects_multinode(tmp_path, monkeypatch):
         run_k8s(
             api.RunOptions(recipe=_FakeRecipe()),
             sctx,
-            recipe=_FakeRecipe(),
-            runtime=_FakeRuntime(),
-            cluster_def=None,
-            host_list=["s0", "s1"],
-            placement=_P(),
-            is_solo=False,
-            cluster_id="c",
-            intent_id="i",
-            placement_token="t",
-            effective_scheduler=None,
+            plan=api.RunPlan(
+                recipe=_FakeRecipe(),
+                runtime=_FakeRuntime(),
+                cluster=None,
+                candidate_hosts=tuple(["s0", "s1"]),
+                host_list=tuple(["s0", "s1"]),
+                placement=_P(),
+                is_solo=False,
+                cluster_id="c",
+                intent_id="i",
+                placement_token="t",
+                scheduler="greedy",
+            ),
             started_at=0.0,
         )
 
 
 def test_run_k8s_rejects_hybrid_cluster(tmp_path, monkeypatch):
-    from sparkrun import api
-    from sparkrun.api._run_k8s import run_k8s
+    from sparkrun.plugins.k8s.run import run_k8s
 
     nodes = _nodes_for([("s0", _SPARK_LABELS, 1, 1, False), ("r0", _RTX_LABELS, 1, 1, False)])
     sctx, _ = _run_k8s_common(tmp_path, monkeypatch, nodes)
@@ -1488,30 +1479,35 @@ def test_run_k8s_rejects_hybrid_cluster(tmp_path, monkeypatch):
         run_k8s(
             api.RunOptions(recipe=_FakeRecipe(), dry_run=True),
             sctx,
-            recipe=_FakeRecipe(),
-            runtime=_FakeRuntime(),
-            cluster_def=None,
-            host_list=["s0"],
-            placement=None,
-            is_solo=True,
-            cluster_id="c",
-            intent_id="i",
-            placement_token="t",
-            effective_scheduler=None,
+            plan=api.RunPlan(
+                recipe=_FakeRecipe(),
+                runtime=_FakeRuntime(),
+                cluster=None,
+                candidate_hosts=tuple(["s0"]),
+                host_list=tuple(["s0"]),
+                placement=None,
+                is_solo=True,
+                cluster_id="c",
+                intent_id="i",
+                placement_token="t",
+                scheduler="greedy",
+            ),
             started_at=0.0,
         )
 
 
-def test_api_run_k8s_flag_registered_and_off_by_default():
+def test_api_run_k8s_flag_registered_by_enabled_plugin():
     from sparkrun.core.features import get_feature
 
+    from sparkrun.core.bootstrap import init_sparkrun
+
+    init_sparkrun()
     flag = get_feature("api.run.k8s")
-    assert flag is not None and flag.default is False
+    assert flag is not None and flag.default is True
 
 
 def test_api_run_branches_to_k8s_when_flag_on(tmp_path, monkeypatch):
     """api.run routes to run_k8s only when executor=k8s AND api.run.k8s is on."""
-    import sparkrun.api._run as run_mod
     from sparkrun import api
     from sparkrun.core.recipe import Recipe
 
@@ -1519,7 +1515,6 @@ def test_api_run_branches_to_k8s_when_flag_on(tmp_path, monkeypatch):
     recipe = Recipe({"sparkrun_version": "2", "runtime": "vllm", "model": "M"})
 
     # Stub the heavy resolution pipeline so we reach the branch deterministically.
-    monkeypatch.setattr(run_mod, "_build_executor_overrides", lambda options: {"executor": "k8s"})
     monkeypatch.setattr(
         "sparkrun.api._resolve.resolve_cluster", lambda *a, **k: type("C", (), {"hosts": ["s0"], "user": None, "scheduler": None})()
     )
@@ -1535,10 +1530,10 @@ def test_api_run_branches_to_k8s_when_flag_on(tmp_path, monkeypatch):
         called["hit"] = True
         return sentinel
 
-    monkeypatch.setattr("sparkrun.api._run_k8s.run_k8s", _fake_run_k8s)
+    monkeypatch.setattr("sparkrun.plugins.k8s.run.run_k8s", _fake_run_k8s)
 
     sctx = _sctx(tmp_path)
-    out = api.run(api.RunOptions(recipe=_FakeRecipe(), hosts=("s0",), solo=True, dry_run=True), sctx=sctx)
+    out = api.run(api.RunOptions(recipe=_FakeRecipe(), hosts=("s0",), solo=True, dry_run=True, executor="k8s"), sctx=sctx)
     assert out is sentinel and called.get("hit")
 
 
@@ -1550,8 +1545,11 @@ def test_api_run_branches_to_k8s_when_flag_on(tmp_path, monkeypatch):
 def test_cli_setup_k8s_feature_flag_registered():
     from sparkrun.core.features import get_feature
 
+    from sparkrun.core.bootstrap import init_sparkrun
+
+    init_sparkrun()
     flag = get_feature("cli.setup.k8s")
-    assert flag is not None and flag.default is False
+    assert flag is not None and flag.default is True
 
 
 def test_cli_setup_k8s_gated_off_when_flag_disabled(tmp_path, monkeypatch):

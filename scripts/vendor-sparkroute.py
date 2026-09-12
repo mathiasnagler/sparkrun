@@ -71,6 +71,7 @@ class PluginManifest:
     sparkrun: str
     source: str
     tests: str
+    application_profile_api: int | None = None
 
 
 @dataclass(frozen=True)
@@ -156,7 +157,10 @@ def _manifest(repository: Path, commit: str) -> PluginManifest:
         if candidate.is_absolute() or ".." in candidate.parts:
             raise VendorError("upstream plugin.toml %s must stay within the repository" % field)
 
-    return PluginManifest(version=version, **{name: values[name] for name in required})
+    application_profile_api = values.get("application_profile_api")
+    if application_profile_api is not None and (type(application_profile_api) is not int or application_profile_api < 1):
+        raise VendorError("application_profile_api must be a positive integer when declared")
+    return PluginManifest(version=version, application_profile_api=application_profile_api, **{name: values[name] for name in required})
 
 
 def _archive(repository: Path, commit: str, manifest: PluginManifest, destination: Path) -> None:
@@ -241,6 +245,8 @@ def _render_lock(
         "sparkrun = %s" % _toml_string(manifest.sparkrun),
         "content_sha256 = %s" % _toml_string(digest),
     ]
+    if manifest.application_profile_api is not None:
+        lines.append("application_profile_api = %s" % manifest.application_profile_api)
     if release_tag is not None:
         lines.append("release_tag = %s" % _toml_string(release_tag))
     for item in sorted(files, key=lambda value: value.path):
@@ -265,6 +271,8 @@ def _render_provenance(*, manifest: PluginManifest, commit: str, tree: str, dige
         "version = %s" % _toml_string(manifest.version),
         "content_sha256 = %s" % _toml_string(digest),
     ]
+    if manifest.application_profile_api is not None:
+        lines.append("application_profile_api = %s" % manifest.application_profile_api)
     if release_tag is not None:
         lines.append("release_tag = %s" % _toml_string(release_tag))
     return "\n".join(lines) + "\n"
@@ -336,7 +344,7 @@ def verify() -> None:
         provenance = tomllib.loads(PROVENANCE_PATH.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise VendorError("could not read packaged SparkRoute provenance: %s" % error) from error
-    for name in ("repository", "commit", "tree", "version", "content_sha256", "release_tag"):
+    for name in ("repository", "commit", "tree", "version", "content_sha256", "release_tag", "application_profile_api"):
         if provenance.get(name) != lock.get(name):
             raise VendorError("packaged SparkRoute provenance disagrees with the lock for %s" % name)
 

@@ -62,6 +62,12 @@ if [ "$_LINGER" = unknown ] && [ -d /var/lib/systemd/linger ]; then
 fi
 echo "CHECK_LOGIND_LINGER=$_LINGER"
 
+# --- Host setup prerequisites ---
+command -v apt-get >/dev/null 2>&1 && echo "CHECK_APT=1" || echo "CHECK_APT=0"
+[ -d /run/systemd/system ] && echo "CHECK_SYSTEMD=1" || echo "CHECK_SYSTEMD=0"
+command -v netplan >/dev/null 2>&1 && echo "CHECK_NETPLAN=1" || echo "CHECK_NETPLAN=0"
+echo "CHECK_OS=$(uname -s)"
+
 # --- Docker ---
 if command -v docker >/dev/null 2>&1; then
     echo "CHECK_DOCKER_INSTALLED=1"
@@ -121,12 +127,12 @@ fi
 # Only inspect when passwordless sudo is available so the probe never blocks
 # on a password prompt; otherwise report "unknown".
 if sudo -n true 2>/dev/null; then
-    if sudo -n test -e "/etc/sudoers.d/sparkrun-chown-$WHO" 2>/dev/null; then
+    if sudo -n test -e "/etc/sudoers.d/@RESOURCE_NAMESPACE@-chown-$WHO" 2>/dev/null; then
         echo "CHECK_SUDOERS_CHOWN=1"
     else
         echo "CHECK_SUDOERS_CHOWN=0"
     fi
-    if sudo -n test -e "/etc/sudoers.d/sparkrun-dropcaches-$WHO" 2>/dev/null; then
+    if sudo -n test -e "/etc/sudoers.d/@RESOURCE_NAMESPACE@-dropcaches-$WHO" 2>/dev/null; then
         echo "CHECK_SUDOERS_DROPCACHES=1"
     else
         echo "CHECK_SUDOERS_DROPCACHES=0"
@@ -143,7 +149,7 @@ fi
 # remote bash's stdin. Without -n the inner ssh would slurp the rest of that
 # stdin (the remainder of this script), truncating execution so CHECK_COMPLETE
 # never prints and the host is falsely reported unreachable.
-PEERS="{peers}"
+PEERS={peers}
 MESH_TOTAL=0
 MESH_OK=0
 for peer in $PEERS; do

@@ -40,7 +40,7 @@ from sparkrun.orchestration.executors.docker import (
     DockerExecutor,
     _parse_docker_ps_output,
 )
-from sparkrun.orchestration.executors.k8s import K8sExecutor
+from sparkrun.plugins.k8s.executor import K8sExecutor
 from sparkrun.orchestration.executors.local import LocalExecutor
 
 

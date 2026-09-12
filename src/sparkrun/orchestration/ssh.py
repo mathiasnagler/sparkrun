@@ -14,6 +14,8 @@ the fan-out helpers can honour them via ``allow_local=True``.
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import product_env
+
 import logging
 import os
 import subprocess
@@ -64,7 +66,7 @@ NO_RSYNC_RETRY_ENV = "SPARKRUN_NO_RSYNC_RETRY"
 
 def rsync_retry_disabled() -> bool:
     """True when the relaxed rsync retry is switched off via the environment."""
-    return os.environ.get(NO_RSYNC_RETRY_ENV, "").strip().lower() not in ("", "0", "false", "no")
+    return product_env("NO_RSYNC_RETRY", "").strip().lower() not in ("", "0", "false", "no")
 
 
 def relax_rsync_options(rsync_options: list[str]) -> list[str]:
@@ -113,7 +115,7 @@ _GUARD_PAYLOAD_SENTINEL = "__SPARKRUN_PAYLOAD__"
 
 def session_guard_disabled() -> bool:
     """True when the session guard is switched off via the environment."""
-    return os.environ.get(NO_SESSION_GUARD_ENV, "").strip().lower() not in ("", "0", "false", "no")
+    return product_env("NO_SESSION_GUARD", "").strip().lower() not in ("", "0", "false", "no")
 
 
 def wrap_with_session_guard(script: str) -> str:

@@ -62,6 +62,21 @@ def _resolve_group(root: click.Group, path: tuple[str, ...]) -> "click.Group | N
     return group if isinstance(group, click.Group) else None
 
 
+def render_command_identity(root: click.Command) -> None:
+    from sparkrun.core.application_profile import render_identity_text
+
+    for attr in ("help", "short_help", "epilog"):
+        value = getattr(root, attr, None)
+        if value:
+            setattr(root, attr, render_identity_text(value))
+    for parameter in root.params:
+        if getattr(parameter, "help", None):
+            parameter.help = render_identity_text(parameter.help)
+    if isinstance(root, click.Group):
+        for child in root.commands.values():
+            render_command_identity(child)
+
+
 def attach_cli_extensions(root: click.Group) -> None:
     """Attach every registered command to its target group under *root*.
 
@@ -99,6 +114,7 @@ def ensure_cli_extensions(root: click.Group) -> None:
 
     init_sparkrun()
     attach_cli_extensions(root)
+    render_command_identity(root)
 
 
 class PluggableGroup(click.Group):
@@ -129,3 +145,59 @@ class PluggableGroup(click.Group):
     def get_command(self, ctx, name):
         self._ensure_cli_extensions_loaded()
         return super().get_command(ctx, name)
+
+
+class ExtensibleCommand(click.Command):
+    """Resolve plugin options before parsing, help rendering, and completion.
+
+    Parameter objects belong to the Click context; the shared command object
+    stays unchanged across invocations. Conflicts fail before dispatch instead
+    of silently allowing one provider to shadow another's option.
+    """
+
+    def __init__(self, *args, extension_target: str, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.extension_target = extension_target
+
+    def _extension_options(self, ctx):
+        key = ("extension_options", id(self))
+        if key not in ctx.meta:
+            from sparkrun.core.bootstrap import init_sparkrun
+            from sparkrun.core.cli_registry import registered_cli_options
+            from sparkrun.core.application_profile import render_identity_text
+
+            init_sparkrun()
+            base_params = super().get_params(ctx)
+            names = {p.name for p in base_params}
+            flags = {opt for p in base_params for opt in (*p.opts, *p.secondary_opts)}
+            resolved = []
+            for spec in registered_cli_options(self.extension_target):
+                options = spec.loader()
+                for option in options:
+                    if not isinstance(option, click.Option):
+                        raise click.UsageError("Plugin %r contributed a non-option parameter" % spec.owner)
+                    declared = set(option.opts + option.secondary_opts)
+                    if option.name in names or declared & flags:
+                        raise click.UsageError("Plugin %r has a conflicting option: %s" % (spec.owner, option.opts))
+                    names.add(option.name)
+                    flags.update(declared)
+                    if option.help:
+                        option.help = render_identity_text(option.help)
+                resolved.append((spec, options))
+            ctx.meta[key] = resolved
+        return ctx.meta[key]
+
+    def get_params(self, ctx):
+        return super().get_params(ctx) + [p for _, options in self._extension_options(ctx) for p in options]
+
+    def pop_extension_values(self, ctx, values):
+        selections = {}
+        for spec, options in self._extension_options(ctx):
+            raw = {p.name: values.pop(p.name) for p in options if p.name in values}
+            try:
+                settings = spec.decode(raw)
+            except ValueError as exc:
+                raise click.UsageError(str(exc), ctx=ctx) from exc
+            if settings is not None:
+                selections[spec.owner] = settings
+        return selections

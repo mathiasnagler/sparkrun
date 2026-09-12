@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "profile-test-plugin"
+version = "0.1.0"
+description = "Private installed-plugin test fixture; never publish"
+requires-python = ">=3.12"
+dependencies = ["sparkrun==0.4.0"]
+
+[project.entry-points."sparkrun.plugins"]
+profile-test-plugin = "profile_test_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -12,6 +12,11 @@ the specific subclass.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sparkrun.api._benchmark_models import BenchmarkResult
+
 
 class SparkrunError(Exception):
     """Base class for all errors raised by the sparkrun library API.
@@ -19,6 +24,10 @@ class SparkrunError(Exception):
     Callers can catch this for a generic failure path; in most cases
     callers will want to discriminate on a more specific subclass.
     """
+
+
+class IntegrationUnavailable(SparkrunError):
+    """Required or conflicting integrations prevent a workload from launching."""
 
 
 class InsufficientCapacity(SparkrunError):
@@ -141,6 +150,34 @@ class BenchmarkFailed(SparkrunError):
         self.exit_code = exit_code
 
 
+class BenchmarkFinalizationFailed(BenchmarkFailed):
+    """Validated measurements survived a later export, cleanup or notification error.
+
+    ``stage`` identifies the primary failure; ``errors`` also retains secondary
+    finalization failures. ``result`` is the completed public result. Publication
+    and state failures retain the compatible BenchmarkIntegrationFailed subtype.
+    """
+
+    def __init__(self, message: str, *, stage: str, result: "BenchmarkResult") -> None:
+        super().__init__(message, exit_code=1)
+        self.stage = stage
+        self.result = result
+        self.errors = {stage: message}
+
+
+class BenchmarkIntegrationFailed(BenchmarkFinalizationFailed):
+    """Measurements completed, but a plugin or completion-state save failed.
+
+    ``integration`` names the plugin, or the reserved ``<state>`` marker.
+    Existing catches remain valid; catch BenchmarkFinalizationFailed to include
+    export, cleanup and notification errors. Retry requires saved measurements.
+    """
+
+    def __init__(self, message: str, *, integration: str, result: "BenchmarkResult") -> None:
+        super().__init__(message, stage="state" if integration == "<state>" else "integration", result=result)
+        self.integration = integration
+
+
 class NoResumableState(SparkrunError):
     """``ResumeMode.REQUIRED`` but no benchmark state exists for the derived id."""
 
@@ -168,6 +205,8 @@ __all__ = [
     "AmbiguousWorkload",
     "TrustRejected",
     "BenchmarkFailed",
+    "BenchmarkIntegrationFailed",
+    "BenchmarkFinalizationFailed",
     "NoResumableState",
     "CategoryNotFound",
     "AmbiguousCategoryError",

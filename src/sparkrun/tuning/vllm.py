@@ -17,6 +17,10 @@ Sparkrun's role:
 
 from __future__ import annotations
 
+from sparkrun.core.config import resolve_sparkrun_cache_dir
+
+from sparkrun.core.application_profile import remote_cache_path
+
 import logging
 import time
 from pathlib import Path
@@ -46,8 +50,11 @@ logger = logging.getLogger(__name__)
 VLLM_TUNING_CACHE_SUBDIR = "tuning/vllm"
 VLLM_TUNING_CONTAINER_PATH = "/tuning/vllm"
 
+
 # Subdir on the remote host where the pinned vllm-tune checkout lives.
-_VLLM_TUNE_REMOTE_PARENT = "$HOME/.cache/sparkrun/vllm-tune"
+def vllm_tune_remote_parent():
+    return remote_cache_path("vllm-tune")
+
 
 VALID_MODES = ("moe", "fp8", "all")
 
@@ -194,6 +201,14 @@ class VllmTuner:
             self.ssh_kwargs.get("ssh_user"),
         )
 
+        from sparkrun.core.application_profile import get_application_profile
+
+        if not self._custom_output_dir and get_application_profile().id != "sparkrun":
+            from sparkrun.orchestration.primitives import probe_remote_sparkrun_cache
+
+            relative = Path(self.output_dir).relative_to(resolve_sparkrun_cache_dir())
+            self.remote_output_dir = str(Path(probe_remote_sparkrun_cache(self.host, dry_run=self.dry_run, **self.ssh_kwargs)) / relative)
+
         # Resolve the vllm-tune pin (CLI override → config → built-in default).
         self.vllm_tune_repo, self.vllm_tune_ref = _resolve_vllm_tune_pin(config, vllm_tune_ref)
 
@@ -266,14 +281,14 @@ class VllmTuner:
         # Derive a stable subdir from the ref.  Use a sanitized form so an
         # accidental slash in the ref name can't escape the parent dir.
         safe_ref = self.vllm_tune_ref.replace("/", "_")
-        dest = "%s/%s" % (_VLLM_TUNE_REMOTE_PARENT, safe_ref)
+        dest = "%s/%s" % (vllm_tune_remote_parent(), safe_ref)
         install_script = read_script("vllm_tune_install.sh")
 
         # Prefix env-var assignments to the script body so they're available to
         # the script regardless of how the remote shell sources them.
         #
         # VLLM_TUNE_DEST must expand `$HOME` on the *remote* shell: the parent
-        # (_VLLM_TUNE_REMOTE_PARENT) is a constant containing a raw `$HOME` and
+        # (vllm_tune_remote_parent()) is a constant containing a raw `$HOME` and
         # is left unquoted so the remote shell expands it; only the dynamic ref
         # subdir is quoted.  This MUST match how build_vllm_tune_invocation
         # interpolates the resulting path (raw, so `$HOME` expands there too) —
@@ -283,7 +298,7 @@ class VllmTuner:
         prelude = "export VLLM_TUNE_REPO=%s\nexport VLLM_TUNE_REF=%s\nexport VLLM_TUNE_DEST=%s/%s\n" % (
             quote(self.vllm_tune_repo),
             quote(self.vllm_tune_ref),
-            _VLLM_TUNE_REMOTE_PARENT,
+            vllm_tune_remote_parent(),
             quote(safe_ref),
         )
         # The script's shebang stays at the top.
@@ -575,7 +590,7 @@ def _resolve_remote_output_dir(
     Mirrors the cross-OS / cross-user logic from BaseTuner: when the control
     machine is non-Linux or the SSH user differs from the local user, the
     local cache prefix doesn't exist on the remote.  Rewrites
-    ``DEFAULT_CACHE_DIR/...`` to ``/home/<ssh_user>/.cache/sparkrun/...``.
+    ``resolve_sparkrun_cache_dir()/...`` to ``/home/<ssh_user>/.cache/sparkrun/...``.
     """
     import os
     import sys
@@ -583,12 +598,12 @@ def _resolve_remote_output_dir(
     if custom_output_dir:
         return output_dir
 
-    from sparkrun.core.config import DEFAULT_CACHE_DIR
+    from sparkrun.core.config import resolve_sparkrun_cache_dir
 
     local_user = os.environ.get("USER")
     if (ssh_user and ssh_user != local_user) or sys.platform != "linux":
         _user = ssh_user or local_user or "user"
-        local_prefix = str(DEFAULT_CACHE_DIR)
+        local_prefix = str(resolve_sparkrun_cache_dir())
         if output_dir.startswith(local_prefix):
             suffix = output_dir[len(local_prefix) :]
             return "/home/%s/.cache/sparkrun%s" % (_user, suffix)

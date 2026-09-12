@@ -69,12 +69,16 @@ def _get_remote_tuning_dir(runtime: str, ssh_user: str | None = None) -> str:
     :meth:`ResolvedClusterConfig.resolve_transfer_config`: when the control
     machine is non-Linux or the SSH user differs from the local user, the
     remote path is derived from the SSH user's home directory instead of
-    the local ``DEFAULT_CACHE_DIR``.
+    the local ``resolve_sparkrun_cache_dir()``.
     """
     import os
     import sys
 
     cache_subdir = _resolve_tuning_cache_subdir(runtime)
+    from sparkrun.core.application_profile import get_application_profile, remote_cache_path
+
+    if get_application_profile().id != "sparkrun":
+        return remote_cache_path(cache_subdir, home="~")
 
     local_user = os.environ.get("USER")
     if ssh_user and ssh_user != local_user:

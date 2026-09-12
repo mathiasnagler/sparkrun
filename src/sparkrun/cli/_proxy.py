@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import render_identity_text
+
 import sys
 
 import click
@@ -26,7 +28,7 @@ from ._common import (
 def proxy():
     """Manage the LiteLLM-based inference proxy.
 
-    The proxy discovers running sparkrun inference endpoints and
+    The proxy discovers running {app_command} inference endpoints and
     presents them through a single unified OpenAI-compatible API.
     """
 
@@ -89,11 +91,11 @@ def start(
 
     Examples:
 
-      sparkrun proxy start
+      {app_command} proxy start
 
-      sparkrun proxy start --cluster mylab --port 4000
+      {app_command} proxy start --cluster mylab --port 4000
 
-      sparkrun proxy start --foreground
+      {app_command} proxy start --foreground
     """
     from sparkrun import api
 
@@ -138,7 +140,7 @@ def start(
         if exc.persisted:
             click.echo("Saved proxy.yaml: %s" % ", ".join(exc.persisted))
         click.echo(
-            "Error: %s Use --restart to apply new settings, or 'sparkrun proxy stop' first." % exc,
+            render_identity_text("Error: %s Use --restart to apply new settings, or '{app_command} proxy stop' first." % exc),
             err=True,
         )
         sys.exit(1)
@@ -157,7 +159,7 @@ def start(
             click.echo("Found %d endpoint(s) but none are healthy." % len(result.endpoints))
         else:
             click.echo("No inference endpoints found.")
-        click.echo("Load models with: sparkrun proxy load <recipe>")
+        click.echo(render_identity_text("Load models with: {app_command} proxy load <recipe>"))
     else:
         click.echo("Discovered %d healthy endpoint(s):" % len(healthy))
         for ep in healthy:
@@ -308,7 +310,7 @@ def sync_cmd(output_json):
         print_json(payload)
         return
     if not result.proxy_running:
-        click.echo("Proxy is not running. Start it with: sparkrun proxy start")
+        click.echo(render_identity_text("Proxy is not running. Start it with: {app_command} proxy start"))
     elif result.changed:
         click.echo("Synchronized running models: +%d, -%d." % (result.added, result.removed))
     else:
@@ -398,7 +400,7 @@ def models(refresh, output_json):
         if output_json:
             print_json([])
             return
-        click.echo("Proxy is not running. Start it with: sparkrun proxy start")
+        click.echo(render_identity_text("Proxy is not running. Start it with: {app_command} proxy start"))
         return
 
     if refresh:
@@ -464,7 +466,7 @@ def alias_add(alias_name, target_model):
 
     Example:
 
-      sparkrun proxy alias add my-model "Qwen/Qwen3-1.7B"
+      {app_command} proxy alias add my-model "Qwen/Qwen3-1.7B"
     """
     from sparkrun import api
 
@@ -497,7 +499,7 @@ def alias_remove(alias_name):
 
     Example:
 
-      sparkrun proxy alias remove my-model
+      {app_command} proxy alias remove my-model
     """
     from sparkrun import api
 
@@ -541,7 +543,7 @@ def alias_list(output_json):
 
     if not aliases:
         click.echo("No aliases configured.")
-        click.echo("Add one with: sparkrun proxy alias add <name> <model>")
+        click.echo(render_identity_text("Add one with: {app_command} proxy alias add <name> <model>"))
         return
 
     click.echo("Aliases:")
@@ -580,16 +582,16 @@ def load_cmd(
     host_list=None,
     cluster_mgr=None,
 ):
-    """Load a model via sparkrun run and register with proxy.
+    """Load a model via {app_command} run and register with proxy.
 
     Launches inference and registers the new endpoint with the running
     proxy via the management API.
 
     Example:
 
-      sparkrun proxy load qwen3-1.7b-vllm --cluster mylab
+      {app_command} proxy load qwen3-1.7b-vllm --cluster mylab
 
-      sparkrun proxy load qwen3-1.7b-vllm --solo --gpu-mem 0.8
+      {app_command} proxy load qwen3-1.7b-vllm --solo --gpu-mem 0.8
     """
     from sparkrun import api
     from sparkrun.core.bootstrap import get_runtime
@@ -732,7 +734,7 @@ def _warn_not_registered(readiness, proxy_status) -> None:
             "Warning: server port %d never started listening on %s (container may have exited)." % (readiness.port, readiness.head_host),
             err=True,
         )
-        click.echo("  Check the logs: sparkrun logs <cluster-id>", err=True)
+        click.echo(render_identity_text("  Check the logs: {app_command} logs <cluster-id>"), err=True)
         return
 
     if readiness.reason in {"inference", "cancelled"}:
@@ -746,7 +748,7 @@ def _warn_not_registered(readiness, proxy_status) -> None:
     if proxy_status.autodiscover_running:
         click.echo("  The proxy's auto-discover will register it once it responds.", err=True)
     else:
-        click.echo("  Register it once it responds with: sparkrun proxy sync", err=True)
+        click.echo(render_identity_text("  Register it once it responds with: {app_command} proxy sync"), err=True)
 
 
 @proxy.command("unload")
@@ -755,11 +757,11 @@ def _warn_not_registered(readiness, proxy_status) -> None:
 @dry_run_option
 @click.pass_context
 def unload_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run):
-    """Unload a model via sparkrun stop and remove from proxy.
+    """Unload a model via {app_command} stop and remove from proxy.
 
     Example:
 
-      sparkrun proxy unload qwen3-1.7b-vllm --cluster mylab
+      {app_command} proxy unload qwen3-1.7b-vllm --cluster mylab
     """
     from sparkrun import api
     from ._common import _get_context, _load_recipe, resolve_host_context
@@ -794,7 +796,12 @@ def unload_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run):
         for error in result.errors:
             click.echo("Error: %s" % error, err=True)
         if not result.success:
-            click.echo("Workload NOT fully stopped. Proxy registration was kept; check sparkrun status before retrying.", err=True)
+            click.echo(
+                render_identity_text(
+                    "Workload NOT fully stopped. Proxy registration was kept; check {app_command} status before retrying."
+                ),
+                err=True,
+            )
             sys.exit(1)
         click.echo("Workload stopped on %d host(s)." % len(result.hosts_targeted))
 
@@ -890,12 +897,14 @@ def ui_cmd(issue_token, output_json):
         click.echo("Reachable off this host (bound to %s) — sign-in requires a gateway credential." % result.bind_host)
     elif result.exposed:
         click.echo(
-            "DANGER: reachable off this host (bound to %s) with NO sign-in — anyone who can reach it can "
-            "rewrite the served model set. Close it with 'sparkrun proxy admin-token set' "
-            "or '--host 127.0.0.1'." % result.bind_host
+            render_identity_text(
+                "DANGER: reachable off this host (bound to %s) with NO sign-in — anyone who can reach it can "
+                "rewrite the served model set. Close it with '{app_command} proxy admin-token set' "
+                "or '--host 127.0.0.1'." % result.bind_host
+            )
         )
     if not result.running:
-        click.echo("Note: the gateway is not running — start it with 'sparkrun proxy start'.")
+        click.echo(render_identity_text("Note: the gateway is not running — start it with '{app_command} proxy start'."))
     if result.token:
         click.echo("")
         click.echo("Sparkrun-managed admin token:")
@@ -905,7 +914,7 @@ def ui_cmd(issue_token, output_json):
     elif not result.auth_required:
         click.echo("Admin authentication is disabled; no sign-in token is required.")
     elif result.running:
-        click.echo("Get the sign-in token with: sparkrun proxy admin-token get")
+        click.echo(render_identity_text("Get the sign-in token with: {app_command} proxy admin-token get"))
 
 
 @proxy.group("admin-token")
@@ -927,7 +936,7 @@ def admin_token_get(output_json):
         print_json({"enabled": token is not None, "token": token})
     elif token is None:
         click.echo("Admin authentication is disabled (the default); no token is required.")
-        click.echo("Require one immediately with: sparkrun proxy admin-token set")
+        click.echo(render_identity_text("Require one immediately with: {app_command} proxy admin-token set"))
     else:
         click.echo(token)
 

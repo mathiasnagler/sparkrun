@@ -10,6 +10,8 @@ a Prometheus ``/metrics`` endpoint.  This module handles:
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import remote_cache_path, get_application_profile
+
 import logging
 import subprocess
 from pathlib import Path
@@ -23,8 +25,15 @@ from sparkrun.orchestration.ssh import (
 
 logger = logging.getLogger(__name__)
 
-NV_MONITOR_REMOTE_DIR = ".cache/sparkrun/bin"
-NV_MONITOR_REMOTE_PATH = "$HOME/.cache/sparkrun/bin/nv-monitor"
+
+def nv_monitor_remote_dir():
+    return ".cache/" + get_application_profile().cache_namespace + "/bin"
+
+
+def nv_monitor_remote_path():
+    return remote_cache_path("bin/nv-monitor")
+
+
 NV_MONITOR_DEFAULT_PORT = 29110
 NV_MONITOR_VERSION = "1.0.0"
 
@@ -62,9 +71,9 @@ def ensure_nv_monitor(
         return {h: True for h in hosts}
 
     # Check both binaries exist on remote — if either is missing, redeploy
-    prom2json_remote = "$HOME/%s/prom2json" % NV_MONITOR_REMOTE_DIR
+    prom2json_remote = "$HOME/%s/prom2json" % nv_monitor_remote_dir()
     check_script = ('NV=$(%s); P2J=$(%s); if [ "$NV" = "MISSING" ] || [ "$P2J" = "MISSING" ]; then echo MISSING; else echo "$NV"; fi') % (
-        _checksum_script(NV_MONITOR_REMOTE_PATH),
+        _checksum_script(nv_monitor_remote_path()),
         _checksum_script(prom2json_remote),
     )
     results = run_remote_scripts_parallel(
@@ -97,7 +106,7 @@ def ensure_nv_monitor(
     # of each parent if we can, or fall back to creating our own tree.
     mkdir_script = (
         'dir="$HOME/%(d)s"; '
-        'for p in "$HOME/.cache" "$HOME/.cache/sparkrun" "$dir"; do '
+        'for p in "$HOME/.cache" "$HOME/.cache/%(namespace)s" "$dir"; do '
         '  if [ -d "$p" ] && [ ! -w "$p" ]; then '
         '    echo "Fixing permissions on $p" >&2; '
         '    sudo chown "$(id -u):$(id -g)" "$p" 2>/dev/null || true; '
@@ -105,7 +114,7 @@ def ensure_nv_monitor(
         '  mkdir -p "$p" 2>/dev/null || true; '
         "done; "
         '[ -d "$dir" ] && [ -w "$dir" ] && echo OK || echo FAIL'
-    ) % {"d": NV_MONITOR_REMOTE_DIR}
+    ) % {"d": nv_monitor_remote_dir(), "namespace": get_application_profile().cache_namespace}
 
     mkdir_results = run_remote_scripts_parallel(
         needs_deploy,
@@ -148,7 +157,7 @@ def ensure_nv_monitor(
             deploy_results = run_rsync_parallel(
                 tmpdir,
                 rsync_hosts,
-                "~/%s" % NV_MONITOR_REMOTE_DIR,
+                "~/%s" % nv_monitor_remote_dir(),
                 ssh_user=ssh_kwargs.get("ssh_user"),
                 ssh_key=ssh_kwargs.get("ssh_key"),
                 ssh_options=ssh_kwargs.get("ssh_options"),
@@ -206,7 +215,7 @@ def start_nv_monitor_ssh(
         [
             "bash",
             "-c",
-            "trap 'kill %%1 2>/dev/null' EXIT HUP TERM INT; %s -n -p %d & wait" % (NV_MONITOR_REMOTE_PATH, port),
+            "trap 'kill %%1 2>/dev/null' EXIT HUP TERM INT; %s -n -p %d & wait" % (nv_monitor_remote_path(), port),
         ]
     )
 
@@ -260,7 +269,7 @@ def stop_nv_monitor_remote(
         ssh_kwargs: SSH connection kwargs.
         port: Port the nv-monitor was started with (for identification).
     """
-    kill_script = 'pkill -f "nv-monitor.*-p %d" 2>/dev/null; true' % port
+    kill_script = 'pkill -f "$HOME/.cache/%s/bin/nv-monitor.*-p %d" 2>/dev/null; true' % (get_application_profile().cache_namespace, port)
     run_remote_command(
         host,
         kill_script,

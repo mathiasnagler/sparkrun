@@ -93,7 +93,13 @@ class SglangTuner(BaseTuner):
     """
 
     runtime_label = "SGLang"
-    container_name = TUNE_CONTAINER_NAME
+
+    @property
+    def container_name(self):
+        from sparkrun.core.application_profile import resource_name
+
+        return resource_name("_tune")
+
     output_path = TUNING_CONTAINER_OUTPUT_PATH
     clone_script = "sglang_clone_benchmarks.sh"
 

@@ -123,7 +123,9 @@ emit ARCH "$(uname -m 2>/dev/null || echo unknown)"
 
 def generate_fingerprint_script() -> str:
     """Return the bash probe script.  Run over SSH and parse stdout with :func:`parse_fingerprint_output`."""
-    return _FINGERPRINT_SCRIPT
+    from sparkrun.core.hardware_probe_extensions import hardware_probe_script
+
+    return _FINGERPRINT_SCRIPT + hardware_probe_script()
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +188,7 @@ def _normalize_apple_model(raw: str) -> str:
 
 
 # Public aliases: the k8s node-inventory path
-# (``sparkrun.orchestration.k8s.inventory``) reuses these so labels-derived
+# (``sparkrun.plugins.k8s.orchestration.inventory``) reuses these so labels-derived
 # AcceleratorSpec models / memory values match the SSH fingerprint path
 # byte-for-byte on hybrid clusters (a DGX Spark is model ``"gb10"`` whether
 # detected via nvidia-smi or via ``nvidia.com/gpu.product``).
@@ -290,15 +292,16 @@ def build_host_hardware(parsed: dict[str, str]) -> HostHardware:
                 )
             )
 
-    fingerprint = compute_fingerprint_hash(accelerators)
+    from sparkrun.core.hardware_probe_extensions import enrich_host_hardware
+
     nvidia_driver = parsed.get("NVIDIA_DRIVER_VERSION", "").strip()
     driver_versions = {"nvidia": nvidia_driver} if nvidia_driver else {}
-    return HostHardware(
-        accelerators=accelerators,
-        fingerprint=fingerprint,
-        notes=_detection_note(parsed),
-        driver_versions=driver_versions,
+    hardware = enrich_host_hardware(
+        parsed,
+        HostHardware(accelerators=accelerators, notes=_detection_note(parsed), driver_versions=driver_versions),
     )
+    hardware.fingerprint = compute_fingerprint_hash(hardware.accelerators)
+    return hardware
 
 
 def compute_fingerprint_hash(accelerators: list[AcceleratorSpec]) -> str:

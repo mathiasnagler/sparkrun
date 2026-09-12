@@ -584,7 +584,7 @@ def test_cluster_context_without_a_cache_is_unchanged():
 
 def test_base_executor_ensure_runtime_cache_is_a_safe_no_op():
     """A provider executor that never overrides must not break a launch."""
-    from sparkrun.orchestration.executors.k8s import K8sExecutor
+    from sparkrun.plugins.k8s.executor import K8sExecutor
 
     assert K8sExecutor().ensure_runtime_cache(_mounts(), ["h1"]) is None
 

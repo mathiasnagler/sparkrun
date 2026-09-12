@@ -761,26 +761,26 @@ def test_expected_bandwidth_takes_the_slower_end():
 
 
 def _check_ctx(multi_host=True):
-    from sparkrun.cli._setup._check import CheckContext
+    from sparkrun.core.setup_checks import CheckContext
 
     return CheckContext(cluster_name=None, multi_host=multi_host)
 
 
 def _check_state(**kv):
-    from sparkrun.cli._setup._check import HostState
+    from sparkrun.core.setup_checks import HostState
 
     return HostState(host="h1", rdma=parse_device_facts("h1", {"RDMA_COMPLETE": "1", **kv}))
 
 
 def test_check_rdma_is_skipped_for_single_host_clusters():
     """RDMA is inter-node; reporting it on one host is noise."""
-    from sparkrun.cli._setup._check import _check_rdma
+    from sparkrun.core.setup_checks import _check_rdma
 
     assert _check_rdma(_check_state(), _check_ctx(multi_host=False)) is None
 
 
 def test_check_rdma_reports_ok_with_the_link_rate():
-    from sparkrun.cli._setup._check import OK, _check_rdma
+    from sparkrun.core.setup_checks import OK, _check_rdma
 
     item = _check_rdma(
         _check_state(
@@ -801,7 +801,7 @@ def test_check_rdma_reports_ok_with_the_link_rate():
 
 
 def test_check_rdma_warns_when_no_device_is_active():
-    from sparkrun.cli._setup._check import WARN, _check_rdma
+    from sparkrun.core.setup_checks import WARN, _check_rdma
 
     item = _check_rdma(
         _check_state(RDMA_DEV_COUNT="1", RDMA_DEV_0_NAME="rocep1s0f1", RDMA_DEV_0_STATE="1: DOWN"),
@@ -813,7 +813,7 @@ def test_check_rdma_warns_when_no_device_is_active():
 
 def test_check_rdma_missing_perftest_is_a_note_not_a_warning():
     """It is one command away and rdma-test has a container fallback."""
-    from sparkrun.cli._setup._check import OK, _check_rdma
+    from sparkrun.core.setup_checks import OK, _check_rdma
 
     item = _check_rdma(
         _check_state(
@@ -831,16 +831,16 @@ def test_check_rdma_missing_perftest_is_a_note_not_a_warning():
 
 def test_check_rdma_skips_rather_than_failing_when_it_cannot_tell():
     """'Could not probe' and 'no devices' are both SKIP, never FAIL."""
-    from sparkrun.cli._setup._check import SKIP, HostState, _check_rdma
+    from sparkrun.core.setup_checks import SKIP, HostState, _check_rdma
 
     assert _check_rdma(HostState(host="h1", rdma=None), _check_ctx()).status == SKIP
     assert _check_rdma(_check_state(RDMA_DEV_COUNT="0"), _check_ctx()).status == SKIP
 
 
 def test_check_rdma_is_registered_in_order():
-    from sparkrun.cli._setup._check import SETUP_CHECKS
+    from sparkrun.core.setup_steps import all_setup_steps
 
-    keys = [c.key for c in SETUP_CHECKS]
+    keys = [c.key for c in all_setup_steps()]
     assert "rdma" in keys
     # After cx7: you configure the fabric, then verify the devices came up.
     assert keys.index("rdma") > keys.index("cx7")

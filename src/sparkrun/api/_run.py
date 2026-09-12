@@ -30,13 +30,13 @@ for any failure.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 import time
 from typing import TYPE_CHECKING, Any
 
 from sparkrun.api._context import resolve_sctx
 from sparkrun.api._errors import (
-    InsufficientCapacity,
-    LayoutRequired,
+    IntegrationUnavailable,
     SparkrunError,
 )
 from sparkrun.api._models import RunOptions, RunPlan, RunResult
@@ -46,6 +46,17 @@ if TYPE_CHECKING:
     from sparkrun.core.scheduler import RankAssignment
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _launch_errors(source: str):
+    """Keep both launch routes within the same public error contract."""
+    try:
+        yield
+    except SparkrunError:
+        raise
+    except Exception as error:
+        raise SparkrunError("%s failed: %s" % (source, error)) from error
 
 
 def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPlan:
@@ -126,16 +137,8 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
     if _scheduler_defaulted:
         logger.debug("No scheduler configured (recipe/cluster); using default %r", FALLBACK_DEFAULT_SCHEDULER)
 
-    # Apply the cluster's SSH user (if any) to the config so downstream
-    # SSH operations (executor.run / distribution / build_ssh_kwargs)
-    # log in as the right user.  Matches the CLI's resolution chain
-    # where ``_resolve_hosts_or_exit`` applies ``cluster.user`` to
-    # ``config.ssh_user`` before launch.
-    if getattr(cluster_def, "user", None):
-        try:
-            config.ssh_user = cluster_def.user
-        except Exception:
-            logger.debug("Failed to apply cluster SSH user to config", exc_info=True)
+    sctx = sctx.for_cluster(cluster_def)
+    config = sctx.config
 
     # 2. Compute placement via the single shared authority
     # (:func:`sparkrun.api._hosts.resolve_effective_hosts`).  This is the
@@ -266,6 +269,12 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     from sparkrun.orchestration.job_metadata import parse_cluster_id
 
     sctx = resolve_sctx(sctx)
+    from sparkrun.core.installed_plugins import RequiredIntegrationError, require_integrations
+
+    try:
+        require_integrations()
+    except RequiredIntegrationError as error:
+        raise IntegrationUnavailable(str(error)) from error
     started_at = time.time()
     config = sctx.config
 
@@ -283,6 +292,8 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     except ValueError as error:
         raise SparkrunError(str(error)) from error
     cluster_def = plan.cluster
+    sctx = sctx.for_cluster(cluster_def)
+    config = sctx.config
     hosts = list(plan.candidate_hosts)
     host_list = list(plan.host_list)
     is_solo = plan.is_solo
@@ -306,16 +317,6 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         if match is not None:
             logger.info("ensure: intent %s already running as %s; skipping launch", intent_id, match.cluster_id)
             return _already_running_result(match, plan=plan, options=options, started_at=started_at, sctx=sctx)
-
-    # Re-apply the cluster's SSH user: a plan built against a different
-    # ``sctx`` (or a config reset in between) would otherwise leave the
-    # launch's SSH operations logging in as the wrong user.  Idempotent when
-    # the plan was built from this same context.
-    if getattr(cluster_def, "user", None):
-        try:
-            config.ssh_user = cluster_def.user
-        except Exception:
-            logger.debug("Failed to apply cluster SSH user to config", exc_info=True)
 
     # Recipe-owned execution strategies are selected only from top-level items
     # present in this recipe.  Preparation happens before the shared launcher
@@ -399,16 +400,17 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         )
         observed_running["ids"] = running
 
-    # 3b. Experimental k8s JobSet path (gated by the api.run.k8s feature flag).
-    # When the resolved executor is k8s AND the flag is on, route to the
-    # native Kubernetes launcher instead of the SSH-oriented launch_inference.
-    # Flag off → fall through to the legacy k8s-executor-over-SSH draft.
-    if config.is_feature_enabled("api.run.k8s"):
+    # An enabled executor plugin can own its API launch path. Core supplies
+    # the resolved context and preserves deployment replacement semantics.
+    from sparkrun.core.run_handlers import registered_run_handlers
+
+    run_handlers = registered_run_handlers(config)
+    if run_handlers:
         from sparkrun.orchestration.executor import ExecutorUnavailableError, resolve_executor_name
 
         try:
             _executor_name = resolve_executor_name(
-                cli_overrides=_build_executor_overrides(options),
+                cli_overrides=options.executor_overrides(),
                 recipe=recipe,
                 cluster=cluster_def,
                 runtime=runtime,
@@ -417,34 +419,22 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
             )
         except ExecutorUnavailableError:
             _executor_name = None
-        if _executor_name == "k8s":
+        handler = run_handlers.get(_executor_name)
+        if handler is not None:
             if execution_strategy is not None:
-                raise SparkrunError("execution strategy %r does not support the Kubernetes launch path" % execution_strategy.name)
-            from sparkrun.api._run_k8s import run_k8s
-
+                raise SparkrunError(
+                    "execution strategy %r does not support the %r executor launch path" % (execution_strategy.name, _executor_name)
+                )
             # This path returns without going through ``launch_inference``, so
             # it never reaches the ``before_start`` hook — evict here to keep
             # replace-my-own-deployment semantics.  It does not get the SSH
-            # path's "only after distribution succeeded" guarantee; the k8s
+            # path's "only after distribution succeeded" guarantee; the plugin
             # launcher owns its own image/volume staging.
             if not options.dry_run:
                 _evict_before_start()
 
-            return run_k8s(
-                options,
-                sctx,
-                recipe=recipe,
-                runtime=runtime,
-                cluster_def=cluster_def,
-                host_list=host_list,
-                placement=placement,
-                is_solo=is_solo,
-                cluster_id=cluster_id_for_launch,
-                intent_id=intent_id,
-                placement_token=placement_token,
-                effective_scheduler=effective_scheduler,
-                started_at=started_at,
-            )
+            with _launch_errors("executor %r launch" % _executor_name):
+                return handler.run(options, sctx, plan=plan, started_at=started_at)
 
     # 4. Translate options → launch_inference kwargs.
     launch_kwargs: dict[str, Any] = {
@@ -469,7 +459,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         "dashboard_port": options.dashboard_port,
         "dashboard": options.dashboard,
         "init_port": options.init_port,
-        "executor_config": _build_executor_overrides(options),
+        "executor_config": options.executor_overrides(),
         "extra_docker_opts": list(options.extra_docker_opts) if options.extra_docker_opts else None,
         "rootless": not options.rootful,
         "auto_user": not options.rootful,
@@ -493,15 +483,8 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     }
 
     # 5. Launch.
-    try:
+    with _launch_errors("launch_inference"):
         result = launch_inference(**launch_kwargs)
-    except (KeyboardInterrupt, SystemExit):
-        raise
-    except (InsufficientCapacity, LayoutRequired, SparkrunError):
-        # Typed API errors flow through unchanged.
-        raise
-    except Exception as e:
-        raise SparkrunError("launch_inference failed: %s" % e) from e
 
     # 6. Build RunResult.
     metadata: dict[str, Any] = {
@@ -773,19 +756,6 @@ def _evict_superseded_deployments(
             )
         evicted.append(cid)
     return evicted, observed_running
-
-
-def _build_executor_overrides(options: RunOptions) -> dict[str, Any]:
-    """Flatten ``options.executor`` + ``options.executor_config`` into the
-    ``cli_overrides`` dict that ``launch_inference`` forwards to
-    :func:`sparkrun.orchestration.executor.resolve_executor`."""
-    overrides: dict[str, Any] = {}
-    if options.executor:
-        overrides["executor"] = options.executor
-    if options.executor_config:
-        for key, value in options.executor_config.items():
-            overrides[key] = value
-    return overrides
 
 
 def _resolve_scheduler_name(effective_scheduler, sctx):

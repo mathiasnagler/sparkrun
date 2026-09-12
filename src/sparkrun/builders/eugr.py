@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import remote_cache_path
+
 import json
 import logging
 import re
@@ -1317,7 +1319,7 @@ class EugrBuilder(BuilderPlugin):
         from sparkrun.orchestration.primitives import run_script_on_host
 
         # TODO: hard-coded inline script
-        remote_path = "~/.cache/sparkrun/eugr-spark-vllm-docker"
+        remote_path = remote_cache_path("eugr-spark-vllm-docker", home="~")
 
         if branch:
             # Clone with specific branch or fetch+checkout if already cloned
@@ -1388,7 +1390,7 @@ class EugrBuilder(BuilderPlugin):
         from sparkrun.orchestration.ssh import run_remote_script_streaming
 
         # TODO: hard-coded inline script
-        remote_path = "~/.cache/sparkrun/eugr-spark-vllm-docker"
+        remote_path = remote_cache_path("eugr-spark-vllm-docker", home="~")
         args_str = args_list_to_shell_str(build_args)
         # set -o pipefail + ${PIPESTATUS[0]} preserves the build script's true rc when piping
         # through tee on the remote side; we redirect 2>&1 so phase markers in either stream

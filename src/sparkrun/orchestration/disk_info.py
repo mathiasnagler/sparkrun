@@ -10,6 +10,8 @@ for consistency.
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import remote_cache_path
+
 import logging
 import os
 import subprocess
@@ -94,7 +96,7 @@ def probe_cache_status(
     if not hosts:
         return {}
 
-    sr_dir = sparkrun_cache_dir or "$HOME/.cache/sparkrun"
+    sr_dir = sparkrun_cache_dir or remote_cache_path()
     # The probe interpolates the path inside double-quoted bash test brackets
     # (`[ -d "$hf_dir" ]`), which does NOT expand a leading `~/`.  Normalize
     # to `$HOME/` so callers can pass either form without surprise.

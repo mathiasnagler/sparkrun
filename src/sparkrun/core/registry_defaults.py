@@ -44,6 +44,8 @@ argument to thread — the value has to be ambient for the duration of the load.
 
 from __future__ import annotations
 
+from sparkrun.core.registration import enlist_registry_state
+
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -138,6 +140,8 @@ class DeclaredRegistry:
 
 #: name -> declaration.  Keyed by name because a name is what collides.
 _DECLARED: dict[str, DeclaredRegistry] = {}
+
+enlist_registry_state(globals(), "_DECLARED")
 
 
 def register_default_registry(entry: RegistryEntry, *, owner: str) -> None:

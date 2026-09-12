@@ -34,7 +34,7 @@ def _fake_internal_result():
     result.benchmark_args = {}
     result.state_dir = None
     result.resumed = False
-    result.submission_id = None
+    result.integration_results = {}
     result.recipe = MagicMock()
     result.overrides = {}
     return result

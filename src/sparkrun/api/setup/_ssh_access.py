@@ -22,6 +22,8 @@ confirm, which is the only trustworthy signal anyway.
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import resource_name
+
 import logging
 import os
 import shutil
@@ -236,9 +238,9 @@ def ensure_local_key(
     if preferred:
         candidates.append(Path(os.path.expanduser(str(preferred))))
     candidates.extend(directory / name for name in _DEFAULT_KEY_NAMES)
-    candidates.append(own_dir / SPARKRUN_KEY_NAME)
+    candidates.append(own_dir / resource_name("_ed25519"))
     # Keys generated before sparkrun owned its own directory.
-    candidates.append(directory / SPARKRUN_KEY_NAME)
+    candidates.append(directory / resource_name("_ed25519"))
 
     for candidate in candidates:
         found = _read_identity(candidate)
@@ -255,7 +257,7 @@ def ensure_local_key(
             "ssh-keygen not found on PATH. Install the OpenSSH client (Windows: Settings > Apps > Optional Features > OpenSSH Client)."
         )
 
-    target = own_dir / SPARKRUN_KEY_NAME
+    target = own_dir / resource_name("_ed25519")
     try:
         own_dir.mkdir(parents=True, exist_ok=True)
         # No-op on Windows, where ACLs govern instead of mode bits.

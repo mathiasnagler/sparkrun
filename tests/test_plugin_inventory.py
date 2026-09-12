@@ -312,6 +312,11 @@ def test_json_output_is_a_bare_array_of_plugin_objects(runner, tmp_path, fake_in
         "name": "cli_json",
         "source": SOURCE_IN_TREE,
         "module": "inv_plugins.cli_json",
+        "selected": True,
+        "package": None,
+        "selection_source": None,
+        "failure": None,
+        "required": False,
         "enabled": True,
         "loaded": True,
         "feature_flag": "test.inv.cli_json",
@@ -372,15 +377,14 @@ def test_features_json_is_a_bare_array_carrying_the_channel(runner):
 
     from sparkrun.core.features import all_features
 
-    result = runner.invoke(main, ["setup", "features", "list", "--json"])
+    result = runner.invoke(main, ["setup", "features", "list", "--all", "--json"])
     assert result.exit_code == 0, result.output
 
     payload = json.loads(result.output)
     assert isinstance(payload, list)
     assert [r["name"] for r in payload] == [f.name for f in all_features()]
-    assert set(payload[0]) == {"name", "description", "enabled", "source", "override", "channel"}
-    # The channel is what every flag resolved under, so it is per-row rather
-    # than an envelope — the array shape is the convention for list commands.
+    assert set(payload[0]) == {"name", "description", "enabled", "source", "override", "channel", "application_channel"}
+    # Core feature maturity and application release policy remain distinct.
     assert len({r["channel"] for r in payload}) == 1
 
 

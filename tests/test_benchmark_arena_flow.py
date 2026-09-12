@@ -1,466 +1,329 @@
-"""Tests for the --arena flag dispatch and arena_flow helper extraction."""
+"""Arena as a benchmark integration: CLI/API parity, persistence, and retries."""
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+from dataclasses import replace
+import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import Mock
 
-import click
 import pytest
-import yaml
 from click.testing import CliRunner
 
-from sparkrun.cli._benchmark import benchmark as benchmark_group
-
-
-def _fake_bench_result(**kw):
-    obj = MagicMock()
-    obj.success = True
-    obj.benchmark_id = "x"
-    fw = MagicMock()
-    fw.framework_name = "llama-benchy"
-    fw.primary_category = "performance"
-    obj.framework = fw
-    obj.profile = None
-    obj.results = {"csv": "col1,col2\n1,2\n"}
-    obj.outputs = {}
-    obj.cluster_id = "c"
-    obj.host_list = []
-    obj.container_image = "img"
-    obj.container_image_sha = None
-    obj.container_image_sha_pinned = False
-    obj.longterm_image_ref = None
-    obj.longterm_image_pinned = False
-    obj.benchmark_args = {}
-    obj.state_dir = None
-    obj.resumed = False
-    obj.submission_id = None
-    obj.launch_result = None
-    obj.recipe = MagicMock()
-    obj.overrides = {}
-    for k, v in kw.items():
-        setattr(obj, k, v)
-    return obj
-
-
-def test_arena_flag_triggers_preflight_and_finalize():
-    """`benchmark perf --arena --local-test` runs preflight + finalize in order."""
-    captured = {"order": [], "kwargs": {}}
-
-    def _capture(ctx, **kwargs):
-        captured["order"].append("run_benchmark")
-        captured["kwargs"].update(kwargs)
-        return _fake_bench_result()
-
-    def _fake_preflight(*, local_test, ctx, recipe_name=None, dry_run=False):
-        captured["order"].append("preflight")
-        return ("sub-test-123", "@official/spark-arena-v2")
-
-    def _fake_finalize(**kw):
-        captured["order"].append("finalize")
-        captured["finalize_kwargs"] = kw
-
-    runner = CliRunner()
-    with (
-        patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture),
-        patch("sparkrun.cli._arena_flow.preflight_arena", side_effect=_fake_preflight),
-        patch("sparkrun.cli._arena_flow.finalize_arena", side_effect=_fake_finalize),
-    ):
-        result = runner.invoke(
-            benchmark_group,
-            ["perf", "my-recipe", "--arena", "--local-test", "--hosts", "h1"],
-            catch_exceptions=False,
-        )
-
-    # Asserted before the order check: without it, an early exit shows up as an
-    # empty capture list rather than as the error that caused it.
-    assert result.exit_code == 0, "CLI exited %s: %s" % (result.exit_code, result.output)
-    assert captured["order"] == ["preflight", "run_benchmark", "finalize"]
-    assert captured["kwargs"].get("submission_id_for_extras") == "sub-test-123"
-    assert captured["kwargs"].get("profile") == "@official/spark-arena-v2"
-    assert captured["finalize_kwargs"]["submission_id"] == "sub-test-123"
-    assert captured["finalize_kwargs"]["local_test"] is True
-
-
-def test_arena_flag_does_not_override_explicit_profile():
-    """If user passes --profile explicitly with --arena, explicit profile wins."""
-    captured = {}
-
-    def _capture(ctx, **kwargs):
-        captured.update(kwargs)
-        return _fake_bench_result()
-
-    runner = CliRunner()
-    with (
-        patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture),
-        patch("sparkrun.cli._arena_flow.preflight_arena", return_value=("s", "@official/spark-arena-v2")),
-        patch("sparkrun.cli._arena_flow.finalize_arena"),
-    ):
-        result = runner.invoke(
-            benchmark_group,
-            ["perf", "my-recipe", "--arena", "--local-test", "--profile", "custom", "--hosts", "h1"],
-            catch_exceptions=False,
-        )
-    assert result.exit_code == 0, "CLI exited %s: %s" % (result.exit_code, result.output)
-    assert captured.get("profile") == "custom"
-
-
-def test_arena_flag_absent_no_preflight():
-    """Without --arena, neither preflight nor finalize should be called."""
-    captured = {"preflight_called": False, "finalize_called": False}
-
-    def _capture(ctx, **kwargs):
-        return _fake_bench_result()
-
-    def _fake_preflight(**kw):
-        captured["preflight_called"] = True
-        return ("s", "p")
-
-    def _fake_finalize(**kw):
-        captured["finalize_called"] = True
-
-    runner = CliRunner()
-    with (
-        patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture),
-        patch("sparkrun.cli._arena_flow.preflight_arena", side_effect=_fake_preflight),
-        patch("sparkrun.cli._arena_flow.finalize_arena", side_effect=_fake_finalize),
-    ):
-        result = runner.invoke(
-            benchmark_group,
-            ["perf", "my-recipe", "--hosts", "h1"],
-            catch_exceptions=False,
-        )
-
-    # This test asserts only negatives, so it passes vacuously if the command
-    # exits before dispatch. Pin the exit code so it proves the *absence* of a
-    # preflight on a run that actually happened.
-    assert result.exit_code == 0, "CLI exited %s: %s" % (result.exit_code, result.output)
-    assert not captured["preflight_called"]
-    assert not captured["finalize_called"]
-
-
-def test_arena_benchmark_run_uses_same_arena_flow_helpers():
-    """`sparkrun arena benchmark run <r>` delegates to preflight_arena + finalize_arena."""
-    from sparkrun.cli._arena import arena_benchmark
-
-    order = []
-
-    def _capture(ctx, *args, **kwargs):
-        order.append("run_benchmark")
-        return _fake_bench_result()
-
-    def _fake_preflight(*, local_test, ctx, recipe_name=None, dry_run=False):
-        order.append("preflight")
-        return ("s", "@official/spark-arena-v2")
-
-    def _fake_finalize(**kw):
-        order.append("finalize")
-
-    runner = CliRunner()
-    with (
-        patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture),
-        patch("sparkrun.cli._arena_flow.preflight_arena", side_effect=_fake_preflight),
-        patch("sparkrun.cli._arena_flow.finalize_arena", side_effect=_fake_finalize),
-    ):
-        runner.invoke(arena_benchmark, ["run", "my-recipe", "--local-test", "--hosts", "h1"], catch_exceptions=False)
-
-    assert order == ["preflight", "run_benchmark", "finalize"]
-
-
-def test_arena_benchmark_run_threads_dry_run_to_benchmark():
-    """``arena benchmark run`` must pass dry_run through the benchmark wrapper."""
-    from sparkrun.api._benchmark_models import ResumeMode
-    from sparkrun.cli._arena import arena_benchmark
-
-    captured = {}
-
-    def _capture(ctx, **kwargs):
-        captured.update(kwargs)
-        return _fake_bench_result()
-
-    runner = CliRunner()
-    with (
-        patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture),
-        patch("sparkrun.cli._arena_flow.preflight_arena", return_value=("s", "@official/spark-arena-v2")),
-        patch("sparkrun.cli._arena_flow.finalize_arena"),
-    ):
-        runner.invoke(
-            arena_benchmark,
-            ["my-recipe", "--local-test", "--dry-run", "--tp", "2", "--hosts", "h1"],
-            catch_exceptions=False,
-        )
-
-    assert captured["recipe_name"] == "my-recipe"
-    assert captured["tensor_parallel"] == 2
-    assert captured["api_key_env"] is None
-    assert captured["dry_run"] is True
-    assert captured["profile"] == "@official/spark-arena-v2"
-    assert captured["export_results_files"] is False
-    assert captured["resume_mode"] == ResumeMode.AUTO
-
-
-def test_arena_benchmark_run_no_finalize_on_failure():
-    """``arena benchmark run`` must NOT call finalize_arena when the benchmark fails."""
-    from sparkrun.cli._arena import arena_benchmark
-
-    finalize_called = []
-
-    def _capture(ctx, *args, **kwargs):
-        result = _fake_bench_result()
-        result.success = False
-        return result
-
-    def _fake_finalize(**kw):
-        finalize_called.append(True)
-
-    runner = CliRunner()
-    with (
-        patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture),
-        patch("sparkrun.cli._arena_flow.preflight_arena", return_value=("s", None)),
-        patch("sparkrun.cli._arena_flow.finalize_arena", side_effect=_fake_finalize),
-    ):
-        runner.invoke(arena_benchmark, ["run", "my-recipe", "--local-test", "--hosts", "h1"], catch_exceptions=False)
-
-    assert not finalize_called
-
-
-def test_api_arena_defaults_profile_and_category():
-    """api.benchmark(BenchmarkOptions(arena=True)) defaults profile and category."""
-    from sparkrun.api import benchmark, BenchmarkOptions
-
-    captured = []
-
-    def _capture(options, *, sctx, emitter):
-        captured.append(options)
-        return _fake_bench_result()
-
-    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
-        try:
-            benchmark(BenchmarkOptions(recipe="my-recipe", arena=True))
-        except SystemExit:
-            pass
-
-    assert captured
-    assert captured[0].profile == "@official/spark-arena-v2"
-    assert captured[0].category == "performance"
-
-
-def test_api_arena_respects_explicit_profile():
-    """When profile is explicit with arena=True, explicit profile is preserved."""
-    from sparkrun.api import benchmark, BenchmarkOptions
-
-    captured = []
-
-    def _capture(options, *, sctx, emitter):
-        captured.append(options)
-        return _fake_bench_result()
-
-    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
-        try:
-            benchmark(BenchmarkOptions(recipe="my-recipe", arena=True, profile="@local/test"))
-        except SystemExit:
-            pass
-
-    assert captured
-    assert captured[0].profile == "@local/test"
-
-
-def test_api_arena_respects_explicit_category():
-    """When category is explicit with arena=True, explicit category is preserved."""
-    from sparkrun.api import benchmark, BenchmarkOptions
-
-    captured = []
-
-    def _capture(options, *, sctx, emitter):
-        captured.append(options)
-        return _fake_bench_result()
-
-    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
-        try:
-            benchmark(BenchmarkOptions(recipe="my-recipe", arena=True, category="evals"))
-        except SystemExit:
-            pass
-
-    assert captured
-    assert captured[0].category == "evals"
-
-
-def test_finalize_arena_dry_run_skips_metadata_generation(capsys):
-    """``finalize_arena`` must not inspect benchmark artifacts in dry-run mode."""
-    from sparkrun.cli._arena_flow import finalize_arena
-
-    bench_result = MagicMock()
-    bench_result.generate_metadata.side_effect = AssertionError("dry-run metadata is unavailable")
-
-    finalize_arena(
-        ctx=MagicMock(),
-        bench_result=bench_result,
-        submission_id="sub-test-123",
-        local_test=False,
-        dry_run=True,
-    )
-
-    assert "[dry-run] Would upload results to Spark Arena" in capsys.readouterr().out
-    bench_result.generate_metadata.assert_not_called()
-
-
-def test_arena_flow_module_constants():
-    """ARENA_BENCHMARK_PROFILE constant matches the expected value."""
-    from sparkrun.cli._arena_flow import ARENA_BENCHMARK_PROFILE
-
-    assert ARENA_BENCHMARK_PROFILE == "@official/spark-arena-v2"
-
-
-def test_arena_flow_exports():
-    """_arena_flow __all__ exposes expected names."""
-    import sparkrun.cli._arena_flow as m
-
-    assert hasattr(m, "preflight_arena")
-    assert hasattr(m, "finalize_arena")
-    assert hasattr(m, "persist_arena_extras")
-    assert hasattr(m, "ARENA_BENCHMARK_PROFILE")
-
-
-# --------------------------------------------------------------------------
-# Pre-submission validation gate
-# --------------------------------------------------------------------------
-#
-# The arena paths publish the recipe, so they show the *full* `recipe validate`
-# report — suggestions included — and ask before proceeding. Ordinary
-# `sparkrun benchmark` publishes nothing and keeps the launch-path contract
-# (`validate_for_launch`: suggestions withheld, deprecations collapsed).
-
-_CLEAN_RECIPE = {
-    "model": "Qwen/Qwen3-1.7B",
-    "runtime": "vllm-distributed",
-    "container": "vllm/vllm-openai:latest",
-    "defaults": {"port": 8000},
-    "command": "vllm serve {model} --port {port}",
-}
-
-# `name:` -> deprecated-recipe-name (warning);
-# literal model id -> restated-model-arg (suggestion).
-_MESSY_RECIPE = {
-    **_CLEAN_RECIPE,
-    "name": "Arena Demo",
-    "command": "vllm serve Qwen/Qwen3-1.7B --port {port}",
-}
-
-_ERROR_RECIPE = {"runtime": "vllm-distributed", "container": "x:latest"}  # no model:
-
-
-def _write(tmp_path: Path, data: dict) -> str:
-    path = tmp_path / "arena-demo.yaml"
-    path.write_text(yaml.safe_dump(data))
-    return str(path)
-
-
-def _gate(recipe_path: str, *, tty: bool, answer: str | None = None, dry_run: bool = False):
-    """Run the gate under a Click context, returning (exit_code, output)."""
-    from sparkrun.cli._arena_flow import validate_recipe_for_submission
-
-    runner = CliRunner()
-
-    @click.command()
-    def _cmd():
-        validate_recipe_for_submission(recipe_path, ctx=click.get_current_context(), dry_run=dry_run)
-        click.echo("PROCEEDED")
-
-    with patch("sparkrun.cli._arena_flow._is_interactive", lambda: tty):
-        result = runner.invoke(_cmd, [], input=answer)
-    return result
-
-
-def test_clean_recipe_says_nothing_and_does_not_prompt(tmp_path):
-    """A report with no findings is noise between the user and their benchmark."""
-    result = _gate(_write(tmp_path, _CLEAN_RECIPE), tty=True)
-    assert result.exit_code == 0
-    assert "PROCEEDED" in result.output
-    assert "We suggest" not in result.output
-
-
-def test_findings_are_shown_in_full_including_suggestions(tmp_path):
-    """The whole point of the gate: `validate_for_launch` withholds suggestions,
-    and a recipe about to be published is exactly when its author needs them."""
-    result = _gate(_write(tmp_path, _MESSY_RECIPE), tty=True, answer="y\n")
-    assert "warning  deprecated-recipe-name" in result.output
-    assert "suggestion  restated-model-arg" in result.output
-    assert "The recipe contains 1 warning and 1 suggestion." in result.output
-    assert "may not be published to Spark Arena" in result.output
-    assert "PROCEEDED" in result.output
-
-
-def test_declining_the_prompt_aborts(tmp_path):
-    result = _gate(_write(tmp_path, _MESSY_RECIPE), tty=True, answer="n\n")
-    assert result.exit_code == 1
-    assert "PROCEEDED" not in result.output
-
-
-def test_prompt_defaults_to_no(tmp_path):
-    """Bare Enter must not submit a recipe the user was just warned about."""
-    result = _gate(_write(tmp_path, _MESSY_RECIPE), tty=True, answer="\n")
-    assert result.exit_code == 1
-    assert "PROCEEDED" not in result.output
-
-
-def test_non_interactive_proceeds_with_a_notice(tmp_path):
-    """Quality advice, not a security gate — the hook trust prompt is the one
-    that refuses without a TTY. Aborting here would break a scripted
-    submission that worked yesterday."""
-    result = _gate(_write(tmp_path, _MESSY_RECIPE), tty=False)
-    assert result.exit_code == 0
-    assert "Not running interactively" in result.output
-    assert "PROCEEDED" in result.output
-
-
-def test_errors_abort_without_prompting(tmp_path):
-    """The launch would refuse anyway; "continue?" is not a real question when
-    the answer cannot be yes."""
-    result = _gate(_write(tmp_path, _ERROR_RECIPE), tty=True)
-    assert result.exit_code == 1
-    assert "cannot be submitted" in result.output
-    assert "Continue with the benchmark" not in result.output
-
-
-def test_dry_run_reports_but_does_not_prompt(tmp_path):
-    result = _gate(_write(tmp_path, _MESSY_RECIPE), tty=True, dry_run=True)
-    assert result.exit_code == 0
-    assert "The recipe contains" in result.output
-    assert "[dry-run] Not prompting" in result.output
-    assert "PROCEEDED" in result.output
+from sparkrun.api import BenchmarkOptions, ResumeMode, benchmark
+from sparkrun.api._benchmark import _NullProgressEmitter, resume_benchmark
+from sparkrun.api._context import default_sctx
+from sparkrun.api._errors import BenchmarkFailed
+from sparkrun.benchmarking.run_state import BenchmarkRunState
+from sparkrun.benchmarking.scheduler import BenchTask, ScheduleRunResult
+from sparkrun.core.benchmark_integrations import BenchmarkIntegrationSession, BenchmarkIntegrationContext, STATE_KEY
+from sparkrun.core.recipe import Recipe
+from sparkrun.plugins.sparkarena.integration import validate_recipe_for_submission
+from test_benchmark_startup_collection import bench_env as bench_env
 
 
 @pytest.mark.parametrize(
-    "counts,expected",
+    "argv,settings",
     [
-        ({"warning": 3, "suggestion": 4}, "3 warnings and 4 suggestions"),
-        ({"warning": 1, "suggestion": 0}, "1 warning"),
-        ({"warning": 0, "suggestion": 1}, "1 suggestion"),
-        ({"warning": 0, "suggestion": 2}, "2 suggestions"),
+        (["benchmark", "perf", "r", "--arena", "--local-test"], {"arena": {"local_test": True}}),
+        (["benchmark", "run", "r", "--arena"], {"arena": {}}),
+        (["arena", "benchmark", "r", "--local-test"], {"arena": {"local_test": True}}),
+        (["arena", "benchmark", "run", "r"], {"arena": {}}),
+        (["benchmark", "run", "r"], {}),
     ],
 )
-def test_count_phrase_omits_absent_levels(counts, expected):
-    from sparkrun.cli._arena_flow import _count_phrase
+def test_cli_routes_options_through_shared_api(monkeypatch, argv, settings):
+    from sparkrun.cli import main
 
-    assert _count_phrase({"error": 0, **counts}) == expected
+    received = []
+
+    def execute(options, **kwargs):
+        received.append(options)
+        raise SystemExit(99)
+
+    monkeypatch.setattr("sparkrun.api._benchmark._execute_benchmark", execute)
+    result = CliRunner().invoke(main, [*argv, "--hosts", "localhost", "--dry-run"])
+    assert result.exit_code == 99, result.output
+    assert received[0].integrations == settings
+    assert received[0].dry_run
 
 
-def test_local_test_still_validates(tmp_path):
-    """`--local-test` rehearses a submission; rehearsing without the checks
-    would defeat the rehearsal."""
-    from sparkrun.cli._arena_flow import preflight_arena
+def test_local_test_requires_arena():
+    from sparkrun.cli import main
 
-    seen = {}
+    result = CliRunner().invoke(main, ["benchmark", "run", "r", "--hosts", "localhost", "--local-test"])
+    assert result.exit_code == 2
+    assert "--local-test requires --arena" in result.output
 
-    def _fake(recipe_name, *, ctx, dry_run=False):
-        seen["recipe"] = recipe_name
 
-    runner = CliRunner()
+@pytest.mark.parametrize(
+    "settings,profile,category,expected_profile",
+    [
+        ({}, None, None, "@official/spark-arena-v2"),
+        ({}, "custom", None, "custom"),
+        ({"local_test": True}, None, None, None),
+        ({}, None, "evals", "@official/spark-arena-v2"),
+    ],
+)
+def test_arena_defaults(settings, profile, category, expected_profile):
+    options = BenchmarkOptions(recipe="r", profile=profile, category=category, integrations={"arena": settings})
+    session = BenchmarkIntegrationSession(options, sctx=default_sctx(), emitter=_NullProgressEmitter())
+    prepared = session.prepare()
+    assert prepared.profile == expected_profile
+    assert prepared.category == (category or "performance")
+    assert options.profile == profile  # caller's frozen options are preserved
 
-    @click.command()
-    def _cmd():
-        preflight_arena(local_test=True, ctx=click.get_current_context(), recipe_name="r", dry_run=False)
 
-    with patch("sparkrun.cli._arena_flow.validate_recipe_for_submission", _fake):
-        runner.invoke(_cmd, [])
-    assert seen["recipe"] == "r"
+@pytest.fixture
+def arena_env(bench_env, monkeypatch):
+    env = bench_env
+    env.sctx.config.set("defaults.benchmark_output_dir", str(Path(env.options.output_file).parent))
+    env.options = replace(env.options, integrations={"arena": {"local_test": True}}, export_files=False, decision_callback=lambda _: True)
+    env.rows = {"rows": [{"tokens_per_second": 123}], "csv": "tokens_per_second\n123\n"}
+    env.fw.build_task_list.return_value = [BenchTask(0, "first"), BenchTask(1, "second")]
+    env.fw.detect_version.return_value = None
+    env.fw.measured_nothing.return_value = False
+    monkeypatch.setattr("sparkrun.core.bootstrap.get_benchmarking_frameworks_for_category", lambda *a, **k: [env.fw])
+    monkeypatch.setattr("sparkrun.benchmarking.progress_ui.BenchmarkProgressUI", lambda **kw: nullcontext())
+    monkeypatch.setattr("sparkrun.orchestration.primitives.resolve_image_sha", lambda *a, **kw: None)
+    env.upload = Mock(return_value=(True, "ignored"))
+    env.token = Mock(return_value="test-token")
+    env.auth = Mock()
+    monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.load_refresh_token", env.token)
+    monkeypatch.setattr("sparkrun.plugins.sparkarena.auth.exchange_token", env.auth)
+    monkeypatch.setattr("sparkrun.plugins.sparkarena.upload.upload_benchmark_results", env.upload)
+    env.schedule_success = True
+
+    def schedule(**kwargs):
+        state = kwargs["state"]
+        # The ID and provenance must exist before any scheduler failures.
+        assert state.extras[STATE_KEY]["arena"]["data"]["submission_id"]
+        state.completed_indices = [0, 1] if env.schedule_success else [0]
+        state.save(kwargs["cache_dir"])
+        return ScheduleRunResult(env.schedule_success, len(state.completed_indices), 0, state, env.rows)
+
+    env.schedule = Mock(side_effect=schedule)
+    monkeypatch.setattr("sparkrun.benchmarking.scheduler.run_schedule", env.schedule)
+    monkeypatch.setattr(
+        "sparkrun.orchestration.job_metadata.load_job_metadata",
+        lambda *a, **kw: {
+            "hosts": ["localhost"],
+            "port": 8000,
+            "overrides": {},
+        },
+    )
+    monkeypatch.setattr("sparkrun.orchestration.job_metadata.check_job_running", lambda **kw: SimpleNamespace(running=True))
+    return env
+
+
+def _state(env, benchmark_id=None):
+    if benchmark_id is None:
+        paths = list((env.sctx.config.cache_dir / "benchmarks").glob("bench_*/state.yaml"))
+        assert len(paths) == 1
+        benchmark_id = paths[0].parent.name
+    state = BenchmarkRunState.load(benchmark_id, str(env.sctx.config.cache_dir))
+    assert state is not None
+    return state
+
+
+def test_local_test_writes_real_artifacts_and_never_uploads(arena_env):
+    env = arena_env
+    result = benchmark(env.options, sctx=env.sctx)
+    summary = result.integration_results["arena"]
+    assert not summary["uploaded"] and summary["local_test"]
+    state = _state(env, result.benchmark_id)
+    data = state.extras[STATE_KEY]["arena"]["data"]
+    assert data["submission_id"] == summary["submission_id"]
+    directory = env.sctx.config.cache_dir / "benchmarks" / summary["submission_id"]
+    assert (directory / "benchmark.csv").read_text() == env.rows["csv"]
+    assert (directory / "recipe.yaml").read_text() == data["effective_recipe_text"]
+    metadata = json.loads((directory / "metadata.json").read_text())
+    assert metadata["cluster"]["hosts_redacted"]
+    assert "localhost" not in json.dumps(metadata)
+    assert metadata["timing"]["start"] and metadata["timing"]["end"]
+    env.auth.assert_not_called()
+    env.upload.assert_not_called()
+
+
+def test_failed_run_saves_submission_and_resume_reuses_it(arena_env):
+    env = arena_env
+    env.schedule_success = False
+    with pytest.raises(BenchmarkFailed, match="incomplete"):
+        benchmark(env.options, sctx=env.sctx)
+    state = _state(env)
+    original = state.extras[STATE_KEY]["arena"]
+    assert original["data"]["effective_recipe_text"]
+    assert original["data"]["metadata_json"]
+    env.upload.assert_not_called()
+    env.schedule_success = True
+    results = resume_benchmark(state.benchmark_id, sctx=env.sctx)
+    assert results.results == env.rows
+    assert results.integration_results["arena"]["submission_id"] == original["data"]["submission_id"]
+    resumed = _state(env, state.benchmark_id)
+    assert resumed.extras[STATE_KEY]["arena"]["data"]["submission_id"] == original["data"]["submission_id"]
+    assert resumed.extras[STATE_KEY]["arena"]["settings"]["local_test"]
+    env.upload.assert_not_called()
+
+
+def test_upload_retry_does_not_need_running_inference_and_is_idempotent(arena_env, monkeypatch):
+    env = arena_env
+    # Explicit profile avoids fetching the official profile in this hermetic test.
+    monkeypatch.setattr("sparkrun.plugins.sparkarena.integration.ARENA_BENCHMARK_PROFILE", None)
+    env.options = replace(env.options, integrations={"arena": {}})
+    env.upload.return_value = (False, "failed")
+    from sparkrun.api import BenchmarkIntegrationFailed
+
+    with pytest.raises(BenchmarkIntegrationFailed, match="failed to upload") as failure:
+        benchmark(env.options, sctx=env.sctx)
+    state = _state(env)
+    completed = failure.value.result
+    assert completed.success and completed.results == env.rows
+    assert completed.benchmark_id == state.benchmark_id
+    assert failure.value.integration == "arena"
+    assert "arena" in completed.integration_errors
+    assert not completed.integration_results["arena"]["uploaded"]
+    sid = state.extras[STATE_KEY]["arena"]["data"]["submission_id"]
+    assert state.extras["measurement_complete"]
+    env.upload.return_value = (True, sid)
+    monkeypatch.setattr("sparkrun.orchestration.job_metadata.check_job_running", Mock(side_effect=AssertionError("must not probe")))
+    for _ in range(2):
+        completed = resume_benchmark(state.benchmark_id, sctx=env.sctx)
+        assert completed.results == env.rows and completed.success and completed.resumed
+        assert completed.integration_results["arena"]["uploaded"]
+        assert not completed.integration_errors
+    assert env.schedule.call_count == 1
+    assert env.upload.call_count == 2  # failed initial attempt and one successful retry
+    assert {c.kwargs["submission_id"] for c in env.upload.call_args_list} == {sid}
+    assert _state(env).extras[STATE_KEY]["arena"]["data"]["uploaded"]
+
+
+def test_run_resume_keeps_original_id_and_fresh_gets_new_id(arena_env):
+    env = arena_env
+    first = benchmark(env.options, sctx=env.sctx)
+    second = benchmark(replace(env.options, resume=ResumeMode.IF_EXISTS), sctx=env.sctx)
+    assert first.integration_results["arena"]["submission_id"] == second.integration_results["arena"]["submission_id"]
+    third = benchmark(env.options, sctx=env.sctx)
+    assert first.integration_results["arena"]["submission_id"] != third.integration_results["arena"]["submission_id"]
+
+
+def test_dry_run_has_no_auth_upload_or_persistent_submission(arena_env):
+    env = arena_env
+    result = benchmark(replace(env.options, dry_run=True), sctx=env.sctx)
+    assert result.success
+    env.auth.assert_not_called()
+    env.upload.assert_not_called()
+    env.schedule.assert_not_called()
+    assert not list(env.sctx.config.cache_dir.glob("benchmarks/*/state.yaml"))
+
+
+def test_dry_run_resume_never_executes_schedule_or_changes_state(arena_env, monkeypatch):
+    env = arena_env
+    env.schedule_success = False
+    with pytest.raises(BenchmarkFailed):
+        benchmark(env.options, sctx=env.sctx)
+    state = _state(env)
+    path = state.state_dir(str(env.sctx.config.cache_dir)) / "state.yaml"
+    before = path.read_bytes()
+    env.schedule.reset_mock()
+    monkeypatch.setattr("sparkrun.orchestration.job_metadata.check_job_running", Mock(side_effect=AssertionError("must not probe")))
+    assert resume_benchmark(state.benchmark_id, dry_run=True, sctx=env.sctx).results == {}
+    assert path.read_bytes() == before
+    env.schedule.assert_not_called()
+    env.upload.assert_not_called()
+
+
+def test_disabled_plugin_allows_plain_resume_and_retains_extras(arena_env, monkeypatch):
+    env = arena_env
+    env.schedule_success = False
+    with pytest.raises(BenchmarkFailed):
+        benchmark(env.options, sctx=env.sctx)
+    state = _state(env)
+    saved = state.extras[STATE_KEY]
+    monkeypatch.setenv("SPARKRUN_FEATURE_INTEGRATION_ARENA", "0")
+    env.schedule_success = True
+    env.schedule.side_effect = lambda **kw: ScheduleRunResult(True, 2, 0, kw["state"], env.rows)
+    assert resume_benchmark(state.benchmark_id, sctx=env.sctx).results == env.rows
+    assert _state(env).extras[STATE_KEY] == saved
+    env.upload.assert_not_called()
+    with pytest.raises(BenchmarkFailed, match="disabled"):
+        benchmark(env.options, sctx=env.sctx)
+
+
+@pytest.mark.parametrize("answer,dry_run,allowed", [(True, False, True), (False, False, False), (False, True, True)])
+def test_submission_validation_reports_suggestions_and_respects_prompt(answer, dry_run, allowed):
+    recipe = Recipe(
+        {
+            "name": "Deprecated name",
+            "model": "org/model",
+            "runtime": "vllm-distributed",
+            "container": "image",
+            "command": "vllm serve org/model",
+        }
+    )
+    emitter = Mock()
+    emitter.confirm.return_value = answer
+    context = BenchmarkIntegrationContext(default_sctx(), emitter, {}, dry_run=dry_run)
+    if allowed:
+        validate_recipe_for_submission(recipe, context=context)
+    else:
+        with pytest.raises(BenchmarkFailed, match="Aborted"):
+            validate_recipe_for_submission(recipe, context=context)
+    output = "\n".join(c.args[0] for c in emitter.info.call_args_list)
+    assert "deprecated-recipe-name" in output and "restated-model-arg" in output
+    if dry_run:
+        emitter.confirm.assert_not_called()
+
+
+def test_invalid_recipe_cannot_be_submitted():
+    context = BenchmarkIntegrationContext(default_sctx(), Mock(), {})
+    with pytest.raises(BenchmarkFailed, match="cannot be submitted"):
+        validate_recipe_for_submission(Recipe({"runtime": "vllm-distributed", "container": "x"}), context=context)
+    context.emitter.confirm.assert_not_called()
+
+
+def test_dry_run_fresh_preserves_existing_state(arena_env):
+    env = arena_env
+    result = benchmark(env.options, sctx=env.sctx)
+    state = _state(env, result.benchmark_id)
+    paths = list(state.state_dir(str(env.sctx.config.cache_dir)).rglob("*"))
+    before = {p: p.read_bytes() for p in paths if p.is_file()}
+    benchmark(replace(env.options, dry_run=True, resume=ResumeMode.FRESH), sctx=env.sctx)
+    assert {p: p.read_bytes() for p in before} == before
+
+
+def test_caller_state_extras_survive_failed_run_and_resume(arena_env):
+    env = arena_env
+    extras = {"experiment": {"name": "author's experiment"}}
+    env.schedule_success = False
+    with pytest.raises(BenchmarkFailed):
+        benchmark(replace(env.options, state_extras=extras), sctx=env.sctx)
+    state = _state(env)
+    assert state.extras["experiment"] == extras["experiment"]
+    assert set(extras) == {"experiment"}
+    env.schedule_success = True
+    resume_benchmark(state.benchmark_id, sctx=env.sctx)
+    assert _state(env).extras["experiment"] == extras["experiment"]
+
+
+def test_publication_retry_auth_failure_retains_completed_result(arena_env, monkeypatch):
+    from sparkrun.api import BenchmarkIntegrationFailed
+
+    env = arena_env
+    monkeypatch.setattr("sparkrun.plugins.sparkarena.integration.ARENA_BENCHMARK_PROFILE", None)
+    env.options = replace(env.options, integrations={"arena": {}})
+    env.upload.return_value = (False, "failed")
+    with pytest.raises(BenchmarkIntegrationFailed) as initial:
+        benchmark(env.options, sctx=env.sctx)
+    env.auth.side_effect = RuntimeError("credentials expired")
+    with pytest.raises(BenchmarkIntegrationFailed, match="credentials expired") as retry:
+        resume_benchmark(initial.value.result.benchmark_id, sctx=env.sctx)
+    result = retry.value.result
+    assert result.success and result.resumed
+    assert result.results == env.rows
+    assert result.benchmark_id == initial.value.result.benchmark_id
+    assert result.category == initial.value.result.category
+    assert result.container_image == initial.value.result.container_image
+    assert "arena" in result.integration_errors
+    assert env.schedule.call_count == 1

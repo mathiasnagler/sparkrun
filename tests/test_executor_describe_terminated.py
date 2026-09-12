@@ -21,7 +21,7 @@ from sparkrun.orchestration.executors.docker import (
     _parse_post_mortem_logs,
     _parse_terminated_probe,
 )
-from sparkrun.orchestration.executors.k8s import K8sExecutor
+from sparkrun.plugins.k8s.executor import K8sExecutor, K8sExecutorConfig
 from sparkrun.orchestration.executors.local import LocalExecutor
 from sparkrun.orchestration.ssh import RemoteResult
 from sparkrun.core.log_source import MODE_FILE, MODE_STDOUT, SERVE_LOG_PATH, LogSource
@@ -423,7 +423,7 @@ class TestLocalProbe:
 
 class TestK8sProbe:
     def test_terminal_pod_phase_is_inspectable(self):
-        ex = K8sExecutor(ExecutorConfig(k8s_namespace="ns"))
+        ex = K8sExecutor(K8sExecutorConfig(k8s_namespace="ns"))
         results = [RemoteResult(host="h1", returncode=0, stdout="c1\tFailed\n", stderr="")]
         with patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=results):
             found = ex.describe_terminated([_source("h1", "c1")])
@@ -435,7 +435,7 @@ class TestK8sProbe:
         assert not any("docker" in h for h in info.investigate_hints)
 
     def test_missing_pod_is_gone(self):
-        ex = K8sExecutor(ExecutorConfig(k8s_namespace="ns"))
+        ex = K8sExecutor(K8sExecutorConfig(k8s_namespace="ns"))
         results = [RemoteResult(host="h1", returncode=0, stdout="c1\t\n", stderr="")]
         with patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=results):
             found = ex.describe_terminated([_source("h1", "c1")])

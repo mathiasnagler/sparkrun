@@ -167,14 +167,13 @@ def _export(br, path):
 
 
 def test_yaml_arena_and_api_export_identical_startup_metrics(tmp_path):
-    from sparkrun.api import BenchmarkOptions
     from sparkrun.api._benchmark import _build_result
 
     readiness = replace(_readiness(91, 92), startup_observation=_observation())
     br = _result(readiness=readiness)
     exported = _export(br, tmp_path / "benchmark.yaml")
     arena = br.generate_metadata()
-    api_result = _build_result(BenchmarkOptions(recipe="r"), br)
+    api_result = _build_result(br)
     startup = exported["timing"]["startup"]
     assert startup == arena["timing"]["startup"] == api_result.metadata["timing"]["startup"]
     assert startup == {
@@ -229,7 +228,6 @@ def test_coldsnap_acceptance_keeps_profile_without_inventing_optional_metrics():
 
 @pytest.mark.parametrize("case", ["skip", "resumed", "legacy", "failed", "invalid", "unknown", "malformed"])
 def test_unavailable_observations_omitted_everywhere(tmp_path, case):
-    from sparkrun.api import BenchmarkOptions
     from sparkrun.api._benchmark import _build_result
 
     obs = _observation()
@@ -245,7 +243,7 @@ def test_unavailable_observations_omitted_everywhere(tmp_path, case):
     br = _result(readiness=None if case == "skip" else readiness, resumed=case == "resumed")
     assert "timing" not in _export(br, tmp_path / "benchmark.yaml")
     assert "startup" not in br.generate_metadata()["timing"]
-    assert "timing" not in _build_result(BenchmarkOptions(recipe="r"), br).metadata
+    assert "timing" not in _build_result(br).metadata
 
 
 def test_startup_metadata_allowlist_excludes_private_or_invalid_optional_fields(tmp_path):

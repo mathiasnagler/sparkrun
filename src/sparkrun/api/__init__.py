@@ -16,9 +16,8 @@ party automation, the CLI itself) depend on.  Surfaces:
   :class:`AmbiguousCategoryError`,
   :class:`FrameworkCategoryMismatch`).
 - **Functions** — ``plan``, ``run``, ``stop``, ``logs``, ``status``,
-  ``schedule``, ``list_jobs``, ``search_recipes``, ``benchmark``
-  (added incrementally in subsequent tasks; this module re-exports
-  them as they land).
+  ``schedule``, ``list_jobs``, ``search_recipes``, ``benchmark``, and
+  ``resume_benchmark``.
 
 The API never writes to ``stdout`` / ``stderr`` and never calls
 ``sys.exit``.  Errors are raised as :class:`SparkrunError`
@@ -31,7 +30,6 @@ field additions are non-breaking, field removals are breaking.
 
 from __future__ import annotations
 
-from sparkrun.api import k8s
 from sparkrun.api import proxy
 from sparkrun.api import setup
 from sparkrun.api import tailscale
@@ -40,6 +38,7 @@ from sparkrun.api._benchmark_models import (
     BenchmarkOptions,
     BenchmarkResult,
     ProgressEvent,
+    BenchmarkDecision,
     ResumeMode,
 )
 from sparkrun.api._context import default_sctx
@@ -47,10 +46,13 @@ from sparkrun.api._errors import (
     AmbiguousCategoryError,
     AmbiguousWorkload,
     BenchmarkFailed,
+    BenchmarkIntegrationFailed,
+    BenchmarkFinalizationFailed,
     CategoryNotFound,
     FrameworkCategoryMismatch,
     HostsUnreachable,
     InsufficientCapacity,
+    IntegrationUnavailable,
     InvalidRegistryFilter,
     JobNotFound,
     LayoutRequired,
@@ -119,7 +121,6 @@ __all__ = [
     "refresh_registries",
     "resolve_catalog_recipe",
     # Subpackages
-    "k8s",
     "proxy",
     "setup",
     "tailscale",
@@ -149,10 +150,12 @@ __all__ = [
     "BenchmarkOptions",
     "BenchmarkResult",
     "ProgressEvent",
+    "BenchmarkDecision",
     "ResumeMode",
     # Errors
     "SparkrunError",
     "InsufficientCapacity",
+    "IntegrationUnavailable",
     "LayoutRequired",
     "RecipeNotFound",
     "InvalidRegistryFilter",
@@ -162,6 +165,8 @@ __all__ = [
     "TrustRejected",
     # Benchmark errors
     "BenchmarkFailed",
+    "BenchmarkIntegrationFailed",
+    "BenchmarkFinalizationFailed",
     "NoResumableState",
     "CategoryNotFound",
     "AmbiguousCategoryError",

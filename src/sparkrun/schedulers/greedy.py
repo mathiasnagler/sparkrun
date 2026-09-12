@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from sparkrun.core.hardware import HostHardware, default_dgx_spark_hardware
+from sparkrun.core.hardware import HostHardware, resolve_fallback_hardware
 from sparkrun.core.layout import RecipeLayout
 from sparkrun.core.parallelism import ParallelismConfig
 from sparkrun.core.scheduler import (
@@ -54,7 +54,7 @@ def _hw_for(host: str, host_hardware: Mapping[str, HostHardware] | None) -> Host
     """Return the per-host hardware spec or the DGX Spark default fallback."""
     if host_hardware and host in host_hardware:
         return host_hardware[host]
-    return default_dgx_spark_hardware()
+    return resolve_fallback_hardware()
 
 
 def _host_capacity(hw: HostHardware) -> int:

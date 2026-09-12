@@ -111,11 +111,11 @@ class ClusterContext:
 
     def hardware_for(self, host: str):
         """Return per-host :class:`HostHardware` (DGX Spark default when unknown)."""
-        from sparkrun.core.hardware import default_dgx_spark_hardware
+        from sparkrun.core.hardware import resolve_fallback_hardware
 
         if self.cluster is not None:
             return self.cluster.hardware_for(host)
-        return default_dgx_spark_hardware()
+        return resolve_fallback_hardware()
 
     @classmethod
     def build(

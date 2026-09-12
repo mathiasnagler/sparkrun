@@ -7,6 +7,8 @@ export for that key; the core only preserves lifecycle and round-trip order.
 
 from __future__ import annotations
 
+from sparkrun.core.registration import enlist_registry_state
+
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Protocol
@@ -58,6 +60,8 @@ class RecipeItemRegistration:
 
 
 _RECIPE_ITEMS: dict[str, RecipeItemRegistration] = {}
+
+enlist_registry_state(globals(), "_RECIPE_ITEMS")
 
 
 def register_recipe_item(

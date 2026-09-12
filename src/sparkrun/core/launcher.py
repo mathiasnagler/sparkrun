@@ -782,14 +782,14 @@ def resolve_per_host_backends(
         host resolved successfully (e.g. all-Apple or all-CPU cluster).
     """
     from sparkrun.core.backend_select import NoMatchingBackendError, select_backends
-    from sparkrun.core.hardware import default_dgx_spark_hardware
+    from sparkrun.core.hardware import resolve_fallback_hardware
 
     backends: dict[str, BackendBundle] = {}
     for host in host_list:
         if cluster is not None:
             hw = cluster.hardware_for(host)
         else:
-            hw = default_dgx_spark_hardware()
+            hw = resolve_fallback_hardware()
         try:
             backends[host] = select_backends(hw)
         except NoMatchingBackendError as e:
@@ -931,6 +931,10 @@ def launch_inference(
     Returns:
         LaunchResult with the outcome and all resolved context.
     """
+    from sparkrun.core.installed_plugins import require_integrations
+
+    require_integrations()
+
     from sparkrun.orchestration.job_metadata import derive_cluster_id, save_job_metadata
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
@@ -1231,9 +1235,9 @@ def launch_inference(
         if cluster is not None:
             _hw = cluster.hardware_for(host)
         else:
-            from sparkrun.core.hardware import default_dgx_spark_hardware
+            from sparkrun.core.hardware import resolve_fallback_hardware
 
-            _hw = default_dgx_spark_hardware()
+            _hw = resolve_fallback_hardware()
         if _head_hw is None:
             _head_hw = _hw
         _platform = resolve_platform(_hw)

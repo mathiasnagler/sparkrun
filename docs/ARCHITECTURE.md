@@ -78,13 +78,19 @@ with `MULTIPLATFORM.md`, `EXECUTORS.md`, and `SECURITY.md` for the deeper dives.
 | `executors/_base.py`          | `Executor` ABC, `ExecutorConfig` dataclass, `_registered_executor_names()` SAF lookup, `accelerator_vendor_for()` helper.                |
 | `executors/docker.py`         | `DockerExecutor` (default). Owns `DOCKER_DEFAULTS` and the `rootless` / `auto_user` adjustment layer.                                    |
 | `executors/local.py`          | `LocalExecutor` — experimental, native subprocess via `setsid`, pid/log-file lifecycle. No images.                                       |
-| `executors/k8s.py`            | `K8sExecutor` — experimental draft, `kubectl run`-based. Drops Docker-only options.                                                      |
 | `collectives/base.py`         | `CollectiveBackend` ABC, `UnsupportedCollectiveError`.                                                                                   |
 | `collectives/nccl.py`         | `NcclBackend` — wraps `infiniband.generate_nccl_env` / `generate_ring_nccl_overrides`. Byte-identical to legacy DGX output.               |
 | `collectives/rccl.py`         | `RcclBackend` scaffold (AMD). Raises `NotImplementedError`.                                                                              |
 | `collectives/hccl.py`         | `HcclBackend` scaffold (Intel Gaudi). Raises `NotImplementedError`.                                                                      |
 | `comm_env.py`                 | `ClusterCommEnv` dataclass. Carries per-host env produced by collective backends through `runtime.run()`.                                |
 | `infiniband.py`               | Legacy Mellanox IB probe parser + NCCL env emitter. Still authoritative; `NcclBackend` delegates here.                                   |
+
+### `plugins/k8s/`
+
+The optional Kubernetes integration owns its executor and config model, setup
+commands, API, kubectl helpers, and Kueue/JobSet launch path. Its parent gate is
+`integration.k8s`; child features register only when that plugin loads.
+See the [plugin guide](../src/sparkrun/plugins/k8s/README.md).
 
 ### `platforms/`
 
@@ -191,3 +197,30 @@ logs warnings (does not raise).
 | A new platform                   | `platforms/<name>.py` (subclass `HardwarePlatformPlugin`); register via `register_platform(MyPlatform(), prepend=True)` if it must win. |
 | A new accelerator vendor probe   | Extend `core/hardware_probe.py` (combined script), `core/fingerprint.py` (parsing), and `core/hardware.py` (vendor in `vendors`).       |
 | A new runtime                    | `runtimes/<name>.py` (subclass `RuntimePlugin`); use `_make_node_command_args` template for native multi-node, set `requires_capability`. |
+
+
+## Application profiles
+
+`application.run_cli()` and `application.initialize()` select an immutable
+`core.application_profile.ApplicationProfile` before configuration, SAF, feature
+resolution or plugin registration. One profile is active per process. Implicit
+entry points choose built-in Sparkrun, and children can restore an installed
+profile reference before importing application consumers.
+
+`core.config` keeps raw user settings separate from effective application profile
+defaults. Call-time path/environment accessors replace operational copied
+constants. `core.installed_plugins` discovers metadata without importing disabled
+integrations, then uses the existing plugin module ABI and tracks failures,
+provenance and implementation conflicts. Recipe and extension identities remain
+shared; `core.ownership` keeps deployment ownership separate from recipe intent.
+`core.application_identity` provides serializable application/controller descriptors
+for plugins and shared services. One opaque controller identity is created lazily
+per application and canonical config directory, shared across config filenames
+and processes, and recorded in new job metadata. It is independent of telemetry
+identity and recipe fingerprints and cannot be overridden in config.
+
+Application profile registry/update policy is explicit and separate from plugin trust
+and core feature maturity. Version diagnostics distinguish the running product,
+core dependency and loaded integrations. The public contract, path policy,
+legacy compatibility and wheel evidence are documented in
+[APPLICATION_PROFILES.md](APPLICATION_PROFILES.md).

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import render_identity_text
+
 import sys
 
 import click
+
+from sparkrun.core.application_profile import get_application_profile
 
 from .._common import (
     _detect_shell,
@@ -26,9 +30,6 @@ from ._phases import (
     EARLYOOM_AVOID_PATTERNS,
     _build_earlyoom_regex,
     _earlyoom_summary,
-    _DOCKER_GROUP_SCRIPT,
-    _DOCKER_GROUP_FALLBACK_SCRIPT,
-    _docker_group_summary,
 )
 from ._ssh import _run_ssh_mesh
 from ._sudo import _record_setup_phase
@@ -46,16 +47,16 @@ def setup_completion(ctx, shell):
 
     Examples:
 
-      sparkrun setup completion
+      {app_command} setup completion
 
-      sparkrun setup completion --shell bash
+      {app_command} setup completion --shell bash
     """
     if not shell:
         shell, rc_file = _detect_shell()
     else:
         rc_file = _shell_rc_file(shell)
 
-    completion_var = "_SPARKRUN_COMPLETE"
+    completion_var = "_%s_COMPLETE" % get_application_profile().command.upper().replace("-", "_")
 
     # Resolve the absolute path to the installed `sparkrun` so the completion
     # snippet doesn't depend on PATH ordering in the shell rc file (issue #198).
@@ -65,7 +66,7 @@ def setup_completion(ctx, shell):
     from sparkrun.utils.shell import quote
     import shutil
 
-    sparkrun_cmd = quote(shutil.which("sparkrun") or "sparkrun")
+    sparkrun_cmd = quote(shutil.which(get_application_profile().command) or get_application_profile().command)
 
     if shell == "bash":
         snippet = 'eval "$(%s=bash_source %s)"' % (completion_var, sparkrun_cmd)
@@ -85,7 +86,7 @@ def setup_completion(ctx, shell):
     rc_file.parent.mkdir(parents=True, exist_ok=True)
 
     with open(rc_file, "a") as f:
-        f.write("\n# sparkrun tab-completion\n")
+        f.write("\n# %s tab-completion\n" % get_application_profile().command)
         f.write(snippet + "\n")
 
     click.echo("Completion installed for %s in %s" % (shell, rc_file))
@@ -95,29 +96,29 @@ def setup_completion(ctx, shell):
 @setup.command("install")
 @click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), default=None, help="Shell type (auto-detected if not specified)")
 @click.option("--no-update-registries", is_flag=True, help="Skip updating recipe registries after installation")
-@click.option("--stable", is_flag=True, help="Install the stable channel (PyPI, default)")
-@click.option("--beta", is_flag=True, help="Install the beta channel (develop branch)")
-@click.option("--alpha", is_flag=True, help="Install the alpha channel (develop-next branch)")
+@click.option("--stable", is_flag=True, help="Install the stable channel from its configured source")
+@click.option("--beta", is_flag=True, help="Install the beta channel from its configured source")
+@click.option("--alpha", is_flag=True, help="Install the alpha channel from its configured source")
 @click.option("--yolo", is_flag=True, help="Alias for --alpha")
 @click.pass_context
 def setup_install(ctx, shell, no_update_registries, stable, beta, alpha, yolo):
-    """Install sparkrun and tab-completion.
+    """Install {app_command} and tab-completion.
 
     Requires uv (https://docs.astral.sh/uv/).  Typical usage:
 
     \b
-      uvx sparkrun setup install
+      uvx {app_command} setup install
 
-    This installs sparkrun as a uv tool (real binary on PATH), cleans up
+    This installs {app_command} as a uv tool (real binary on PATH), cleans up
     any old aliases/functions from previous installs, configures
     tab-completion, and updates recipe registries.
 
-    Channel flags (--beta/--alpha/--yolo) install from a git branch instead of
-    PyPI and persist the choice for future updates. No flag installs stable.
+    Channel flags select a configured distribution source and persist the
+    choice for future updates. No flag keeps the configured channel.
     """
     import subprocess
 
-    from sparkrun.cli._self_update import channel_from_flags, install_argv
+    from sparkrun.cli._self_update import channel_from_flags, install_argv, installed_tool_executable
     from sparkrun.core.channels import CHANNEL_STABLE
 
     config = _get_context(ctx).config
@@ -133,32 +134,32 @@ def setup_install(ctx, shell, no_update_registries, stable, beta, alpha, yolo):
     uv = _require_uv()
 
     label = "" if channel == CHANNEL_STABLE else "%s channel " % channel
-    click.echo("Installing sparkrun %svia uv tool install..." % label)
+    click.echo(f"Installing {get_application_profile().command} %svia uv tool install..." % label)
     result = subprocess.run(
         install_argv(uv, channel),
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
-        click.echo("Error installing sparkrun: %s" % result.stderr.strip(), err=True)
+        click.echo(f"Error installing {get_application_profile().command}: %s" % result.stderr.strip(), err=True)
         sys.exit(1)
     config.set_self_update_channel(channel)
-    click.echo("sparkrun %sinstalled on PATH" % label)
+    click.echo(f"{get_application_profile().command} %sinstalled on PATH" % label)
 
     # Step 2: Clean up old aliases/functions from previous installs
     if rc_file.exists():
         old_markers = [
-            "alias sparkrun=",
-            "alias sparkrun ",
-            "function sparkrun",
-            "sparkrun()",
+            "alias %s=" % get_application_profile().command,
+            "alias %s " % get_application_profile().command,
+            "function %s" % get_application_profile().command,
+            "%s()" % get_application_profile().command,
         ]
         contents = rc_file.read_text()
         lines = contents.splitlines(keepends=True)
         cleaned = [line for line in lines if not any(m in line for m in old_markers)]
         if len(cleaned) != len(lines):
             rc_file.write_text("".join(cleaned))
-            click.echo("Cleaned up old sparkrun aliases from %s" % rc_file)
+            click.echo(f"Cleaned up old {get_application_profile().command} aliases from %s" % rc_file)
 
     # Step 3: Install tab-completion
     ctx.invoke(setup_completion, shell=shell)
@@ -167,8 +168,12 @@ def setup_install(ctx, shell, no_update_registries, stable, beta, alpha, yolo):
     if not no_update_registries:
         click.echo()
         click.echo("Updating recipe registries...")
+        executable = installed_tool_executable(uv)
+        if executable is None:
+            click.echo("Warning: could not locate the installed tool for registry update.", err=True)
+            return
         reg_result = subprocess.run(
-            ["sparkrun", "registry", "update"],
+            [str(executable), "registry", "update"],
             capture_output=False,
         )
         if reg_result.returncode != 0:
@@ -177,25 +182,26 @@ def setup_install(ctx, shell, no_update_registries, stable, beta, alpha, yolo):
 
 @setup.command("update")
 @click.option("--no-update-registries", is_flag=True, help="Skip updating recipe registries")
-@click.option("--stable", is_flag=True, help="Switch to and update the stable channel (PyPI)")
-@click.option("--beta", is_flag=True, help="Switch to and update the beta channel (develop branch)")
-@click.option("--alpha", is_flag=True, help="Switch to and update the alpha channel (develop-next branch)")
+@click.option("--stable", is_flag=True, help="Switch to and update the stable channel from its configured source")
+@click.option("--beta", is_flag=True, help="Switch to and update the beta channel from its configured source")
+@click.option("--alpha", is_flag=True, help="Switch to and update the alpha channel from its configured source")
 @click.option("--yolo", is_flag=True, help="Alias for --alpha")
 @click.pass_context
 def setup_update(ctx, no_update_registries, stable, beta, alpha, yolo):
-    """Update sparkrun to the latest version.
+    """Update {app_command} to the latest version.
 
-    Requires sparkrun to have been installed via ``uv tool install``. With no
+    Requires {app_command} to have been installed via ``uv tool install``. With no
     channel flag, updates the currently configured channel; a channel flag
     switches channels. After upgrading, recipe registries are also updated.
 
     \b
-      sparkrun setup update
-      sparkrun setup update --beta
+      {app_command} setup update
+      {app_command} setup update --beta
     """
     import subprocess
 
     from sparkrun.cli._self_update import (
+        owning_executable,
         capture_old_identity,
         channel_from_flags,
         describe_change,
@@ -228,7 +234,7 @@ def setup_update(ctx, no_update_registries, stable, beta, alpha, yolo):
 
     if not is_uv_tool_install(uv):
         click.echo(
-            "Error: sparkrun was not installed via 'uv tool install'.\n"
+            f"Error: {get_application_profile().command} was not installed via 'uv tool install'.\n"
             "Cannot safely upgrade — manage updates through your package manager instead.",
             err=True,
         )
@@ -247,7 +253,7 @@ def setup_update(ctx, no_update_registries, stable, beta, alpha, yolo):
         text=True,
     )
     if result.returncode != 0:
-        click.echo("Error updating sparkrun: %s" % result.stderr.strip(), err=True)
+        click.echo(f"Error updating {get_application_profile().command}: %s" % result.stderr.strip(), err=True)
         sys.exit(1)
 
     config.set_self_update_channel(channel)
@@ -263,7 +269,7 @@ def setup_update(ctx, no_update_registries, stable, beta, alpha, yolo):
         click.echo()
         click.echo("Updating recipe registries...")
         reg_result = subprocess.run(
-            ["sparkrun", "registry", "update"],
+            [owning_executable(), "registry", "update"],
             capture_output=False,
         )
         if reg_result.returncode != 0:
@@ -273,7 +279,7 @@ def setup_update(ctx, no_update_registries, stable, beta, alpha, yolo):
         try:
             emit_update_event(
                 config,
-                command="sparkrun setup update",
+                command=f"{get_application_profile().command} setup update",
                 old_version=old_version,
                 new_version=new_version,
                 # uv exits 0 whether or not anything was installed, so the identity
@@ -288,24 +294,43 @@ def setup_update(ctx, no_update_registries, stable, beta, alpha, yolo):
 
 
 @setup.command("version", hidden=True)
-@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable version identity (version, channel, commit)")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable application, core, and plugin version information")
 @click.pass_context
 def setup_version(ctx, as_json):
-    """Print the installed sparkrun version identity.
+    """Show application, core, and loaded plugin versions.
 
-    Hidden helper used by the self-update flow to compare builds across a uv
-    reinstall without scraping the human ``--version`` string.
+    Includes the application profile, release channel, and installed Git
+    commits when available. The self-update flow uses --json to compare builds.
     """
     import json as _json
 
-    from sparkrun.core.version import display_version, installed_identity
+    from sparkrun.core.version import version_diagnostics
 
-    config = _get_context(ctx).config
-    base, commit = installed_identity()
+    data = version_diagnostics(_get_context(ctx).config)
     if as_json:
-        click.echo(_json.dumps({"version": base, "channel": config.self_update_channel, "commit": commit}))
-    else:
-        click.echo(display_version(config, base))
+        click.echo(_json.dumps(data))
+        return
+
+    def package_identity(identity):
+        label = "%s %s" % (identity["package"], identity["version"])
+        if identity.get("commit"):
+            label += " (commit %s)" % identity["commit"]
+        return label
+
+    click.echo("Application: %s" % package_identity(data["distribution"]))
+    click.echo("Profile:     %s" % data["distribution"]["id"])
+    click.echo("Channel:     %s" % data["channel"])
+    click.echo("Core:        %s" % package_identity(data["core"]))
+    click.echo()
+    click.echo("Loaded plugins:")
+    if not data["plugins"]:
+        click.echo("  (none)")
+    for plugin in data["plugins"]:
+        details = [value for value in (plugin.get("package") or plugin.get("module"), plugin.get("source")) if value]
+        if plugin.get("required"):
+            details.append("required")
+        suffix = " (%s)" % "; ".join(details) if details else ""
+        click.echo("  %s: %s%s" % (plugin["name"], plugin.get("version") or "unknown", suffix))
 
 
 @setup.command("telemetry")
@@ -389,20 +414,19 @@ def _feature_state(config, flag):
 
 @setup_features.command("list")
 @json_option()
+@click.option("--all", "include_all", is_flag=True, hidden=True, help="Include application setup-step flags.")
 @click.pass_context
-def setup_features_list(ctx, output_json):
-    """List all feature flags and their effective state."""
+def setup_features_list(ctx, output_json, include_all):
+    """List feature flags and their effective state."""
     from sparkrun.core.features import all_features
 
     config = _get_context(ctx).config
     channel = config.feature_channel
-    flags = all_features()
+    flags = [flag for flag in all_features() if include_all or not flag.name.startswith("setup.steps.")]
 
     if output_json:
-        # `channel` rides on every row rather than heading an envelope: list
-        # commands emit a bare array here, and it is genuinely per-flag — the
-        # channel each one resolved under — so nothing in the human output is
-        # lost and `jq` still sees a list.
+        # Preserve `channel` as core maturity; application release policy has
+        # its own channel and provenance in the same diagnostic row.
         print_json(
             [
                 {
@@ -412,6 +436,7 @@ def setup_features_list(ctx, output_json):
                     "source": source,
                     "override": override,
                     "channel": channel,
+                    "application_channel": config.self_update_channel,
                 }
                 for flag, (enabled, source, override) in ((f, _feature_state(config, f)) for f in flags)
             ]
@@ -423,6 +448,8 @@ def setup_features_list(ctx, output_json):
         return
 
     click.echo("Feature channel: %s" % channel)
+    if config.profile.feature_channel_defaults:
+        click.echo("Application channel: %s" % config.self_update_channel)
     click.echo("")
     width = max(len(f.name) for f in flags)
     for flag in flags:
@@ -483,17 +510,20 @@ def setup_features_disable(ctx, name):
 @click.argument("name")
 @click.pass_context
 def setup_features_reset(ctx, name):
-    """Clear the explicit override for NAME (revert to channel default)."""
+    """Clear the explicit override for NAME (restore application/core defaults)."""
     _require_known_flag(name)
     config = _get_context(ctx).config
     features = config.get("features")
     if isinstance(features, dict) and name in features:
         del features[name]
+        config.set("features", features)
         config.save()
-        click.echo("Feature %r override cleared; now follows the channel default." % name)
+        click.echo("Feature %r override cleared; now follows the default policy." % name)
     else:
         click.echo("Feature %r had no explicit override." % name)
-    click.echo("Effective (channel %s): %s" % (config.feature_channel, "on" if config.is_feature_enabled(name) else "off"))
+    from sparkrun.core.features import feature_source
+
+    click.echo("Effective: %s (%s)" % ("on" if config.is_feature_enabled(name) else "off", feature_source(name, config=config)))
 
 
 def _run_ssh_diagnose(host_list, user, local_user):
@@ -865,7 +895,7 @@ printf 'ak_key_types=%s\n' "$(awk '{print $1}' ~/.ssh/authorized_keys 2>/dev/nul
             if not pubkey_setting_ok:
                 click.echo("    Enable PubkeyAuthentication in /etc/ssh/sshd_config and restart sshd")
             if cross_user and not key_installed:
-                click.echo("    Re-run 'sparkrun setup ssh' to install your public key")
+                click.echo(render_identity_text("    Re-run '{app_command} setup ssh' to install your public key"))
 
             # Drop-in specific remediation
             dropin_ak = diag.get("sshd_dropin_ak_file", "none")
@@ -905,7 +935,7 @@ printf 'ak_key_types=%s\n' "$(awk '{print $1}' ~/.ssh/authorized_keys 2>/dev/nul
                     expected_private = local_pubkey_source.removesuffix(".pub") if local_pubkey_source else None
                     if expected_private and offered_key_path != expected_private:
                         click.echo("    ** KEY MISMATCH: SSH is offering '%s'" % offered_key_path)
-                        click.echo("       but sparkrun detected '%s' as the local key." % local_pubkey_source)
+                        click.echo(render_identity_text("       but {app_command} detected '%s' as the local key." % local_pubkey_source))
                         click.echo("       Check your ~/.ssh/config IdentityFile settings.")
 
             # If everything looks correct but still fails, point to verbose output
@@ -975,27 +1005,27 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
     Ensures every host can SSH to every other host without password prompts.
     Creates ed25519 keys if missing and distributes public keys.
 
-    After the mesh is established, sparkrun automatically discovers
+    After the mesh is established, {app_command} automatically discovers
     additional network IPs (InfiniBand, CX7) on cluster hosts and
     distributes their host keys so inter-node SSH works over all
     networks. Use --no-discover-ips to skip this phase.
 
-    By default, the machine running sparkrun is included in the mesh
+    By default, the machine running {app_command} is included in the mesh
     (--include-self). Use --no-include-self to exclude it.
 
     You will be prompted for passwords on first connection to each host.
 
     Examples:
 
-      sparkrun setup ssh --hosts 192.168.11.13,192.168.11.14
+      {app_command} setup ssh --hosts 192.168.11.13,192.168.11.14
 
-      sparkrun setup ssh --cluster mylab --user ubuntu
+      {app_command} setup ssh --cluster mylab --user ubuntu
 
-      sparkrun setup ssh --cluster mylab --extra-hosts 10.0.0.1
+      {app_command} setup ssh --cluster mylab --extra-hosts 10.0.0.1
 
-      sparkrun setup ssh --hosts 10.0.0.1,10.0.0.2 --no-discover-ips
+      {app_command} setup ssh --hosts 10.0.0.1,10.0.0.2 --no-discover-ips
 
-      sparkrun setup ssh --cluster mylab --diagnose
+      {app_command} setup ssh --cluster mylab --diagnose
     """
     import os
 
@@ -1161,20 +1191,24 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
 
     Examples:
 
-      sparkrun setup cx7 --hosts 10.24.11.13,10.24.11.14
+      {app_command} setup cx7 --hosts 10.24.11.13,10.24.11.14
 
-      sparkrun setup cx7 --cluster mylab --dry-run
+      {app_command} setup cx7 --cluster mylab --dry-run
 
-      sparkrun setup cx7 --cluster mylab --topology ring
+      {app_command} setup cx7 --cluster mylab --topology ring
 
-      sparkrun setup cx7 --cluster mylab --subnet1 192.168.11.0/24 --subnet2 192.168.12.0/24
+      {app_command} setup cx7 --cluster mylab --subnet1 192.168.11.0/24 --subnet2 192.168.12.0/24
 
-      sparkrun setup cx7 --cluster mylab --force
+      {app_command} setup cx7 --cluster mylab --force
 
-      sparkrun setup cx7 --cluster two --interfaces '*np1'   # pin a port pair
+      {app_command} setup cx7 --cluster two --interfaces '*np1'   # pin a port pair
 
-      sparkrun setup cx7 --cluster two --port 1              # same, by port index
+      {app_command} setup cx7 --cluster two --port 1              # same, by port index
     """
+    from sparkrun.core.application_profile import require_legacy_host_setup
+
+    require_legacy_host_setup("setup_cx7")
+
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.networking import (
         CX7_NETPLAN_FILE,
@@ -1571,98 +1605,15 @@ def setup_docker_group(ctx, hosts, hosts_file, cluster_name, user, dry_run):
 
     Examples:
 
-      sparkrun setup docker-group --hosts 10.24.11.13,10.24.11.14
+      {app_command} setup docker-group --hosts 10.24.11.13,10.24.11.14
 
-      sparkrun setup docker-group --cluster mylab
+      {app_command} setup docker-group --cluster mylab
 
-      sparkrun setup docker-group --cluster mylab --user ubuntu
+      {app_command} setup docker-group --cluster mylab --user ubuntu
     """
-    from sparkrun.core.config import SparkrunConfig
-    from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host
+    from ._step_runner import run_setup_step_command
 
-    config = SparkrunConfig()
-    host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
-
-    click.echo("Ensuring user '%s' is in the docker group on %d host(s)..." % (user, len(host_list)))
-    click.echo()
-
-    script = _DOCKER_GROUP_SCRIPT.format(user=user)
-    fallback = _DOCKER_GROUP_FALLBACK_SCRIPT.format(user=user)
-
-    result_map, still_failed = run_with_sudo_fallback(
-        host_list,
-        script,
-        fallback,
-        ssh_kwargs,
-        dry_run=dry_run,
-    )
-
-    # Report immediate successes
-    for h in host_list:
-        r = result_map.get(h)
-        if r and r.success:
-            click.echo("  [OK]   %s: %s" % (h, _docker_group_summary(r.stdout, user=user)))
-
-    # Prompt and retry if needed
-    if still_failed and not dry_run:
-        sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
-        for h in still_failed:
-            r = run_sudo_script_on_host(
-                h,
-                fallback,
-                sudo_password,
-                ssh_kwargs=ssh_kwargs,
-                timeout=30,
-                dry_run=dry_run,
-            )
-            result_map[h] = r
-
-    # Final summary
-    ok_count = sum(1 for h in host_list if result_map.get(h) and result_map[h].success)
-    fail_count = sum(1 for h in host_list if result_map.get(h) and not result_map[h].success)
-
-    for h in host_list:
-        r = result_map.get(h)
-        if r and not r.success:
-            click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
-        elif r and r.success and h in (still_failed or []):
-            click.echo("  [OK]   %s: %s" % (h, _docker_group_summary(r.stdout, user=user)))
-
-    click.echo()
-    parts = []
-    if ok_count:
-        parts.append("%d OK" % ok_count)
-    if fail_count:
-        parts.append("%d failed" % fail_count)
-    click.echo("Results: %s." % ", ".join(parts) if parts else "No hosts processed.")
-
-    if ok_count and not dry_run:
-        _record_setup_phase(cluster_name, user, host_list, "docker_group")
-
-    if ok_count and any("added" in (result_map.get(h).stdout if result_map.get(h) else "") for h in host_list):
-        click.echo()
-        click.echo("Note: Users newly added to the docker group must re-login")
-        click.echo("(or run 'newgrp docker') for the change to take effect.")
-
-    # Storage-driver consistency probe (issue #152).  Heterogeneous
-    # drivers across hosts cause the same registry image to land with
-    # different local Image IDs, which trips unnecessary container
-    # re-syncs; warn so the user can normalize on overlay2.
-    if not dry_run and len(host_list) > 1:
-        from sparkrun.orchestration.docker_info import (
-            check_driver_consistency,
-            detect_docker_drivers,
-            format_driver_warning,
-        )
-
-        driver_map = detect_docker_drivers(host_list, ssh_kwargs=ssh_kwargs)
-        consistent, groups = check_driver_consistency(driver_map)
-        if not consistent:
-            click.echo()
-            click.echo(format_driver_warning(groups), err=True)
-
-    if fail_count:
-        sys.exit(1)
+    run_setup_step_command("docker_group", hosts, hosts_file, cluster_name, user, dry_run)
 
 
 @setup.command("fix-permissions")
@@ -1688,15 +1639,15 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
 
     Examples:
 
-      sparkrun setup fix-permissions --hosts 10.24.11.13,10.24.11.14
+      {app_command} setup fix-permissions --hosts 10.24.11.13,10.24.11.14
 
-      sparkrun setup fix-permissions --cluster mylab
+      {app_command} setup fix-permissions --cluster mylab
 
-      sparkrun setup fix-permissions --cluster mylab --cache-dir /data/hf-cache
+      {app_command} setup fix-permissions --cluster mylab --cache-dir /data/hf-cache
 
-      sparkrun setup fix-permissions --cluster mylab --save-sudo
+      {app_command} setup fix-permissions --cluster mylab --save-sudo
 
-      sparkrun setup fix-permissions --cluster mylab --dry-run
+      {app_command} setup fix-permissions --cluster mylab --dry-run
     """
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host
@@ -1766,7 +1717,7 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
                     user,
                     host_list,
                     "sudoers",
-                    files=["/etc/sudoers.d/sparkrun-chown-%s" % user],
+                    files=["/etc/sudoers.d/%s-chown-%s" % (get_application_profile().resource_namespace, user)],
                 )
             click.echo()
 
@@ -1878,13 +1829,13 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
 
     Examples:
 
-      sparkrun setup clear-cache --hosts 10.24.11.13,10.24.11.14
+      {app_command} setup clear-cache --hosts 10.24.11.13,10.24.11.14
 
-      sparkrun setup clear-cache --cluster mylab
+      {app_command} setup clear-cache --cluster mylab
 
-      sparkrun setup clear-cache --cluster mylab --save-sudo
+      {app_command} setup clear-cache --cluster mylab --save-sudo
 
-      sparkrun setup clear-cache --cluster mylab --dry-run
+      {app_command} setup clear-cache --cluster mylab --dry-run
     """
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host
@@ -1938,7 +1889,7 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
                     user,
                     host_list,
                     "sudoers",
-                    files=["/etc/sudoers.d/sparkrun-dropcaches-%s" % user],
+                    files=["/etc/sudoers.d/%s-dropcaches-%s" % (get_application_profile().resource_namespace, user)],
                 )
             click.echo()
 
@@ -2027,7 +1978,7 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
     before the kernel OOM killer triggers. This prevents system hangs
     when large inference models exhaust memory on DGX Spark.
 
-    By default, sparkrun configures earlyoom to prefer killing inference
+    By default, {app_command} configures earlyoom to prefer killing inference
     workload processes (vllm, sglang, llama-server, trtllm, python) and
     to avoid killing system services (sshd, systemd, dockerd).
 
@@ -2037,14 +1988,18 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
 
     Examples:
 
-      sparkrun setup earlyoom --hosts 192.168.11.13,192.168.11.14
+      {app_command} setup earlyoom --hosts 192.168.11.13,192.168.11.14
 
-      sparkrun setup earlyoom --cluster mylab
+      {app_command} setup earlyoom --cluster mylab
 
-      sparkrun setup earlyoom --cluster mylab --prefer "my-app,worker"
+      {app_command} setup earlyoom --cluster mylab --prefer "my-app,worker"
 
-      sparkrun setup earlyoom --cluster mylab --dry-run
+      {app_command} setup earlyoom --cluster mylab --dry-run
     """
+    from sparkrun.core.application_profile import require_legacy_host_setup
+
+    require_legacy_host_setup("setup_earlyoom")
+
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host
 
@@ -2319,12 +2274,12 @@ def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, o
 def setup_prune_runtime_cache(ctx, hosts, hosts_file, cluster_name, older_than_days, purge_all, dry_run):
     """Reclaim disk from the compilation/autotune cache on cluster hosts.
 
-    The runtime cache (~/.cache/sparkrun/runtime-cache/ on each host) holds
+    The runtime cache (~/.cache/{app_command}/runtime-cache/ on each host) holds
     torch.compile, Inductor, Triton, FlashInfer and TRT-LLM autotuner output so
     a relaunch skips minutes of recompilation.  It lives on the TARGETS, not on
     this machine, so this command fans out over SSH.
 
-    'sparkrun run' already sweeps the trees it can see on every launch (disable
+    '{app_command} run' already sweeps the trees it can see on every launch (disable
     with 'runtime_cache.prune.enabled: false').  This is the manual sweep, for
     reclaiming space without launching something — and the only way to clear
     trees for a model or image you no longer run at all.
@@ -2334,11 +2289,11 @@ def setup_prune_runtime_cache(ctx, hosts, hosts_file, cluster_name, older_than_d
 
     Examples:
 
-      sparkrun setup prune-runtime-cache --cluster mylab --dry-run
+      {app_command} setup prune-runtime-cache --cluster mylab --dry-run
 
-      sparkrun setup prune-runtime-cache --cluster mylab --older-than 7
+      {app_command} setup prune-runtime-cache --cluster mylab --older-than 7
 
-      sparkrun setup prune-runtime-cache --cluster mylab --all
+      {app_command} setup prune-runtime-cache --cluster mylab --all
     """
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.hosts import resolve_hosts
@@ -2426,14 +2381,14 @@ def setup_prune_runtime_cache(ctx, hosts, hosts_file, cluster_name, older_than_d
 def setup_prune_job_metadata_cache(older_than_days, keep_per_intent, dry_run):
     """Delete stale entries from the local job metadata cache.
 
-    Job metadata (~/.cache/sparkrun/jobs/) records the recipe, hosts and
+    Job metadata (~/.cache/{app_command}/jobs/) records the recipe, hosts and
     container image behind every launch, so stop/logs/proxy discovery can find
     a workload later.  Only an explicit 'stop' removes an entry, so a job that
     crashed — the norm when auto_remove is on and the container is gone before
     anything asks about it — stays cached forever.  Left alone this reaches
     hundreds of dead entries and makes 'logs <TAB>' unusable.
 
-    'sparkrun run' prunes automatically using the occupancy snapshot it
+    '{app_command} run' prunes automatically using the occupancy snapshot it
     already has (disable with 'jobs.autoprune: false' in config.yaml).  This
     command is the manual sweep, for when you want to reclaim the cache
     without launching something.
@@ -2443,16 +2398,16 @@ def setup_prune_job_metadata_cache(older_than_days, keep_per_intent, dry_run):
 
     WARNING: this command has no live cluster snapshot to check against, so —
     unlike the automatic prune — it cannot protect a running workload whose
-    metadata has aged out.  Run 'sparkrun status' first if you have long-lived
+    metadata has aged out.  Run '{app_command} status' first if you have long-lived
     deployments, or pass --dry-run to review the list.
 
     Examples:
 
-      sparkrun setup prune-job-metadata-cache --dry-run
+      {app_command} setup prune-job-metadata-cache --dry-run
 
-      sparkrun setup prune-job-metadata-cache --older-than 90
+      {app_command} setup prune-job-metadata-cache --older-than 90
 
-      sparkrun setup prune-job-metadata-cache --keep-per-intent 1
+      {app_command} setup prune-job-metadata-cache --keep-per-intent 1
     """
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.job_metadata import prune_job_metadata

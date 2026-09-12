@@ -268,7 +268,10 @@ def generate_combined_probe_script(mgmt_interface: str | None = None) -> str:
             detection on the host (see
             :attr:`~sparkrun.core.cluster_manager.ClusterDefinition.mgmt_interface`).
     """
-    return inject_shell_vars(_COMBINED_PROBE_SCRIPT, SPARKRUN_MGMT_IFACE=mgmt_interface)
+    from sparkrun.core.hardware_probe_extensions import hardware_probe_script
+
+    script = _COMBINED_PROBE_SCRIPT.replace('echo "%s"' % _ACCEL_END, hardware_probe_script() + '\necho "%s"' % _ACCEL_END, 1)
+    return inject_shell_vars(script, SPARKRUN_MGMT_IFACE=mgmt_interface)
 
 
 # ---------------------------------------------------------------------------

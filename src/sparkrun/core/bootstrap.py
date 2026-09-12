@@ -22,14 +22,17 @@ EXT_BENCHMARKING_FRAMEWORKS = "sparkrun.benchmarking"
 
 # Module-level singleton for the sparkrun Variables instance
 _variables: Variables | None = None
+_initialization_error: BaseException | None = None
 
 
-def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Variables:
+def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING", *, profile=None, config=None) -> Variables:
     """Initialize sparkrun's plugin system.
 
-    Uses SAF's init_framework_test_harness for a lightweight framework
-    initialization that properly sets up the plugin registry without
-    heavy-weight features (no fault handler, no shutdown hooks, no stateful).
+    Uses SAF's desktop initialization with application-specific state and no
+    fault handler or shutdown hooks. The first call binds plugin discovery to
+    one canonical configuration path for the lifetime of the process. After
+    plugin registration fails, this process cannot return an initialized
+    context; fix the cause and start a new process.
 
     Args:
         v: Optional pre-existing Variables instance to reuse.
@@ -38,15 +41,71 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
     Returns:
         The initialized Variables instance.
     """
-    global _variables
+    global _variables, _initialization_error
 
-    if _variables is not None and v is None:
+    if _initialization_error is not None:
+        raise RuntimeError("Application initialization previously failed; restart the process before retrying") from _initialization_error
+
+    from sparkrun.core.application_profile import select_application_profile, get_application_profile
+
+    active = select_application_profile(profile) if profile is not None else get_application_profile()
+    import sparkrun.core.config as config_module
+
+    if config is not None and config.profile != active:
+        raise RuntimeError("Configuration belongs to another distribution")
+    config_path = (config.config_path if config is not None else config_module.resolve_config_path(v)).expanduser().resolve()
+    if _variables is not None and config_module._application_config_path != config_path:
+        raise RuntimeError("Application is already initialized with another configuration path")
+    # Pin implicit initialization too: plugin discovery and every later context
+    # must read the same config, including calls through the embedding API.
+    config_module._application_config_path = config_path
+
+    if _variables is not None:
+        if v is not None and v is not _variables:
+            raise RuntimeError("Application is already initialized; Variables can only be supplied on first initialization")
         return _variables
 
     if v is None:
         from scitrera_app_framework import init_framework_desktop
 
-        v = init_framework_desktop("sparkrun", log_level=log_level, fault_handler=False, shutdown_hooks=False, fixed_logger=logger)
+        from sparkrun.core.config import get_config_root
+
+        root = get_config_root()
+        # Pin alternate SAF identity locally, independently of generic SAF env.
+        framework_options = {}
+        if active.id != "sparkrun":
+            from sparkrun.core.application_profile import product_path
+
+            framework_v = Variables()
+            framework_v.set("APP_NAME", active.id)
+            framework_v.set("SAF_SETUP_STATEFUL", False)
+            framework_options["v"] = framework_v
+        v = init_framework_desktop(
+            active.id,
+            **framework_options,
+            log_level=log_level,
+            fault_handler=False,
+            shutdown_hooks=False,
+            fixed_logger=logger,
+            default_stateful_root=str(root.parent),
+            default_run_id=None,
+            stateful_root_env_key="STATEFUL_ROOT" if active.id == "sparkrun" else active.env_prefix + "_STATEFUL_ROOT",
+        )
+
+        if active.id != "sparkrun":
+            from scitrera_app_framework.core.core import _init_stateful_root
+
+            state_root = product_path("state")
+            state_root.parent.mkdir(parents=True, exist_ok=True)
+            v.set("RUN_ID", None)
+            v.set("RUN_SERIAL", None)
+            _init_stateful_root(
+                v,
+                local_name=state_root.name,
+                default_stateful_root=str(state_root.parent),
+                default_chdir=False,
+                stateful_root_env_key=active.env_prefix + "_STATEFUL_ROOT",
+            )
 
         # suppress noisy loggers (separate from our logging level)
         from sparkrun.utils import suppress_noisy_loggers
@@ -54,6 +113,19 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
         suppress_noisy_loggers()
 
     _variables = v
+
+    try:
+        _register_plugins(v, config=config)
+    except BaseException as exc:
+        # Registration has process-global side effects, so a partial bootstrap
+        # cannot safely be retried or returned as an API-ready context.
+        _initialization_error = exc
+        raise
+    return v
+
+
+def _register_plugins(v: Variables, *, config=None) -> None:
+    from sparkrun.core.installed_plugins import claim_implementation
 
     # Import here to avoid circular imports
     from sparkrun.runtimes.base import RuntimePlugin
@@ -65,6 +137,7 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
     discovered = list(find_types_in_modules("sparkrun.runtimes", RuntimePlugin))
     for runtime_cls in discovered:
         try:
+            claim_implementation(runtime_cls, v)
             register_plugin(runtime_cls, v=v)
             logger.debug("Registered runtime: %s", runtime_cls.__name__)
         except (ValueError, TypeError) as e:
@@ -76,6 +149,7 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
     discovered_bench = list(find_types_in_modules("sparkrun.benchmarking", _BenchPlugin))
     for bench_cls in discovered_bench:
         try:
+            claim_implementation(bench_cls, v)
             register_plugin(bench_cls, v=v)
             logger.debug("Registered benchmarking framework: %s", bench_cls.__name__)
         except (ValueError, TypeError) as e:
@@ -87,6 +161,7 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
     discovered_builders = list(find_types_in_modules("sparkrun.builders", _BuilderPlugin))
     for builder_cls in discovered_builders:
         try:
+            claim_implementation(builder_cls, v)
             register_plugin(builder_cls, v=v)
             _record_builder_gate(builder_cls)
             logger.debug("Registered builder: %s", builder_cls.__name__)
@@ -99,6 +174,7 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
     discovered_executors = list(find_types_in_modules("sparkrun.orchestration.executors", _ExecutorPlugin))
     for executor_cls in discovered_executors:
         try:
+            claim_implementation(executor_cls, v)
             register_plugin(executor_cls, v=v)
             logger.debug("Registered executor: %s", executor_cls.__name__)
         except (ValueError, TypeError) as e:
@@ -115,6 +191,7 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
             logger.debug("Skipping unnamed telemetry provider: %s", telemetry_cls.__name__)
             continue
         try:
+            claim_implementation(telemetry_cls, v)
             register_plugin(telemetry_cls, v=v)
             logger.debug("Registered telemetry provider: %s", telemetry_cls.__name__)
         except (ValueError, TypeError) as e:
@@ -131,6 +208,7 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
             logger.debug("Skipping abstract/base scheduler: %s", scheduler_cls.__name__)
             continue
         try:
+            claim_implementation(scheduler_cls, v)
             register_plugin(scheduler_cls, v=v)
             logger.debug("Registered scheduler: %s", scheduler_cls.__name__)
         except (ValueError, TypeError) as e:
@@ -149,6 +227,7 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
             logger.debug("Skipping unnamed transport: %s", transport_cls.__name__)
             continue
         try:
+            claim_implementation(transport_cls, v)
             register_plugin(transport_cls, v=v)
             logger.debug("Registered transport: %s", transport_cls.__name__)
         except (ValueError, TypeError) as e:
@@ -173,13 +252,15 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
     except Exception:  # noqa: BLE001 - a broken plugin dir must not kill the CLI
         logger.exception("External plugin loading failed")
 
-    return v
+    from sparkrun.core.installed_plugins import load_installed_plugins
+
+    load_installed_plugins(v, config=config)
 
 
 def get_variables() -> Variables:
     """Get the sparkrun Variables instance, initializing if needed."""
     global _variables
-    if _variables is None:
+    if _variables is None or _initialization_error is not None:
         init_sparkrun()
     return _variables
 

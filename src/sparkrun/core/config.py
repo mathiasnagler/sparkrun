@@ -8,10 +8,13 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING, Optional
 
 import yaml
+
+from sparkrun.core.application_profile import child_config_path, get_application_profile, product_env, product_path, thaw
 from vpd.next.util import read_yaml
 
 if TYPE_CHECKING:
     from scitrera_app_framework import Variables
+    from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.registry import RegistryManager
     from sparkrun.proxy.config import ProxyConfig
 
@@ -42,7 +45,10 @@ def resolve_sparkrun_cache_dir(cache_dir: str | Path | None = None) -> Path:
     """
     if cache_dir is not None:
         return Path(cache_dir)
-    return DEFAULT_CACHE_DIR
+    override = product_env("CACHE_DIR")
+    if override is not None:
+        return Path(override).expanduser()
+    return DEFAULT_CACHE_DIR if get_application_profile().id == "sparkrun" else product_path("cache")
 
 
 def resolve_hf_cache_home(cache_dir: str | None) -> str:
@@ -69,23 +75,70 @@ def resolve_hf_token() -> Optional[str]:
 
 def get_config_root(v: Variables | None = None) -> Path:
     """Config root from SAF stateful root, falling back to DEFAULT_CONFIG_DIR."""
+    if _application_config_path is not None:
+        return _application_config_path.parent
+    inherited = child_config_path()
+    if inherited is not None:
+        return inherited.parent
+    if get_application_profile().id != "sparkrun":
+        return product_path("config")
     if v is not None:
         from scitrera_app_framework.core import is_stateful_ready
 
         stateful_root = is_stateful_ready(v)
         if stateful_root:
             return Path(stateful_root)
-    return DEFAULT_CONFIG_DIR
+    if _application_config_path is not None:
+        return _application_config_path.parent
+    override = product_env("CONFIG_DIR")
+    if override is not None:
+        return Path(override).expanduser()
+    return DEFAULT_CONFIG_DIR if get_application_profile().id == "sparkrun" else product_path("config")
+
+
+_application_config_path: Path | None = None
+
+
+def resolve_config_path(v=None) -> Path:
+    return _application_config_path or child_config_path() or get_config_root(v) / "config.yaml"
+
+
+def merge_defaults(baseline: dict, overrides: dict) -> dict:
+    """Merge mappings by key; explicit empty mappings and all lists replace."""
+    result = thaw(baseline)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and value and isinstance(result.get(key), dict):
+            result[key] = merge_defaults(result[key], value)
+        else:
+            result[key] = thaw(value)
+    return result
 
 
 class SparkrunConfig:
     """Manages sparkrun user configuration."""
 
     def __init__(self, config_path: Path | None = None):
-        self.config_path = config_path or (DEFAULT_CONFIG_DIR / "config.yaml")
+        self._profile = get_application_profile()
+        self.config_path = (Path(config_path) if config_path is not None else resolve_config_path()).expanduser().resolve()
         self._data: dict[str, Any] = {}
         self._proxy_config: "ProxyConfig | None" = None
         self._load()
+
+    @property
+    def profile(self):
+        return getattr(self, "_profile", None) or get_application_profile()
+
+    @property
+    def effective_data(self) -> dict[str, Any]:
+        return merge_defaults(thaw(self.profile.defaults), self._data)
+
+    def setting_source(self, key: str) -> str:
+        current = self._data
+        for part in key.split("."):
+            if not isinstance(current, dict) or part not in current:
+                return "distribution" if self.get(key) is not None else "baseline"
+            current = current[part]
+        return "config"
 
     def _load(self):
         if self.config_path.exists():
@@ -95,11 +148,11 @@ class SparkrunConfig:
 
     @property
     def cache_dir(self) -> Path:
-        return Path(self._data.get("cache_dir", str(DEFAULT_CACHE_DIR)))
+        return Path(self.effective_data.get("cache_dir", str(resolve_sparkrun_cache_dir())))
 
     @property
     def hf_cache_dir(self) -> Path:
-        return Path(self._data.get("hf_cache_dir", str(DEFAULT_HF_CACHE_DIR)))
+        return Path(self.effective_data.get("hf_cache_dir", str(DEFAULT_HF_CACHE_DIR)))
 
     @property
     def runtime_cache(self) -> dict[str, Any]:
@@ -111,28 +164,28 @@ class SparkrunConfig:
         :func:`sparkrun.core.runtime_cache.resolve_runtime_cache_settings` for
         the layered chain this participates in.
         """
-        raw = self._data.get("runtime_cache")
+        raw = self.effective_data.get("runtime_cache")
         return dict(raw) if isinstance(raw, dict) else {}
 
     @property
     def default_benchmark_output_dir(self) -> Path:
-        defaults = self._data.get("defaults", {})
+        defaults = self.effective_data.get("defaults", {})
         dir_val = defaults.get("benchmark_output_dir")
         return Path(os.path.expanduser(str(dir_val))) if dir_val else Path.cwd()
 
     @property
     def default_hosts(self) -> list[str]:
-        cluster = self._data.get("cluster", {})
+        cluster = self.effective_data.get("cluster", {})
         return cluster.get("hosts", [])
 
     @property
     def default_image_prefix(self) -> str:
-        defaults = self._data.get("defaults", {})
+        defaults = self.effective_data.get("defaults", {})
         return defaults.get("image_prefix", "")
 
     @property
     def default_transformers_tag(self) -> str:
-        defaults = self._data.get("defaults", {})
+        defaults = self.effective_data.get("defaults", {})
         return defaults.get("transformers", "t4")
 
     @property
@@ -143,7 +196,7 @@ class SparkrunConfig:
         falling back to ``"llama-benchy"`` when unset.  CLI invocations
         without an explicit ``--framework`` flag use this value.
         """
-        defaults = self._data.get("defaults", {})
+        defaults = self.effective_data.get("defaults", {})
         val = defaults.get("benchmark_framework") if isinstance(defaults, dict) else None
         return str(val) if val else "llama-benchy"
 
@@ -156,8 +209,8 @@ class SparkrunConfig:
         set a sane site-wide default without overriding per-recipe
         choices.  ``None`` (default) means "no opinion".
         """
-        defaults = self._data.get("defaults", {})
-        val = defaults.get("executor") or self._data.get("default_executor")
+        defaults = self.effective_data.get("defaults", {})
+        val = defaults.get("executor") or self.effective_data.get("default_executor")
         return str(val).strip().lower() if val else None
 
     @property
@@ -167,111 +220,46 @@ class SparkrunConfig:
         Merged into the executor resolution chain below recipe overrides
         and runtime adjustments.  Empty dict when unset.
         """
-        cfg = self._data.get("executor_config")
+        cfg = self.effective_data.get("executor_config")
         return dict(cfg) if isinstance(cfg, dict) else {}
-
-    @property
-    def k8s_defaults(self) -> dict[str, Any]:
-        """CLI / setup-time Kubernetes defaults (the ``k8s:`` block).
-
-        Distinct from :attr:`executor_config` (which feeds executor-time
-        ``kubeconfig`` / ``k8s_*`` overrides): this block holds the target
-        a plain ``sparkrun setup k8s ...`` invocation defaults to, plus
-        the ``kubectl`` binary settings (``path`` / ``version`` / per-
-        context ``pinned`` versions).  Empty dict when unset.
-        """
-        cfg = self._data.get("k8s")
-        return dict(cfg) if isinstance(cfg, dict) else {}
-
-    @property
-    def k8s_launcher_image(self) -> str | None:
-        """Container image for the in-cluster launcher Job (``k8s.launcher_image``).
-
-        The job-driven launch path runs sparkrun's orchestration inside
-        this image (typically a published sparkrun container).  ``None``
-        when unset — callers must then supply an explicit image.
-        """
-        val = self.k8s_defaults.get("launcher_image")
-        return str(val) if val else None
-
-    def _kubectl_settings(self) -> dict[str, Any]:
-        kubectl = self.k8s_defaults.get("kubectl")
-        return kubectl if isinstance(kubectl, dict) else {}
-
-    def _k8s_subsection(self, key: str) -> dict[str, Any]:
-        sub = self.k8s_defaults.get(key)
-        return sub if isinstance(sub, dict) else {}
-
-    @property
-    def kueue_version(self) -> str | None:
-        """Pinned Kueue release to install (``k8s.kueue.version``)."""
-        val = self._k8s_subsection("kueue").get("version")
-        return str(val) if val else None
-
-    @property
-    def jobset_version(self) -> str | None:
-        """Pinned JobSet release to install (``k8s.jobset.version``)."""
-        val = self._k8s_subsection("jobset").get("version")
-        return str(val) if val else None
-
-    @property
-    def kubectl_path(self) -> str | None:
-        """Explicit ``kubectl`` binary path override (``k8s.kubectl.path``)."""
-        val = self._kubectl_settings().get("path")
-        return str(val) if val else None
-
-    @property
-    def kubectl_version(self) -> str | None:
-        """Pinned ``kubectl`` version (``k8s.kubectl.version``)."""
-        val = self._kubectl_settings().get("version")
-        return str(val) if val else None
-
-    def kubectl_pinned_version(self, context: str | None) -> str | None:
-        """Server-matched ``kubectl`` version pinned for *context*, if any."""
-        if not context:
-            return None
-        pinned = self._kubectl_settings().get("pinned")
-        if isinstance(pinned, dict):
-            val = pinned.get(context)
-            return str(val) if val else None
-        return None
-
-    def pin_kubectl_version(self, context: str, version: str) -> None:
-        """Persist a per-context ``kubectl`` version pin under ``k8s.kubectl.pinned``."""
-        k8s = self.get("k8s")
-        if not isinstance(k8s, dict):
-            k8s = {}
-        kubectl = k8s.get("kubectl")
-        if not isinstance(kubectl, dict):
-            kubectl = {}
-        pinned = kubectl.get("pinned")
-        if not isinstance(pinned, dict):
-            pinned = {}
-        pinned[context] = version
-        kubectl["pinned"] = pinned
-        k8s["kubectl"] = kubectl
-        self.set("k8s", k8s)
 
     @property
     def ssh_user(self) -> str | None:
         if hasattr(self, "_ssh_user_override"):
             return self._ssh_user_override
-        ssh = self._data.get("ssh", {})
+        ssh = self.effective_data.get("ssh", {})
         return ssh.get("user")
 
     @ssh_user.setter
     def ssh_user(self, value: str | None) -> None:
         self._ssh_user_override = value
 
+    def for_cluster(self, cluster: ClusterDefinition | None) -> SparkrunConfig:
+        """Connection settings for one operation, without changing this config.
+
+        Cluster SSH users override the configured/default user for that operation.
+        Shared configuration data is read through; persistent edits still belong
+        on the original config. No config reload or application reinitialization.
+        """
+        from copy import copy
+
+        source = getattr(self, "_cluster_source", self)
+        if cluster is None or not cluster.user:
+            return source
+        scoped = copy(source)
+        scoped._cluster_source = source
+        scoped.ssh_user = cluster.user
+        return scoped
+
     @property
     def ssh_key(self) -> str | None:
-        ssh = self._data.get("ssh", {})
+        ssh = self.effective_data.get("ssh", {})
         key = ssh.get("key")
         return os.path.expanduser(key) if key else None
 
     @property
     def ssh_options(self) -> list[str]:
-        ssh = self._data.get("ssh", {})
+        ssh = self.effective_data.get("ssh", {})
         return ssh.get("options", [])
 
     @property
@@ -289,7 +277,7 @@ class SparkrunConfig:
         """
         from sparkrun.orchestration.ssh import DEFAULT_MAX_PARALLEL_SSH
 
-        ssh = self._data.get("ssh", {})
+        ssh = self.effective_data.get("ssh", {})
         raw = ssh.get("max_parallel_ssh") if isinstance(ssh, dict) else None
         try:
             val = int(raw)
@@ -354,7 +342,7 @@ class SparkrunConfig:
         """
         from sparkrun.models.hub import DEFAULT_HUB_TIMEOUT_S
 
-        section = self._data.get("hub", {})
+        section = self.effective_data.get("hub", {})
         raw = section.get("timeout_s") if isinstance(section, dict) else None
         try:
             val = float(raw)
@@ -376,7 +364,7 @@ class SparkrunConfig:
 
         from sparkrun.models.hub import DEFAULT_HUB_METADATA_BUDGET_S
 
-        section = self._data.get("hub", {})
+        section = self.effective_data.get("hub", {})
         raw = section.get("metadata_budget_s") if isinstance(section, dict) else None
         try:
             val = float(raw)
@@ -400,7 +388,7 @@ class SparkrunConfig:
         """
         from scitrera_app_framework import ext_parse_bool
 
-        jobs = self._data.get("jobs", {})
+        jobs = self.effective_data.get("jobs", {})
         raw = jobs.get("autoprune") if isinstance(jobs, dict) else None
         if raw is None:
             return True
@@ -428,7 +416,7 @@ class SparkrunConfig:
         An unrecognized value resolves to ``"fail"``: this is a safety check,
         and a typo must not quietly disable it.
         """
-        mounts = self._data.get("mounts", {})
+        mounts = self.effective_data.get("mounts", {})
         raw = mounts.get("missing_source") if isinstance(mounts, dict) else None
         value = str(raw).strip().lower() if raw is not None else ""
         if value in ("fail", "warn", "ignore"):
@@ -462,7 +450,7 @@ class SparkrunConfig:
         """
         from sparkrun.core.validation import DEFAULT_FAIL_ON, FAIL_ON_CHOICES
 
-        validation = self._data.get("validation", {})
+        validation = self.effective_data.get("validation", {})
         raw = validation.get("fail_on") if isinstance(validation, dict) else None
         value = str(raw).strip().lower() if raw is not None else ""
         if value in FAIL_ON_CHOICES:
@@ -479,7 +467,7 @@ class SparkrunConfig:
     def get(self, key: str, default: Any = None) -> Any:
         """Get a config value by dot-separated key path."""
         parts = key.split(".")
-        current = self._data
+        current = self.effective_data
         for part in parts:
             if isinstance(current, dict) and part in current:
                 current = current[part]
@@ -509,18 +497,18 @@ class SparkrunConfig:
     def feature_channel(self) -> str:
         """Active release channel for feature-flag defaults (normalized).
 
-        Reads ``features.channel`` when set, otherwise falls back to the
-        persisted self-update channel. Lets a ``stable`` install preview an
-        entire channel's feature set (``features.channel: alpha``) without
-        changing which code it actually runs.
+        Reads ``features.channel`` when set, otherwise uses the application's
+        ``feature_channel`` (stable for alternate profiles). Only a profile
+        with ``feature_channel=None`` follows its self-update channel. This
+        core maturity setting is independent of application channel defaults.
         """
-        from sparkrun.core.channels import normalize_channel
+        from sparkrun.core.channels import normalize_feature_channel
 
-        features = self._data.get("features", {})
+        features = self.effective_data.get("features", {})
         raw = features.get("channel") if isinstance(features, dict) else None
         if raw:
-            return normalize_channel(raw)
-        return self.self_update_channel
+            return normalize_feature_channel(raw)
+        return self.profile.feature_channel if self.profile.feature_channel is not None else self.self_update_channel
 
     def feature_override(self, name: str) -> bool | None:
         """Return the explicit ``features.<name>`` override, or ``None`` when unset.
@@ -554,7 +542,7 @@ class SparkrunConfig:
         """Return the persisted update channel, normalized (default ``stable``)."""
         from sparkrun.core.channels import normalize_channel
 
-        return normalize_channel(self.get("self_update.channel"))
+        return normalize_channel(self.get("self_update.channel", self.profile.default_channel))
 
     def set_self_update_channel(self, channel: str) -> None:
         """Persist the update channel (normalized) plus its source and requirement."""
@@ -568,7 +556,7 @@ class SparkrunConfig:
 
     def _get_defaults_section(self, section: str, name: str) -> dict[str, Any]:
         """Return ``defaults.<section>.<name>`` as a dict, or ``{}`` when missing or malformed."""
-        defaults = self._data.get("defaults", {})
+        defaults = self.effective_data.get("defaults", {})
         if not isinstance(defaults, dict):
             return {}
         bucket = defaults.get(section, {})
@@ -610,12 +598,12 @@ class SparkrunConfig:
     @property
     def monitor_backend(self) -> str | None:
         """Monitoring backend preference: ``"bash"`` or ``"nv-monitor"``."""
-        return self._data.get("monitor_backend")
+        return self.effective_data.get("monitor_backend")
 
     @property
     def vllm_tune_repo(self) -> str:
         """Git URL for the vllm-tune backing engine used by ``sparkrun tune vllm``."""
-        tuning = self._data.get("tuning", {})
+        tuning = self.effective_data.get("tuning", {})
         if isinstance(tuning, dict):
             url = tuning.get("vllm_tune_repo")
             if url:
@@ -625,7 +613,7 @@ class SparkrunConfig:
     @property
     def vllm_tune_ref(self) -> str:
         """Git ref (tag/branch/SHA) pinning the vllm-tune backing engine."""
-        tuning = self._data.get("tuning", {})
+        tuning = self.effective_data.get("tuning", {})
         if isinstance(tuning, dict):
             ref = tuning.get("vllm_tune_ref")
             if ref:
@@ -645,7 +633,7 @@ class SparkrunConfig:
         the config file and these directories are user-owned, loading them is
         trusted by definition — the same model as a pip-installed package.
         """
-        plugins = self._data.get("plugins", {})
+        plugins = self.effective_data.get("plugins", {})
         if not isinstance(plugins, dict):
             return []
         raw = plugins.get("paths", [])
@@ -664,7 +652,7 @@ class SparkrunConfig:
         thresholds).  Absent keys fall back to the defaults in
         :mod:`sparkrun.api.setup._rdma`.
         """
-        section = self._data.get("rdma_test", {})
+        section = self.effective_data.get("rdma_test", {})
         return dict(section) if isinstance(section, dict) else {}
 
     def plugin_settings(self, name: str) -> dict[str, Any]:
@@ -674,7 +662,7 @@ class SparkrunConfig:
         individual plugins may use their own mapping for operational policy
         that should not be embedded in a portable recipe.
         """
-        plugins = self._data.get("plugins", {})
+        plugins = self.effective_data.get("plugins", {})
         if not isinstance(plugins, dict):
             return {}
         settings = plugins.get(name, {})
@@ -688,11 +676,11 @@ class SparkrunConfig:
         if cwd_recipes.is_dir():
             paths.append(cwd_recipes)
         # 2. User config recipes/
-        user_recipes = DEFAULT_CONFIG_DIR / "recipes"
+        user_recipes = self.config_path.parent / "recipes"
         if user_recipes.is_dir():
             paths.append(user_recipes)
         # 3. Extra search paths from config
-        for extra in self._data.get("recipe_paths", []):
+        for extra in self.effective_data.get("recipe_paths", []):
             p = Path(os.path.expanduser(extra))
             if p.is_dir():
                 paths.append(p)
@@ -703,7 +691,7 @@ class SparkrunConfig:
         from sparkrun.core.registry import RegistryManager
 
         return RegistryManager(
-            config_root=self.config_path.parent if self.config_path else DEFAULT_CONFIG_DIR,
+            config_root=self.config_path.parent if self.config_path else get_config_root(),
             cache_root=self.cache_dir / "registries",
         )
 

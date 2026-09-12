@@ -48,6 +48,8 @@ from typing import Any, TYPE_CHECKING, Optional
 import yaml
 
 from sparkrun.utils.fs import open_private_write
+from sparkrun.core.application_profile import get_application_profile, resource_name
+from sparkrun.core.ownership import owns_metadata, assert_resource_namespace
 
 if TYPE_CHECKING:
     from sparkrun.core.backend_select import BackendBundle
@@ -221,13 +223,14 @@ RECIPE_FINGERPRINT_LEN = 12
 
 _INTENT_ID_RE = re.compile(r"^[0-9a-f]{%d}$" % INTENT_ID_LEN)
 _PLACEMENT_TOKEN_RE = re.compile(r"^[0-9a-f]{%d}$" % PLACEMENT_TOKEN_LEN)
-_NEW_CLUSTER_ID_RE = re.compile(r"^sparkrun_([0-9a-f]{%d})_([0-9a-f]{%d})$" % (INTENT_ID_LEN, PLACEMENT_TOKEN_LEN))
+_NEW_CLUSTER_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,47}_([0-9a-f]{%d})_([0-9a-f]{%d})$" % (INTENT_ID_LEN, PLACEMENT_TOKEN_LEN))
 # Canonical container name: ``sparkrun_<intent>_<placement>[_<role>]``.
 # Used by every consumer that splits container names into (cluster_id, role):
 # the Docker/local executors' ``query_status`` (the status source),
 # ``cluster_manager.classify_cluster_status``, the cluster monitor TUI.
 _CONTAINER_NAME_RE = re.compile(
-    r"^sparkrun_(?P<intent>[0-9a-f]{%d})_(?P<placement>[0-9a-f]{%d})(?:_(?P<role>.+))?$" % (INTENT_ID_LEN, PLACEMENT_TOKEN_LEN)
+    r"^(?P<namespace>[a-z][a-z0-9-]{0,47})_(?P<intent>[0-9a-f]{%d})_(?P<placement>[0-9a-f]{%d})(?:_(?P<role>.+))?$"
+    % (INTENT_ID_LEN, PLACEMENT_TOKEN_LEN)
 )
 
 
@@ -451,7 +454,7 @@ def generate_cluster_id(intent_id: str, placement_token: str) -> str:
         raise ValueError("intent_id must be %d hex chars, got %r" % (INTENT_ID_LEN, intent_id))
     if not isinstance(placement_token, str) or not _PLACEMENT_TOKEN_RE.fullmatch(placement_token):
         raise ValueError("placement_token must be %d hex chars, got %r" % (PLACEMENT_TOKEN_LEN, placement_token))
-    return "sparkrun_%s_%s" % (intent_id, placement_token)
+    return "%s_%s_%s" % (get_application_profile().resource_namespace, intent_id, placement_token)
 
 
 def parse_cluster_id(cluster_id: str) -> tuple[str, str]:
@@ -487,12 +490,12 @@ def parse_container_name(name: str) -> tuple[str, str] | None:
     recipe replay (same intent, different placement token) parse to
     distinct cluster_ids.
     """
-    if name.endswith("_solo"):
+    if name.startswith("sparkrun_") and name.endswith("_solo"):
         return (name.removesuffix("_solo"), "solo")
     m = _CONTAINER_NAME_RE.match(name)
     if m is None:
         return None
-    cluster_id = "sparkrun_%s_%s" % (m.group("intent"), m.group("placement"))
+    cluster_id = "%s_%s_%s" % (m.group("namespace"), m.group("intent"), m.group("placement"))
     role = m.group("role") or "?"
     return (cluster_id, role)
 
@@ -563,6 +566,9 @@ def save_job_metadata(
 
     digest = _filename_digest(cluster_id)
     jobs_dir = Path(cache_dir) / "jobs"
+    existing = jobs_dir / f"{digest}.yaml"
+    if existing.exists() and load_job_metadata(cluster_id, cache_dir=cache_dir) is None:
+        raise ValueError("Refusing to replace metadata owned by another distribution: %s" % existing)
     jobs_dir.mkdir(parents=True, exist_ok=True)
     # Metadata can carry the resolved upstream API key (see below), so keep the
     # directory owner-only.  Best-effort: a pre-existing dir from an older
@@ -588,8 +594,14 @@ def save_job_metadata(
     # :func:`parse_cluster_id` propagate.
     intent_id_meta, placement_token_meta = parse_cluster_id(cluster_id)
 
+    from sparkrun.core.application_identity import get_controller_identity
+
+    controller = sctx.controller_identity if sctx is not None else get_controller_identity()
     meta: dict = {
+        "controller": controller.to_dict(),
         "sparkrun_version": _sparkrun_version,
+        "distribution": get_application_profile().id,
+        "resource_namespace": get_application_profile().resource_namespace,
         "cluster_id": cluster_id,
         "recipe": recipe.qualified_name,
         # Deriving here is the fallback for callers that do not pass one; see
@@ -744,11 +756,13 @@ def remove_job_metadata(
 
     No-op if the file does not exist.  When *cache_dir* is unset, the
     cache root is resolved from ``sctx.config.cache_dir`` (when *sctx*
-    is provided) and falls back to :data:`DEFAULT_CACHE_DIR`.
+    is provided) and falls back to :data:`resolve_sparkrun_cache_dir()`.
     """
     cache_dir = _resolve_cache_dir(cache_dir, sctx)
     digest = _filename_digest(cluster_id)
     meta_path = Path(cache_dir) / "jobs" / f"{digest}.yaml"
+    if meta_path.exists() and load_job_metadata(cluster_id, cache_dir=cache_dir) is None:
+        return
     meta_path.unlink(missing_ok=True)
     logger.debug("Removed job metadata %s", meta_path)
 
@@ -789,6 +803,7 @@ def save_running_snapshot(
 
     cache_dir = _resolve_cache_dir(cache_dir, sctx)
     payload = {
+        "distribution": get_application_profile().id,
         "at": time.time(),
         "cluster_ids": sorted(str(c) for c in cluster_ids if c),
         "hosts": sorted(str(h) for h in hosts if h),
@@ -796,7 +811,8 @@ def save_running_snapshot(
     try:
         path = Path(cache_dir)
         path.mkdir(parents=True, exist_ok=True)
-        fd = open_private_write(path / RUNNING_SNAPSHOT_FILE)
+        filename = RUNNING_SNAPSHOT_FILE if get_application_profile().id == "sparkrun" else resource_name("-running.json")
+        fd = open_private_write(path / filename)
         with os.fdopen(fd, "w") as f:
             json.dump(payload, f)
     except Exception:
@@ -825,8 +841,11 @@ def load_running_snapshot(
         max_age_s = RUNNING_SNAPSHOT_MAX_AGE_S
     cache_dir = _resolve_cache_dir(cache_dir, sctx)
     try:
-        with open(Path(cache_dir) / RUNNING_SNAPSHOT_FILE) as f:
+        filename = RUNNING_SNAPSHOT_FILE if get_application_profile().id == "sparkrun" else resource_name("-running.json")
+        with open(Path(cache_dir) / filename) as f:
             data = json.load(f)
+        if data.get("distribution", "sparkrun") != get_application_profile().id:
+            return None
         if time.time() - float(data["at"]) > max_age_s:
             return None
         return frozenset(data.get("cluster_ids") or ()), frozenset(data.get("hosts") or ())
@@ -946,7 +965,7 @@ def load_job_metadata(
 
     When *cache_dir* is unset, the cache root is resolved from
     ``sctx.config.cache_dir`` (when *sctx* is provided) and falls back
-    to :data:`DEFAULT_CACHE_DIR`.
+    to :data:`resolve_sparkrun_cache_dir()`.
 
     Metadata schema may evolve across sparkrun versions; readers can
     inspect ``data["sparkrun_version"]`` to detect potential drift and
@@ -962,7 +981,7 @@ def load_job_metadata(
         from sparkrun.utils import load_yaml
 
         data = load_yaml(meta_path)
-        return data or None
+        return data if isinstance(data, dict) and owns_metadata({**data, "cluster_id": data.get("cluster_id") or cluster_id}) else None
     except Exception:
         logger.debug("Failed to load job metadata for %s", cluster_id, exc_info=True)
         return None
@@ -975,14 +994,17 @@ def _filename_digest(cluster_id: str) -> str:
     *cluster_id* verbatim so caller-supplied bare digests still
     round-trip.
     """
-    return cluster_id.removeprefix("sparkrun_")
+    assert_resource_namespace(cluster_id)
+    if "/" in cluster_id or "\\" in cluster_id or cluster_id in {".", ".."}:
+        raise ValueError("Invalid job identifier")
+    return cluster_id.removeprefix(resource_name("_"))
 
 
 def _resolve_cache_dir(cache_dir: str | None, sctx: "SparkrunContext | None") -> str:
     """Resolve the effective cache root for job-metadata I/O.
 
     Priority: explicit *cache_dir* > ``sctx.config.cache_dir`` > module
-    default :data:`DEFAULT_CACHE_DIR`.  Used by every public function in
+    default :data:`resolve_sparkrun_cache_dir()`.  Used by every public function in
     this module so the resolution chain stays consistent.
     """
     if cache_dir is not None:
@@ -992,6 +1014,6 @@ def _resolve_cache_dir(cache_dir: str | None, sctx: "SparkrunContext | None") ->
             return str(sctx.config.cache_dir)
         except Exception:
             logger.debug("sctx.config.cache_dir unavailable; using default", exc_info=True)
-    from sparkrun.core.config import DEFAULT_CACHE_DIR
+    from sparkrun.core.config import resolve_sparkrun_cache_dir
 
-    return str(DEFAULT_CACHE_DIR)
+    return str(resolve_sparkrun_cache_dir())

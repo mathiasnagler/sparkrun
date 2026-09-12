@@ -24,6 +24,8 @@ fallback per host".  Internal code paths therefore never see
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import resource_name
+
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -409,7 +411,7 @@ def discover_cluster_id_by_intent(
     cross-executor source (:func:`~sparkrun.orchestration.executor.query_status_for_cluster`,
     so a job launched under *any* backend is discoverable) and filters
     ``running_cluster_ids()`` for those starting with
-    ``"sparkrun_" + intent_id + "_"``.  Deriving the *full* cluster_id
+    ``resource_name("_") + intent_id + "_"``.  Deriving the *full* cluster_id
     instead would require guessing the placement token, which a load-aware
     scheduler randomizes and a host-set change invalidates — the whole point
     of separating intent from placement.  The user's host scope is the
@@ -441,7 +443,7 @@ def discover_cluster_id_by_intent(
     if unavailable:
         raise SparkrunError("Cannot determine running workloads: status unavailable for %s" % ", ".join(unavailable))
 
-    prefix = "sparkrun_%s_" % intent_id
+    prefix = resource_name("_%s_" % intent_id)
     matches = sorted({cid for cid in status.running_cluster_ids() if cid.startswith(prefix)})
 
     if not matches:

@@ -2,7 +2,7 @@
 
 This module is the canonical home for the :class:`Executor` plugin
 interface.  Concrete implementations live alongside in
-``executors/docker.py``, ``executors/local.py``, ``executors/k8s.py``.
+``executors/docker.py``, ``executors/local.py``, or an optional integration.
 
 The public facade :mod:`sparkrun.orchestration.executor` re-exports
 the names defined here, plus the resolution helpers
@@ -74,7 +74,7 @@ def _registered_executor_names() -> set[str]:
     # Static fallback — keeps the validation logic functioning for
     # in-tree tests that import :class:`ExecutorConfig` directly without
     # bootstrapping the SAF plugin registry.
-    return {"docker", "local", "k8s"}
+    return {"docker", "local"}
 
 
 @dataclass
@@ -171,21 +171,6 @@ class ExecutorConfig:
     env_file: str | None = None
     command_prefix: str | None = None
 
-    # K8sExecutor-only fields (ignored by Docker/Local). All
-    # experimental — the K8s executor is a draft pending real-world
-    # validation.  Empty values fall back to whatever ``kubectl`` picks
-    # up from its current context.
-    k8s_namespace: str | None = None
-    k8s_context: str | None = None
-    k8s_node_selector: str | None = None
-    k8s_image_pull_policy: str | None = None
-    kubeconfig: str | None = None
-    # Absolute path to the kubectl binary the executor should invoke.
-    # Usually resolved from sparkrun's managed cache by
-    # :meth:`K8sExecutor.finalize_config`; falls back to bare ``kubectl``
-    # (PATH lookup at script-run time) when unset.
-    kubectl_path: str | None = None
-
     @classmethod
     def from_chain(cls, chain) -> ExecutorConfig:
         """Build from a config chain or plain dict.
@@ -223,12 +208,6 @@ class ExecutorConfig:
             "pid_file",
             "env_file",
             "command_prefix",
-            "k8s_namespace",
-            "k8s_context",
-            "k8s_node_selector",
-            "k8s_image_pull_policy",
-            "kubeconfig",
-            "kubectl_path",
         ):
             v = chain.get(key)
             if v:
@@ -309,6 +288,8 @@ class Executor(Plugin):
 
     # --- Subclass must define ---
     executor_name: ClassVar[str] = ""
+    # Plugins may supply a typed settings subclass for their own executor fields.
+    config_class: ClassVar[type[ExecutorConfig]] = ExecutorConfig
 
     # Whether this executor distributes/uses a container image. Container-less
     # executors set False so the launch skips image distribution.
@@ -371,7 +352,7 @@ class Executor(Plugin):
 
     def __init__(self, config: ExecutorConfig | None = None):
         super().__init__()
-        self.config = config or ExecutorConfig()
+        self.config = config or self.config_class()
 
     def finalize_config(self, *, config=None, v: Variables | None = None) -> None:
         """Post-construction hook to enrich ``self.config``.
@@ -856,7 +837,10 @@ class Executor(Plugin):
             served_model_name: Name the model is served under via the
                 inference API (omitted when falsy).
         """
-        labels: dict[str, str] = {LABEL_CLUSTER_ID: cluster_id}
+        from sparkrun.core.application_profile import get_application_profile
+        from sparkrun.core.ownership import OWNER_LABEL
+
+        labels: dict[str, str] = {LABEL_CLUSTER_ID: cluster_id, OWNER_LABEL: get_application_profile().id}
         if intent_id is None:
             intent_id = _intent_id_from_cluster_id(cluster_id)
         if intent_id:

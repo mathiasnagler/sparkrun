@@ -1,0 +1,39 @@
+name: Test application profile wheels
+
+on:
+  push:
+    branches: [main, develop, develop-next]
+  pull_request:
+    branches: [main, develop, develop-next]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: application-profile-wheels-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wheel-composition:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v9.0.0
+      - name: Cache runtime and build dependencies
+        run: |
+          uv pip install --system -e ".[dev]"
+          for source in . tests/fixtures/application_profiles/plugin tests/fixtures/application_profiles/application; do
+            uv build --out-dir "$RUNNER_TEMP/profile-wheels" "$source"
+          done
+      - name: Verify offline installed-wheel composition
+        env:
+          SPARKRUN_TEST_WHEELS: "1"
+        run: python -m pytest -q tests/test_application_profile_wheels.py

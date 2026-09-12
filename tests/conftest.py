@@ -24,6 +24,21 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
     Prevents tests from writing to the real ~/.config/sparkrun/.
     Also resets the bootstrap singleton between tests.
     """
+    from sparkrun.core.application_profile import _reset_application_profile_for_tests
+    from sparkrun.core.installed_plugins import reset_installed_plugins
+    import sparkrun.core.config as config_module
+
+    _reset_application_profile_for_tests()
+    reset_installed_plugins()
+    from sparkrun.core.setup_steps import _STEPS, _CONSTRAINTS
+
+    _STEPS.clear()
+    _CONSTRAINTS.clear()
+    from sparkrun.core.external_plugins import clear_loaded_plugin_modules
+
+    clear_loaded_plugin_modules()
+    monkeypatch.setattr(config_module, "_application_config_path", None)
+    monkeypatch.setenv("SPARKRUN_NO_INSTALLED_PLUGINS", "1")
     monkeypatch.setenv("STATEFUL_ROOT", str(tmp_path / "stateful"))
     monkeypatch.setenv("SPARKRUN_NO_TELEMETRY", "1")
     # The HuggingFace Hub metadata budget, its breaker and its negative memo are
@@ -58,6 +73,7 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
     # them here to preserve that contract. tests/test_features.py exercises the
     # gating itself in clean subprocesses that strip these env overrides.
     monkeypatch.setenv("SPARKRUN_FEATURE_EXECUTOR_LOCAL", "1")
+    monkeypatch.setenv("SPARKRUN_FEATURE_INTEGRATION_K8S", "1")
     monkeypatch.setenv("SPARKRUN_FEATURE_EXECUTOR_K8S", "1")
     # The `setup k8s` command group is likewise gated off by default; enable it
     # so the CLI tests that exercise it keep passing (the gate itself is tested
@@ -124,8 +140,12 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
     import sparkrun.core.bootstrap
 
     sparkrun.core.bootstrap._variables = None
+    sparkrun.core.bootstrap._initialization_error = None
     yield
+    _reset_application_profile_for_tests()
+    reset_installed_plugins()
     sparkrun.core.bootstrap._variables = None
+    sparkrun.core.bootstrap._initialization_error = None
 
     if telemetry_attempts:
         pytest.fail(describe_escapes(telemetry_attempts), pytrace=False)
@@ -264,6 +284,7 @@ def v(tmp_path: Path) -> Any:
     import sparkrun.core.bootstrap
 
     sparkrun.core.bootstrap._variables = None
+    sparkrun.core.bootstrap._initialization_error = None
 
     return init_sparkrun(log_level="WARNING")
 

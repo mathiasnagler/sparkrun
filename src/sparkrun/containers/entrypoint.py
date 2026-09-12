@@ -28,8 +28,9 @@ so the question stays substrate-dispatched, and best-effort throughout — only 
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import product_env
+
 import logging
-import os
 from dataclasses import dataclass
 
 from sparkrun.scripts import read_script
@@ -78,7 +79,7 @@ class EntrypointProbe:
 
 def probe_disabled() -> bool:
     """True when the ``SPARKRUN_NO_IMAGE_PROBE`` kill switch is set."""
-    return os.environ.get(NO_PROBE_ENV, "").strip().lower() in ("1", "true", "yes")
+    return product_env("NO_IMAGE_PROBE", "").strip().lower() in ("1", "true", "yes")
 
 
 def build_probe_script(image: str, accel_opts: list[str] | None = None) -> str:

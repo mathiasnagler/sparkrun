@@ -10,7 +10,7 @@ from typing import Any, TYPE_CHECKING
 
 import yaml
 
-from sparkrun.core.hardware import HostHardware, default_dgx_spark_hardware
+from sparkrun.core.hardware import HostHardware, resolve_fallback_hardware
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -249,7 +249,7 @@ class ClusterDefinition:
     """Optional per-host hardware metadata, keyed by host name/address.
 
     Hosts absent from this dict are assumed to be DGX Sparks (see
-    :func:`sparkrun.core.hardware.default_dgx_spark_hardware`).  Reading
+    :func:`sparkrun.core.hardware.resolve_fallback_hardware`).  Reading
     code should go through :meth:`hardware_for` rather than indexing
     this dict directly so the default fallback is preserved.
     """
@@ -388,7 +388,7 @@ class ClusterDefinition:
         """
         hw = self.hosts_hardware.get(host)
         if hw is None:
-            return default_dgx_spark_hardware()
+            return resolve_fallback_hardware()
         return hw
 
     def plugin_settings(self, name: str) -> dict[str, Any]:
@@ -1275,6 +1275,26 @@ class ResolvedClusterConfig:
     is downloaded once to the shared cache).  Mirrors
     ``cluster.distribution.model.skip_fan_out``."""
 
+    @classmethod
+    def from_definition(cls, cluster: ClusterDefinition, *, include_transfer: bool = True) -> ResolvedClusterConfig:
+        """Project a resolved definition without performing another name lookup."""
+        return cls(
+            name=cluster.name,
+            user=cluster.user,
+            cache_dir=cluster.cache_dir if include_transfer else None,
+            transfer_mode=cluster.transfer_mode if include_transfer else None,
+            transfer_interface=cluster.transfer_interface if include_transfer else None,
+            topology=cluster.topology if include_transfer else None,
+            preserve_model_perms=cluster.distribution.model.preserve_perms if include_transfer else True,
+            skip_model_fan_out=cluster.distribution.model.skip_fan_out if include_transfer else False,
+            executor=cluster.executor,
+            executor_config=dict(cluster.executor_config) if cluster.executor_config else None,
+            scheduler=cluster.scheduler,
+            mgmt_interface=cluster.mgmt_interface,
+            transport=cluster.transport,
+            provider_ref=cluster.provider_ref,
+        )
+
     def resolve_transfer_config(self, config, transfer_mode_override: str | None = None):
         """Resolve transfer configuration against defaults.
 
@@ -1336,40 +1356,6 @@ def resolve_cluster_config(
         logger.debug("Failed to resolve cluster '%s'", resolved, exc_info=True)
         return cfg
 
-    # User is always resolved (even with explicit --hosts, if --cluster given)
-    cfg.user = cluster_def.user
-
-    # transfer_mode, transfer_interface, cache_dir, and topology only apply when hosts come from the cluster
-    if not hosts and not hosts_file:
-        logger.debug("Using cluster config for transfer_mode, transfer_interface, cache_dir, and topology")
-        cfg.transfer_mode = cluster_def.transfer_mode
-        cfg.transfer_interface = cluster_def.transfer_interface
-        cfg.cache_dir = cluster_def.cache_dir
-        cfg.topology = cluster_def.topology
-        cfg.preserve_model_perms = cluster_def.distribution.model.preserve_perms
-        cfg.skip_model_fan_out = cluster_def.distribution.model.skip_fan_out
-    else:
-        logger.debug("explicit hosts; not using cluster for transfer_mode, transfer_interface, cache_dir, and topology")
-
-    # Executor selector and config are cluster-deployment properties,
-    # not host-list properties — apply them whenever the cluster is
-    # named, even with explicit --hosts.  Rationale: if you tell sparkrun
-    # which cluster you're targeting, its executor defaults should
-    # govern regardless of how host addresses are supplied.
-    cfg.executor = cluster_def.executor
-    cfg.executor_config = dict(cluster_def.executor_config) if cluster_def.executor_config else None
-    cfg.scheduler = cluster_def.scheduler
-
-    # Management interface is a property of the *machines*, not of how their
-    # addresses were supplied — the same NIC names apply whether the host list
-    # came from the cluster or from --hosts.  So it applies whenever the
-    # cluster is named, like executor/transport above and unlike transfer_mode.
-    cfg.mgmt_interface = cluster_def.mgmt_interface
-
-    # Transport is a cluster-deployment property (like executor): it governs
-    # how the cluster's hosts are reached, so it applies whenever the cluster
-    # is named, even with explicit --hosts.
-    cfg.transport = cluster_def.transport
-    cfg.provider_ref = cluster_def.provider_ref
-
-    return cfg
+    # Legacy CLI host tokens suppress transfer defaults; API callers can project
+    # their already resolved definition directly with from_definition().
+    return ResolvedClusterConfig.from_definition(cluster_def, include_transfer=not (hosts or hosts_file))

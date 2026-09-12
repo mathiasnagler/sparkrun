@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import render_identity_text
+
 import functools
 import logging
-import os
 import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -24,7 +25,9 @@ from sparkrun.core.recipe import (
 )
 from sparkrun.core.cluster_manager import ResolvedClusterConfig, resolve_cluster_config  # noqa: E402, F401 — re-exported
 
-HIDE_ADVANCED_OPTIONS = not ext_parse_bool(os.environ.get("SPARKRUN_ADVANCED", "0"))
+from sparkrun.core.application_profile import product_env, resource_name
+
+HIDE_ADVANCED_OPTIONS = not ext_parse_bool(product_env("ADVANCED", "0"))
 
 logger = logging.getLogger(__name__)
 
@@ -352,14 +355,16 @@ def _render_capacity_diagnostics(cluster_status, host_list: list[str]) -> None:
     """
     if cluster_status is None or not getattr(cluster_status, "hosts", ()):
         click.echo("", err=True)
-        click.echo("Run `sparkrun cluster status` to see what's running on the cluster.", err=True)
+        click.echo(render_identity_text("Run `{app_command} cluster status` to see what's running on the cluster."), err=True)
         return
 
     has_workloads = any(host_occ.workloads for host_occ in cluster_status.hosts)
     if not has_workloads:
         click.echo("", err=True)
-        click.echo("No sparkrun workloads detected on these hosts (capacity may be reserved off-cluster).", err=True)
-        click.echo("Run `sparkrun cluster status` for full details.", err=True)
+        click.echo(
+            render_identity_text("No {app_command} workloads detected on these hosts (capacity may be reserved off-cluster)."), err=True
+        )
+        click.echo(render_identity_text("Run `{app_command} cluster status` for full details."), err=True)
         return
 
     click.echo("", err=True)
@@ -375,7 +380,7 @@ def _render_capacity_diagnostics(cluster_status, host_list: list[str]) -> None:
                 err=True,
             )
     click.echo("", err=True)
-    click.echo("Stop a running job with `sparkrun stop <cluster_id>` (or `sparkrun stop --all`).", err=True)
+    click.echo(render_identity_text("Stop a running job with `{app_command} stop <cluster_id>` (or `{app_command} stop --all`)."), err=True)
 
 
 def _get_cluster_manager(v=None, sctx: SparkrunContext | None = None):
@@ -746,7 +751,12 @@ def report_launch_validation(recipe_ref: str, issues, failed: bool) -> None:
         err=True,
     )
     if failed:
-        click.echo("\nCannot launch: fix the above, or see `sparkrun recipe validate %s` for the full report." % recipe_ref, err=True)
+        click.echo(
+            render_identity_text(
+                "\nCannot launch: fix the above, or see `{app_command} recipe validate %s` for the full report." % recipe_ref
+            ),
+            err=True,
+        )
     else:
         click.echo("\nNothing above blocks the launch. Continuing.", err=True)
 
@@ -964,11 +974,11 @@ def _is_cluster_id(value: str) -> str | None:
     """
     import re
 
-    if value.startswith("sparkrun_"):
+    if value.startswith(resource_name("_")):
         # API layer validates the full form at lookup time.
         return value
     if re.fullmatch(r"(?:[0-9a-f]{8,12}|[0-9a-f]{16}_[0-9a-f]{12})", value):
-        return "sparkrun_%s" % value
+        return resource_name("_%s" % value)
     return None
 
 
@@ -1072,7 +1082,7 @@ def _complete_targets(incomplete: str, ctx=None):
                     offered_ids.add(job.cluster_id)
                     continue
             cid = job.cluster_id
-            digest = cid.removeprefix("sparkrun_")
+            digest = cid.removeprefix(resource_name("_"))
             if cid.startswith(incomplete) or digest.startswith(incomplete):
                 items.append(click.shell_completion.CompletionItem(cid, help=_describe_job(job)))
                 offered_ids.add(cid)
@@ -1082,7 +1092,7 @@ def _complete_targets(incomplete: str, ctx=None):
         # addressable by id, and is exactly what the user is reaching for.
         if snapshot is not None:
             for cid in sorted(snapshot[0] - offered_ids):
-                digest = cid.removeprefix("sparkrun_")
+                digest = cid.removeprefix(resource_name("_"))
                 if cid.startswith(incomplete) or digest.startswith(incomplete):
                     items.append(click.shell_completion.CompletionItem(cid))
         return items

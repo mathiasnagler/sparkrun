@@ -6,7 +6,7 @@ are breaking.
 
 ``BenchmarkOptions`` mirrors the CLI ``benchmark`` command's flag set as a
 typed struct.  ``BenchmarkResult`` carries the structured outcome of a
-completed run.  ``ProgressEvent`` is a future-facing hook for step 7.
+completed run.  ``ProgressEvent`` carries presentation-independent notifications.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.recipe import Recipe
     from sparkrun.api._models import RunResult
+    from sparkrun.benchmarking.run_state import BenchmarkRunState
 
 
 # --------------------------------------------------------------------------
@@ -61,14 +62,33 @@ class ProgressEvent:
     """Event dispatched to :attr:`BenchmarkOptions.progress_callback` during a run.
 
     Carries a stable ``kind`` discriminator and a free-form ``data``
-    payload.  Currently informational only — step 7 wires actual events
-    through; until then the callback is accepted but not invoked.
+    payload. Scheduled runs and resumes emit ``schedule_started``, ``task_start``,
+    ``task_end``, ``results_update``, ``schedule_log`` and ``schedule_finished``.
+    Successful API calls also emit ``run_complete``. Text notifications use
+    ``banner``, ``info``, ``warning``, ``error`` and ``progress_step``.
     """
 
     kind: str
     """Discriminator string (e.g. ``"launch_started"``, ``"run_complete"``)."""
     data: dict[str, Any] = field(default_factory=dict)
     """Free-form payload; schema varies by ``kind``."""
+
+
+@dataclass(frozen=True)
+class BenchmarkDecision:
+    """A synchronous choice, separate from progress rendering.
+
+    Kinds: ``resume_incomplete`` (accept resumes; decline starts fresh),
+    ``remeasure_complete`` (accept starts fresh; decline reuses measurements),
+    and ``integration_confirmation`` (accept continues the integration).
+    No callback means use ``default``. Recipe trust uses ``trust`` and is
+    separate from these decisions.
+    """
+
+    kind: str
+    message: str
+    default: bool
+    benchmark_id: str | None = None
 
 
 # --------------------------------------------------------------------------
@@ -130,8 +150,8 @@ class BenchmarkOptions:
     """Environment variable name whose value is used as the inference API key."""
 
     # --- Mode ---
-    arena: bool = False
-    """Submit results to the Spark Arena leaderboard."""
+    integrations: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Selected benchmark integrations and their settings, keyed by registered name."""
 
     # --- Output ---
     output_file: str | None = None
@@ -165,18 +185,23 @@ class BenchmarkOptions:
     # --- Extension hooks ---
     progress_callback: "Callable[[ProgressEvent], None] | None" = None
     """Callback invoked with :class:`ProgressEvent` instances during the run.
-    Accepted but not yet wired — step 7 activates this."""
+    The API does not render terminal progress when no callback is supplied."""
     state_extras: dict[str, Any] = field(default_factory=dict)
     """Arbitrary extras forwarded into the benchmark state (e.g.
-    ``{"submission_id": "sub-abc"}`` for arena runs)."""
-    on_prompt_required: "Callable[[Any], bool] | None" = None
-    """Callback invoked when the CLI would show a confirmation prompt.
-    Return ``True`` to accept, ``False`` to cancel.  Step 4 wires this."""
-    on_complete_state: "Callable[[Any], bool] | None" = None
+    ``{"experiment": "run-abc"}``)."""
+    on_prompt_required: "Callable[[BenchmarkRunState], bool] | None" = None
+    """Legacy AUTO incomplete-state callback: True resumes, False starts fresh.
+    Receives BenchmarkRunState. Does not handle integration confirmations;
+    new callers should use ``decision_callback``."""
+    on_complete_state: "Callable[[BenchmarkRunState], bool] | None" = None
     """Callback invoked under ``ResumeMode.AUTO`` when prior benchmark state is
     already COMPLETE.  Return ``True`` to delete it and re-measure, ``False`` to
     re-emit the recorded results.  When ``None``, complete state is reused —
     with a warning, never silently."""
+
+    decision_callback: "Callable[[BenchmarkDecision], bool] | None" = None
+    """Synchronous decision handler for AUTO resume choices and integration
+    confirmations. Takes precedence over the legacy resume callbacks above."""
 
 
 # --------------------------------------------------------------------------
@@ -188,9 +213,9 @@ class BenchmarkOptions:
 class BenchmarkResult:
     """Outputs of a completed :func:`sparkrun.api.benchmark` call.
 
-    Populated best-effort from the internal CLI ``BenchmarkResult``.
-    Step 7 will plumb additional fields once orchestration moves into
-    this module.
+    Shared by initial runs and resumes. ``success`` describes measurement
+    completion; integration publication failures carry this result in
+    ``BenchmarkIntegrationFailed.result``.
     """
 
     success: bool
@@ -210,7 +235,8 @@ class BenchmarkResult:
     """Mapping of output file format keys to absolute paths (``"csv"``, ``"json"``, ``"yaml"``)."""
 
     run_result: "RunResult | None" = None
-    """Structured launch result.  Populated by step 7; ``None`` until then."""
+    """Structured launch result when this invocation launched inference;
+    ``None`` for skip-run, resume-by-ID, and calls that did not launch."""
 
     cluster_id: str = ""
     """sparkrun cluster id for the inference workload used in this benchmark."""
@@ -234,13 +260,16 @@ class BenchmarkResult:
     """Directory where benchmark state was persisted, when applicable."""
     resumed: bool = False
     """``True`` when this run resumed from a prior checkpoint."""
-    submission_id: str | None = None
-    """Arena submission id, when the run was submitted to the leaderboard."""
+    integration_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Integration-provided outcome summaries, keyed by integration name."""
+    integration_errors: dict[str, str] = field(default_factory=dict)
+    """Completion-hook failures, separate from measurement success."""
 
 
 __all__ = [
     "ResumeMode",
     "ProgressEvent",
+    "BenchmarkDecision",
     "BenchmarkOptions",
     "BenchmarkResult",
 ]

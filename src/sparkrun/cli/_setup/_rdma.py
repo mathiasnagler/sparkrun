@@ -18,6 +18,8 @@ so what the help offers and what the command accepts cannot diverge.
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import render_identity_text
+
 import sys
 import textwrap
 
@@ -368,7 +370,9 @@ def setup_rdma_test(
     """
     sctx = _get_context(ctx)
     if not sctx.config.is_feature_enabled(SETUP_RDMA_TEST_FEATURE):
-        raise click.ClickException("'setup rdma-test' is disabled. Enable it with: sparkrun setup features enable cli.setup.rdma_test")
+        raise click.ClickException(
+            render_identity_text("'setup rdma-test' is disabled. Enable it with: {app_command} setup features enable cli.setup.rdma_test")
+        )
 
     # Fail before the banner, so "Testing RDMA fabric across N host(s)" is
     # never printed for a run that is about to be refused. Resolved from the

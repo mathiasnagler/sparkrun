@@ -29,7 +29,7 @@ from sparkrun.core.hardware import (
     DEFAULT_MAX_GPU_MEMORY_UTILIZATION,
     AcceleratorSpec,
     HostHardware,
-    default_dgx_spark_hardware,
+    resolve_fallback_hardware,
 )
 
 if TYPE_CHECKING:
@@ -134,7 +134,7 @@ def resolved_hardware_for_scheduling(
     """
     resolved: dict[str, HostHardware] = {}
     for host in hosts:
-        hw = cluster.hardware_for(host) if cluster is not None else default_dgx_spark_hardware()
+        hw = cluster.hardware_for(host) if cluster is not None else resolve_fallback_hardware()
         new_accels = [
             dataclasses.replace(
                 accel,

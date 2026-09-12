@@ -1,4 +1,4 @@
-"""Unified session context for sparkrun CLI commands."""
+"""Shared application context for API callers, plugins, and frontends."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from scitrera_app_framework import Variables
 
-    from sparkrun.core.cluster_manager import ClusterManager
+    from sparkrun.core.cluster_manager import ClusterDefinition, ClusterManager
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.progress import LaunchProgress
     from sparkrun.core.registry import RegistryManager
@@ -21,8 +21,10 @@ if TYPE_CHECKING:
 class SparkrunContext:
     """Single session context bundling SAF Variables and SparkrunConfig.
 
-    Created lazily by ``_get_context()`` in CLI commands, replacing the
-    repeated ``init_sparkrun()`` + ``SparkrunConfig()`` boilerplate.
+    Obtain one through ``sparkrun.application.initialize()`` and pass it to
+    API operations. CLI commands create the same context lazily. A process
+    has one application/profile and canonical configuration binding; context
+    reuse shares cached managers but does not imply thread-safe operations.
     """
 
     variables: Variables
@@ -35,6 +37,33 @@ class SparkrunContext:
     ``launch_inference`` creates its own when this is ``None``, so a caller
     only sets it to widen the window (e.g. to include planning) or to share
     one timeline across several launches."""
+
+    def for_cluster(self, cluster: ClusterDefinition) -> SparkrunContext:
+        """Share session services with operation-local connection settings."""
+        from copy import copy
+
+        config = self.config.for_cluster(cluster)
+        if config is self.config:
+            return self
+        scoped = copy(self)
+        scoped.config = config
+        return scoped
+
+    @property
+    def application_profile(self):
+        return self.config.profile
+
+    @property
+    def application_identity(self):
+        from sparkrun.core.application_identity import get_application_identity
+
+        return get_application_identity(self.application_profile)
+
+    @cached_property
+    def controller_identity(self):
+        from sparkrun.core.application_identity import get_controller_identity
+
+        return get_controller_identity(self.config)
 
     @cached_property
     def registry_manager(self) -> RegistryManager:

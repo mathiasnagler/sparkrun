@@ -34,7 +34,8 @@ from typing import Any
 
 import yaml
 
-from sparkrun.utils.fs import open_private_write
+from sparkrun.utils.fs import open_private_write, atomic_private_write
+from sparkrun.core.application_profile import get_application_profile
 from sparkrun.utils.process import process_exists
 
 logger = logging.getLogger(__name__)
@@ -133,9 +134,9 @@ class GatewayState:
 
     def __init__(self, state_dir: Path | None = None) -> None:
         if state_dir is None:
-            from sparkrun.core.config import DEFAULT_CACHE_DIR
+            from sparkrun.core.config import resolve_sparkrun_cache_dir
 
-            state_dir = DEFAULT_CACHE_DIR / "proxy"
+            state_dir = resolve_sparkrun_cache_dir() / "proxy"
         self.state_dir = state_dir
         self.state_file = state_dir / "state.yaml"
 
@@ -145,17 +146,56 @@ class GatewayState:
             return None
         try:
             with open(self.state_file) as f:
-                return yaml.safe_load(f)
+                state = yaml.safe_load(f)
+                return state if isinstance(state, dict) and state.get("distribution", "sparkrun") == get_application_profile().id else None
         except Exception:
             return None
+
+    def claim_state_directory(self) -> None:
+        """Reserve the directory for this application before any gateway writes.
+
+        A durable atomic claim also protects config/log files after a gateway
+        stops, and prevents two different applications claiming an empty shared
+        directory concurrently. Legacy unlabelled state belongs to Sparkrun.
+        Reads remain passive; callers must claim before preparing or starting.
+        """
+        owner = get_application_profile().id
+        claim = self.state_dir / ".distribution"
+
+        def check_existing():
+            try:
+                existing = claim.read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
+                existing = None
+            if existing is not None and existing != owner:
+                raise GatewayOperationError(
+                    "Gateway directory %s belongs to application %r; choose a separate cache directory" % (self.state_dir, existing)
+                )
+            try:
+                state = yaml.safe_load(self.state_file.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return
+            except (OSError, yaml.YAMLError) as exc:
+                raise GatewayOperationError("Cannot safely read gateway state in %s" % self.state_dir) from exc
+            if not isinstance(state, dict):
+                raise GatewayOperationError("Invalid gateway state in %s; refusing to overwrite it" % self.state_dir)
+            if state.get("distribution", "sparkrun") != owner:
+                raise GatewayOperationError(
+                    "Gateway state in %s belongs to another application; choose a separate cache directory" % self.state_dir
+                )
+
+        check_existing()
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        _restrict_dir_permissions(self.state_dir)
+        atomic_private_write(claim, owner + "\n", overwrite=False)
+        check_existing()
 
     def _read_pid(self) -> int | None:
         """Read the gateway PID from the state file."""
         if not self.state_file.exists():
             return None
         try:
-            with open(self.state_file) as f:
-                state = yaml.safe_load(f)
+            state = self.get_state()
             return int(state["pid"]) if state and "pid" in state else None
         except Exception:
             return None
@@ -380,7 +420,7 @@ class GatewaySupervisor(GatewayState):
         Returns:
             The new PID, or None if the process exited during the grace period.
         """
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.claim_state_directory()
         # Redirect output to log file so startup errors are visible
         log_path = self.log_path
         log_file = open(log_path, "w")
@@ -447,6 +487,7 @@ class GatewaySupervisor(GatewayState):
         host_list: list[str] | None = None,
         ssh_kwargs: dict | None = None,
         cache_dir: str | None = None,
+        application_config_path: str | Path | None = None,
     ) -> int | None:
         """Spawn the gateway-neutral endpoint-discovery sidecar.
 
@@ -459,6 +500,11 @@ class GatewaySupervisor(GatewayState):
         Returns:
             PID of the auto-discover process, or ``None`` on failure.
         """
+        self.claim_state_directory()
+        from sparkrun.core.application_profile import child_environment
+        from sparkrun.core.config import resolve_config_path
+
+        child_env = child_environment(config_path=application_config_path or resolve_config_path())
         cfg: dict[str, Any] = {
             "proxy_pid": proxy_pid,
             "gateway": self.gateway_name,
@@ -487,6 +533,7 @@ class GatewaySupervisor(GatewayState):
         try:
             proc = subprocess.Popen(
                 [sys.executable, "-m", "sparkrun.proxy.autodiscover", str(self._autodiscover_config_path)],
+                env={**os.environ, **child_env},
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
@@ -589,6 +636,7 @@ class GatewaySupervisor(GatewayState):
         """
         import datetime
 
+        self.claim_state_directory()
         self.state_dir.mkdir(parents=True, exist_ok=True)
         _restrict_dir_permissions(self.state_dir)
         state: dict[str, Any] = {"pid": pid}
@@ -597,12 +645,11 @@ class GatewaySupervisor(GatewayState):
         # (stop / status / sync) read it back so they act on what is *running*
         # rather than on what is currently configured.
         state["gateway"] = self.gateway_name
+        state["distribution"] = get_application_profile().id
         state["started_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         if autodiscover_pid is not None:
             state["autodiscover_pid"] = autodiscover_pid
-        with open(self.state_file, "w") as f:
-            yaml.safe_dump(state, f, default_flow_style=False)
-        _restrict_file_permissions(self.state_file)
+        atomic_private_write(self.state_file, yaml.safe_dump(state, default_flow_style=False))
 
     def update_autodiscover_pid(self, autodiscover_pid: int) -> None:
         """Record the auto-discover PID in state (call after start)."""
@@ -612,7 +659,8 @@ class GatewaySupervisor(GatewayState):
 
     def _clear_state(self) -> None:
         """Remove state file."""
-        self.state_file.unlink(missing_ok=True)
+        if self.get_state() is not None:
+            self.state_file.unlink(missing_ok=True)
 
 
 __all__ = [

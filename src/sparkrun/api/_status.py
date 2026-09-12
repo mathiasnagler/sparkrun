@@ -136,9 +136,9 @@ def status_report(
         except Exception:
             cache_dir = None
     if cache_dir is None:
-        from sparkrun.core.config import DEFAULT_CACHE_DIR
+        from sparkrun.core.config import resolve_sparkrun_cache_dir
 
-        cache_dir = str(DEFAULT_CACHE_DIR)
+        cache_dir = str(resolve_sparkrun_cache_dir())
 
     return classify_cluster_status(snapshot, cache_dir=cache_dir, host_list=list(hosts))
 

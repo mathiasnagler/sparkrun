@@ -1,7 +1,7 @@
 """Public library API for Tailscale operations.
 
 Console-free surface over :mod:`sparkrun.orchestration.tailscale`. Mirrors the
-:mod:`sparkrun.api.k8s` conventions: dataclass returns, typed
+:mod:`sparkrun.plugins.k8s.api` conventions: dataclass returns, typed
 :class:`~sparkrun.api._errors.SparkrunError` subclasses, never writes to
 stdout/stderr.
 

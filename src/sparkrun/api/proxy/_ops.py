@@ -420,6 +420,13 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
     # computed either way and only the write is conditional — answering that
     # from the same code that renders the real config is what keeps the
     # preview honest.
+    if not options.dry_run:
+        from sparkrun.proxy._supervisor import GatewayOperationError
+
+        try:
+            engine.claim_state_directory()
+        except GatewayOperationError as exc:
+            raise ProxyStartFailed(str(exc)) from exc
     config_path, applied, pending = engine.prepare_config(healthy, aliases, write=not options.dry_run)
 
     common = {
@@ -460,6 +467,7 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
             "removal_grace_sweeps": removal_grace_sweeps,
             "host_list": live_hosts,
             "ssh_kwargs": ssh_kwargs,
+            "application_config_path": sctx.config.config_path,
         }
 
     try:

@@ -15,6 +15,8 @@ desktop sidecar included — could neither do it nor inherit its fixes.)
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import render_identity_text
+
 import sys
 
 import click
@@ -47,20 +49,20 @@ from ._common import (
 def stop(ctx, target, hosts, hosts_file, cluster_name, stop_all, tp_override, port, served_model_name, dry_run, config_path=None):
     """Stop a running workload.
 
-    TARGET can be a recipe name or a cluster ID (from sparkrun status output).
-    Use --all to discover and stop all sparkrun containers without specifying a target.
+    TARGET can be a recipe name or a cluster ID (from {app_command} status output).
+    Use --all to discover and stop all {app_command} containers without specifying a target.
 
     Examples:
 
-      sparkrun stop glm-4.7-flash-awq --hosts 192.168.11.13,192.168.11.14
+      {app_command} stop glm-4.7-flash-awq --hosts 192.168.11.13,192.168.11.14
 
-      sparkrun stop glm-4.7-flash-awq --cluster mylab
+      {app_command} stop glm-4.7-flash-awq --cluster mylab
 
-      sparkrun stop e5f6a7b8
+      {app_command} stop e5f6a7b8
 
-      sparkrun stop --all --cluster mylab
+      {app_command} stop --all --cluster mylab
 
-      sparkrun stop --all --hosts 192.168.11.13,192.168.11.14
+      {app_command} stop --all --hosts 192.168.11.13,192.168.11.14
     """
     if stop_all and target:
         click.echo("Error: --all and TARGET are mutually exclusive.", err=True)
@@ -134,8 +136,10 @@ def stop(ctx, target, hosts, hosts_file, cluster_name, stop_all, tp_override, po
         # next launch fails for reasons that look unrelated (issue #277).
         scope = ", ".join(result.hosts_failed) if result.hosts_failed else "one or more of %s" % ", ".join(result.hosts_targeted)
         click.echo(
-            "Workload NOT fully stopped: teardown did not confirm on %s\n"
-            "  Containers may still be running and holding VRAM — check with 'sparkrun status' or 'docker ps'." % scope,
+            render_identity_text(
+                "Workload NOT fully stopped: teardown did not confirm on %s\n"
+                "  Containers may still be running and holding VRAM — check with '{app_command} status' or 'docker ps'." % scope
+            ),
             err=True,
         )
         sys.exit(1)
@@ -183,7 +187,7 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run, sctx=None):
 
     # Name the target before tearing anything down on it.
     click.echo(hctx.describe())
-    click.echo("Discovering sparkrun containers on %d host(s)..." % len(host_list))
+    click.echo(render_identity_text("Discovering {app_command} containers on %d host(s)..." % len(host_list)))
     # Status flows from the single source, ``api.status_report`` (cluster-aware
     # resolution + cross-executor merge + display classification).  The
     # *effective* cluster is forwarded (see ``HostContext``): teardown reaches
@@ -197,9 +201,9 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run, sctx=None):
 
     if discovered.total_containers == 0:
         if discovered.errors:
-            click.echo("No sparkrun containers found on the hosts that could be queried.")
+            click.echo(render_identity_text("No {app_command} containers found on the hosts that could be queried."))
             sys.exit(1)
-        click.echo("No sparkrun containers running.")
+        click.echo(render_identity_text("No {app_command} containers running."))
         return
 
     # Summarise what was found
@@ -268,15 +272,15 @@ def logs_cmd(
     head; with ``-f`` those streams interleave in arrival order, and without it
     each source is dumped in full, head first, then workers by rank.
 
-    TARGET can be a recipe name or a cluster ID (from sparkrun status output).
+    TARGET can be a recipe name or a cluster ID (from {app_command} status output).
 
     Examples:
 
-      sparkrun logs glm-4.7-flash-awq --hosts 192.168.11.13
+      {app_command} logs glm-4.7-flash-awq --hosts 192.168.11.13
 
-      sparkrun logs glm-4.7-flash-awq --cluster mylab -n 200
+      {app_command} logs glm-4.7-flash-awq --cluster mylab -n 200
 
-      sparkrun logs e5f6a7b8 -f -a
+      {app_command} logs e5f6a7b8 -f -a
     """
     sctx = _get_context(ctx)
 

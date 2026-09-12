@@ -40,6 +40,23 @@ def normalize_channel(value: str | None) -> str:
     Applies aliases (``yolo`` -> ``alpha``) and falls back to ``stable`` for
     missing or unrecognized values, so callers never act on an unknown channel.
     """
+    from sparkrun.core.application_profile import get_application_profile
+
+    profile = get_application_profile()
+    if profile.id != "sparkrun":
+        text = str(value or profile.default_channel).strip().lower()
+        if not profile.update_sources and text == profile.default_channel:
+            return text
+        if text not in profile.update_sources:
+            raise ValueError(
+                "Distribution %r does not support update channel %r; supported: %s"
+                % (
+                    profile.id,
+                    text,
+                    ", ".join(profile.update_sources) or "none",
+                )
+            )
+        return text
     if not value:
         return CHANNEL_STABLE
     text = str(value).strip().lower()
@@ -49,14 +66,31 @@ def normalize_channel(value: str | None) -> str:
 
 def channel_requirement(channel: str) -> str:
     """Return the uv requirement string for a channel."""
-    return CHANNEL_REQUIREMENTS[normalize_channel(channel)]
+    from sparkrun.core.application_profile import get_application_profile
+
+    canonical = normalize_channel(channel)
+    source = get_application_profile().update_sources.get(canonical)
+    if source is None:
+        raise ValueError("Distribution %r has no configured update source" % get_application_profile().id)
+    return source.requirement
 
 
 def is_git_channel(channel: str) -> bool:
     """Return whether a channel installs from a mutable git branch."""
-    return normalize_channel(channel) in (CHANNEL_BETA, CHANNEL_ALPHA)
+    from sparkrun.core.application_profile import get_application_profile
+
+    source = get_application_profile().update_sources.get(normalize_channel(channel))
+    return source is not None and source.strategy == "git"
 
 
 def channel_suffix(channel: str) -> str:
     """Return the human-facing version suffix for a channel (``""`` for stable)."""
-    return _CHANNEL_SUFFIXES[normalize_channel(channel)]
+    canonical = normalize_channel(channel)
+    return _CHANNEL_SUFFIXES.get(canonical, "-" + canonical)
+
+
+def normalize_feature_channel(value: str | None) -> str:
+    """Core feature maturity is independent of a distribution's release channels."""
+    text = str(value or CHANNEL_STABLE).strip().lower()
+    text = _CHANNEL_ALIASES.get(text, text)
+    return text if text in CHANNELS else CHANNEL_STABLE

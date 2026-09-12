@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sparkrun"
-version = "0.3.9"
+version = "0.4.0"
 description = "Launch and manage Docker-based inference workloads on NVIDIA DGX Spark systems"
 readme = "README.md"
 # Distribution metadata covers host and plugin; their individual terms remain
@@ -46,7 +46,7 @@ dev = [
 ]
 
 [project.scripts]
-sparkrun = "sparkrun.cli:main"
+sparkrun = "sparkrun.application:main"
 
 [project.entry-points."sparkrun.runtimes"]
 vllm-distributed = "sparkrun.runtimes.vllm_distributed:VllmDistributedRuntime"
@@ -70,7 +70,6 @@ eugr = "sparkrun.builders.eugr:EugrBuilder"
 [project.entry-points."sparkrun.executors"]
 docker = "sparkrun.orchestration.executors.docker:DockerExecutor"
 local = "sparkrun.orchestration.executors.local:LocalExecutor"
-k8s = "sparkrun.orchestration.executors.k8s:K8sExecutor"
 
 [tool.setuptools.packages.find]
 where = ["src"]

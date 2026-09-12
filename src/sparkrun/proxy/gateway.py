@@ -34,6 +34,8 @@ Two mechanisms, deliberately separate:
 
 from __future__ import annotations
 
+from sparkrun.core.registration import enlist_registry_state
+
 import logging
 from typing import TYPE_CHECKING
 
@@ -52,8 +54,12 @@ DEFAULT_GATEWAY = "litellm"
 #: Maintained by :func:`register_gateway`; read by availability resolution.
 GATEWAY_FEATURE_FLAGS: dict[str, str] = {}
 
+enlist_registry_state(globals(), "GATEWAY_FEATURE_FLAGS")
+
 #: Known gateway name -> zero-arg callable returning its engine class.
 _GATEWAY_LOADERS: dict[str, "Callable[[], type]"] = {}
+
+enlist_registry_state(globals(), "_GATEWAY_LOADERS")
 
 
 class GatewayError(RuntimeError):
@@ -95,9 +101,21 @@ def register_gateway(name: str, *, feature_flag: str, loader: "Callable[[], type
             registration can name a class this module must not import at
             module scope, and so registering costs nothing at import time.
 
-    Idempotent by name — re-registering replaces, which is what lets an
-    out-of-tree plugin substitute an in-tree implementation.
+    Repeated registration of the same provider is idempotent. Distinct
+    providers must use distinct names, rather than depending on import order.
     """
+    existing = _GATEWAY_LOADERS.get(name)
+    if existing is not None:
+
+        def provider(value):
+            return (getattr(value, "__module__", None), getattr(value, "__qualname__", None))
+
+        same_provider = existing is loader or provider(existing) == provider(loader) != (None, None)
+        if not same_provider or GATEWAY_FEATURE_FLAGS.get(name) != feature_flag:
+            from sparkrun.core.installed_plugins import PluginConflictError
+
+            raise PluginConflictError("Gateway %r is claimed by both %r and %r" % (name, provider(existing), provider(loader)))
+        return
     GATEWAY_FEATURE_FLAGS[name] = feature_flag
     _GATEWAY_LOADERS[name] = loader
 
@@ -113,6 +131,11 @@ def gateway_class(name: str) -> type:
             while its plugin failed to load, and telling someone to enable a
             flag that is already on is a dead end.
     """
+    from sparkrun.core.in_tree_plugins import plugin_application_profile_failure
+
+    failure = plugin_application_profile_failure(name)
+    if failure:
+        raise GatewayUnavailableError(failure, gateway=name)
     loader = _GATEWAY_LOADERS.get(name)
     if loader is None:
         raise GatewayUnavailableError(
@@ -186,6 +209,11 @@ def resolve_gateway(name: str | None = None, *, config: "SparkrunConfig | None" 
     enabled = list_gateways(config=config)
 
     if name:
+        from sparkrun.core.in_tree_plugins import plugin_application_profile_failure
+
+        failure = plugin_application_profile_failure(name)
+        if failure:
+            raise GatewayUnavailableError(failure, gateway=name)
         if is_gateway_enabled(name, config=config):
             return name
         raise GatewayUnavailableError(
@@ -223,6 +251,11 @@ def require_gateway_enabled(name: str, *, config: "SparkrunConfig | None" = None
     after its flag has been turned off — the same rule
     ``cleanup_cluster_transport`` follows for transports.
     """
+    from sparkrun.core.in_tree_plugins import plugin_application_profile_failure
+
+    failure = plugin_application_profile_failure(name)
+    if failure:
+        raise GatewayUnavailableError(failure, gateway=name)
     if is_gateway_enabled(name, config=config):
         return
     enabled = list_gateways(config=config)

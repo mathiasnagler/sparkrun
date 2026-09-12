@@ -37,8 +37,8 @@ def adv_compare_images(ctx, image, hosts, hosts_file, cluster_name, dry_run, out
 
     \b
     Examples:
-      sparkrun adv compare-images myimage:latest --cluster mylab
-      sparkrun adv compare-images sparkrun-eugr-vllm-tf5 --hosts 192.168.11.13
+      {app_command} adv compare-images myimage:latest --cluster mylab
+      {app_command} adv compare-images {app_command}-eugr-vllm-tf5 --hosts 192.168.11.13
     """
     from sparkrun.containers.distribute import _check_remote_image_identities, _images_match
     from sparkrun.containers.registry import get_image_identity

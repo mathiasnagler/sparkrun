@@ -143,11 +143,9 @@ class TestResolutionPrecedence:
     def test_unknown_flag_fails_closed(self):
         assert is_feature_enabled("does.not.exist", env={}) is False
 
-    def test_builtin_executor_flags_off_on_all_channels(self):
-        # The experimental executors ship off by default everywhere; only an
-        # explicit config/env opt-in enables them.
+    def test_local_executor_off_on_all_channels(self):
+        # Local remains opt-in; Kubernetes is owned by its integration gate.
         for channel in ("stable", "beta", "alpha"):
-            assert is_feature_enabled("executor.k8s", channel=channel, env={}) is False
             assert is_feature_enabled("executor.local", channel=channel, env={}) is False
 
     def test_docker_flag_on_all_channels(self):
@@ -168,10 +166,10 @@ class TestResolutionPrecedence:
 
     def test_config_override_beats_channel(self, tmp_path):
         cfg_path = tmp_path / "config.yaml"
-        cfg_path.write_text(yaml.safe_dump({"features": {"channel": "stable", "executor.k8s": True}}))
+        cfg_path.write_text(yaml.safe_dump({"features": {"channel": "stable", "integration.k8s": True}}))
         config = SparkrunConfig(cfg_path)
         # env empty so config wins over the stable channel default.
-        assert is_feature_enabled("executor.k8s", config=config, env={}) is True
+        assert is_feature_enabled("integration.k8s", config=config, env={}) is True
 
     def test_env_beats_config(self, tmp_path):
         cfg_path = tmp_path / "config.yaml"
@@ -222,13 +220,13 @@ class TestGatingDecision:
     """
 
     def test_hidden_when_flag_disabled(self, monkeypatch):
-        from sparkrun.orchestration.executors.k8s import K8sExecutor
+        from sparkrun.plugins.k8s.executor import K8sExecutor
 
         monkeypatch.setenv("SPARKRUN_FEATURE_EXECUTOR_K8S", "0")
         assert K8sExecutor().is_multi_extension(None) is False
 
     def test_exposed_when_flag_enabled(self, monkeypatch):
-        from sparkrun.orchestration.executors.k8s import K8sExecutor
+        from sparkrun.plugins.k8s.executor import K8sExecutor
 
         monkeypatch.setenv("SPARKRUN_FEATURE_EXECUTOR_K8S", "1")
         assert K8sExecutor().is_multi_extension(None) is True
@@ -266,11 +264,11 @@ class TestBootstrapGatingEndToEnd:
         assert "local" not in names
         assert "k8s" not in names
 
-    def test_alpha_still_excludes_experimental_executors(self, tmp_path):
-        # The experimental executors are off on every channel, including alpha.
+    def test_alpha_enables_k8s_but_keeps_local_opt_in(self, tmp_path):
+        # The Kubernetes plugin is available by default on alpha.
         names = _executor_names(tmp_path, {"features": {"channel": "alpha"}})
         assert "local" not in names
-        assert "k8s" not in names
+        assert "k8s" in names
 
     def test_docker_included_by_default(self, tmp_path):
         # Docker's flag defaults on, so it registers without any opt-in.
@@ -284,11 +282,11 @@ class TestBootstrapGatingEndToEnd:
         assert "docker" not in names
 
     def test_config_override_includes_experimental_executors(self, tmp_path):
-        names = _executor_names(tmp_path, {"features": {"executor.local": True, "executor.k8s": True}})
+        names = _executor_names(tmp_path, {"features": {"executor.local": True, "integration.k8s": True}})
         assert {"docker", "local", "k8s"} <= set(names)
 
     def test_explicit_override_on_stable(self, tmp_path):
-        names = _executor_names(tmp_path, {"features": {"channel": "stable", "executor.k8s": True}})
+        names = _executor_names(tmp_path, {"features": {"channel": "stable", "integration.k8s": True}})
         assert "k8s" in names
         assert "local" not in names
 
@@ -324,7 +322,7 @@ class TestGatedExplicitRequestFails:
         out = _run_gated_snippet(tmp_path, {"features": {"channel": "stable"}}, snippet)
         line = out.splitlines()[-1]
         assert line.startswith("RAISED:"), out
-        assert "executor.k8s" in line
+        assert "integration.k8s" in line
         assert "setup features enable" in line
 
 
@@ -354,4 +352,94 @@ class TestRequiredFeatureGuard:
 
     def test_builtin_executor_flags_present(self):
         names = {f.name for f in all_features()}
-        assert {"executor.local", "executor.k8s"} <= names
+        assert {"executor.local", "integration.k8s"} <= names
+
+
+class TestCliTuneFlag:
+    def test_enabled_on_every_core_channel(self):
+        for channel in ("stable", "beta", "alpha"):
+            assert is_feature_enabled("cli.tune", channel=channel, env={})
+
+    def test_disabled_hides_help_completion_and_blocks_execution(self, tmp_path):
+        snippet = """
+from click.testing import CliRunner
+from sparkrun.cli import main
+runner = CliRunner()
+help_result = runner.invoke(main, ['--help'])
+assert help_result.exit_code == 0, help_result.output
+assert not any(line.strip().startswith('tune ') for line in help_result.output.splitlines())
+completion = runner.invoke(main, [], prog_name='sparkrun', env={
+    '_SPARKRUN_COMPLETE': 'bash_complete', 'COMP_WORDS': 'sparkrun tu', 'COMP_CWORD': '1',
+})
+assert completion.exit_code == 0, completion.output
+assert 'plain,tune' not in completion.output
+result = runner.invoke(main, ['tune', 'vllm', '--help'])
+assert result.exit_code == 1, result.output
+assert 'setup features enable cli.tune' in result.output
+print('gated')
+"""
+        assert _run_gated_snippet(tmp_path, {"features": {"cli.tune": False}}, snippet) == "gated"
+
+    def test_environment_can_override_disabled_config(self, tmp_path):
+        snippet = """
+from click.testing import CliRunner
+from sparkrun.cli import main
+result = CliRunner().invoke(main, ['tune', 'vllm', '--help'])
+assert result.exit_code == 0, result.output
+assert '--tp' in result.output
+print('enabled')
+"""
+        assert _run_gated_snippet(tmp_path, {"features": {"cli.tune": False}}, snippet, {"SPARKRUN_FEATURE_CLI_TUNE": "1"}) == "enabled"
+
+
+class TestFeatureListSetupSteps:
+    def test_default_and_all_filter_text_and_json(self, tmp_path, monkeypatch):
+        import json
+        from types import SimpleNamespace
+        from click.testing import CliRunner
+        from sparkrun.cli._setup import _commands
+        from sparkrun.core.features import FEATURE_FLAGS
+
+        config = SparkrunConfig(tmp_path / "config.yaml")
+        monkeypatch.setattr(_commands, "_get_context", lambda ctx: SimpleNamespace(config=config))
+        # The prefix applies equally to built-in and plugin-contributed steps.
+        monkeypatch.setitem(FEATURE_FLAGS, "setup.steps.fixture", FeatureFlag("setup.steps.fixture", "Plugin setup step", default=True))
+        runner = CliRunner()
+        expected = {flag.name for flag in all_features()}
+        for include_all in (False, True):
+            args = ["--all"] if include_all else []
+            result = runner.invoke(_commands.setup_features_list, [*args, "--json"])
+            assert result.exit_code == 0, result.output
+            names = {row["name"] for row in json.loads(result.output)}
+            assert names == (expected if include_all else {name for name in expected if not name.startswith("setup.steps.")})
+            result = runner.invoke(_commands.setup_features_list, args)
+            assert result.exit_code == 0, result.output
+            assert ("setup.steps.sudoers" in result.output) is include_all
+            assert ("setup.steps.fixture" in result.output) is include_all
+            assert "cli.tune" in result.output
+
+    def test_all_option_is_hidden(self):
+        from click.testing import CliRunner
+        from sparkrun.cli._setup import _commands
+
+        result = CliRunner().invoke(_commands.setup_features_list, ["--help"])
+        assert result.exit_code == 0
+        assert "--json" in result.output
+        assert "--all" not in result.output
+
+    def test_omitted_steps_still_accept_overrides(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+        from click.testing import CliRunner
+        from sparkrun.cli._setup import _commands
+
+        config = SparkrunConfig(tmp_path / "config.yaml")
+        monkeypatch.setattr(_commands, "_get_context", lambda ctx: SimpleNamespace(config=config))
+        runner = CliRunner()
+        for command, expected in (
+            (_commands.setup_features_disable, False),
+            (_commands.setup_features_enable, True),
+            (_commands.setup_features_reset, None),
+        ):
+            result = runner.invoke(command, ["setup.steps.sudoers"])
+            assert result.exit_code == 0, result.output
+            assert SparkrunConfig(config.config_path).feature_override("setup.steps.sudoers") is expected

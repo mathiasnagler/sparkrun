@@ -513,7 +513,9 @@ def _run_copy_command(
         # not a downstream artifact (e.g. lstat on a dir that never got created).
         from sparkrun.orchestration.ssh import run_rsync_parallel
 
-        remote_tmp = "/tmp/sparkrun_hook_%s" % basename
+        from sparkrun.core.application_profile import resource_name
+
+        remote_tmp = "/tmp/" + resource_name("_hook_%s" % basename)
         mkdir_result = run_script_on_host(host, "mkdir -p %s" % remote_tmp, ssh_kwargs=ssh_kwargs, timeout=30)
         _effective_cache_dir = cache_dir if cache_dir is not None else "$HOME/.cache/huggingface"
 
@@ -604,7 +606,9 @@ def _run_delegated_copy(
         return run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=120)
     else:
         # rsync FROM source_host to target host, then docker cp
-        remote_tmp = "/tmp/sparkrun_hook_%s" % basename
+        from sparkrun.core.application_profile import resource_name
+
+        remote_tmp = "/tmp/" + resource_name("_hook_%s" % basename)
         ssh_user = kw.get("ssh_user", "")
         ssh_user_prefix = "%s@" % ssh_user if ssh_user else ""
 

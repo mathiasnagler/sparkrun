@@ -374,11 +374,11 @@ def test_save_job_metadata_writes_where_o_nofollow_is_unavailable(tmp_path: Path
 def test_api_stop_recipe_path_raises_job_not_found_on_zero_matches(tmp_path, intent_recipe, monkeypatch):
     """No workloads running matching the intent → JobNotFound (not Ambiguous)."""
     import sparkrun.api as api
-    from sparkrun.core.cluster_status import ClusterStatus
+    from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy
 
     # Stub executor.query_status to return an empty snapshot.
     def fake_query_status(self, hosts, **kw):
-        return ClusterStatus(hosts=(), executor="docker")
+        return ClusterStatus(hosts=tuple(HostOccupancy(host=h) for h in hosts), executor="docker")
 
     from sparkrun.orchestration.executors.docker import DockerExecutor
 

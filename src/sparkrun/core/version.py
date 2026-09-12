@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 from importlib.metadata import PackageNotFoundError, distribution, version
 
+from sparkrun.core.application_profile import get_application_profile
 from sparkrun.core.channels import CHANNEL_STABLE, channel_suffix, normalize_channel
 
 
-def installed_commit() -> str | None:
+def installed_commit(package: str | None = None) -> str | None:
     """Return the git commit the installed sparkrun was built from, if any.
 
     Reads PEP 610 ``direct_url.json`` (written by uv/pip for VCS installs) and
@@ -22,7 +23,7 @@ def installed_commit() -> str | None:
     tool environments are not guaranteed to contain a checkout.
     """
     try:
-        raw = distribution("sparkrun").read_text("direct_url.json")
+        raw = distribution(package or get_application_profile().package).read_text("direct_url.json")
     except PackageNotFoundError:
         return None
     if not raw:
@@ -35,10 +36,10 @@ def installed_commit() -> str | None:
     return commit if isinstance(commit, str) and commit else None
 
 
-def base_version() -> str:
+def base_version(package: str | None = None) -> str:
     """Return the raw package metadata version (no channel suffix)."""
     try:
-        return version("sparkrun")
+        return version(package or get_application_profile().package)
     except PackageNotFoundError:
         return "0.0.0-dev"
 
@@ -69,3 +70,18 @@ def display_version(config=None, base: str | None = None) -> str:
     if commit:
         return "%s%s+g%s" % (base, suffix, commit[:7])
     return "%s%s" % (base, suffix)
+
+
+def version_diagnostics(config) -> dict:
+    from sparkrun.core.plugin_inventory import list_plugins
+
+    base, commit = installed_identity()
+    profile = get_application_profile()
+    return {
+        "version": base,
+        "commit": commit,
+        "channel": config.self_update_channel,
+        "distribution": {"id": profile.id, "package": profile.package, "version": base, "commit": commit},
+        "core": {"package": "sparkrun", "version": base_version("sparkrun"), "commit": installed_commit("sparkrun")},
+        "plugins": [p.to_dict() for p in list_plugins(config) if p.loaded],
+    }

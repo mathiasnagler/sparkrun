@@ -12,7 +12,7 @@ else
 fi
 
 CHOWN_PATH="/usr/bin/chown"
-SUDOERS_FILE="/etc/sudoers.d/sparkrun-chown-{user}"
+SUDOERS_FILE="/etc/sudoers.d/@RESOURCE_NAMESPACE@-chown-{user}"
 
 cat > "$SUDOERS_FILE" << SUDOERS_EOF
 # Installed by: sparkrun setup fix-permissions --save-sudo

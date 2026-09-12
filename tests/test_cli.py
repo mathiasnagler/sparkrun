@@ -665,7 +665,9 @@ class TestExportSystemdCommand:
         from sparkrun.cli._export import _render_sudo_install_script
 
         unit_contents = "[Unit]\nDescription=test\n[Service]\nType=simple\n"
-        script = _render_sudo_install_script(slug="test-recipe", unit_contents=unit_contents)
+        script = _render_sudo_install_script(
+            slug="test-recipe", unit_contents=unit_contents, user_home="/home/testuser", cluster_name="test-recipe-systemd"
+        )
 
         assert "/etc/systemd/system/sparkrun-test-recipe.service" in script
         assert "daemon-reload" in script
@@ -5472,18 +5474,20 @@ class TestUpdateCommand:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
+        from pathlib import Path
+
         def fake_run(cmd, **kwargs):
             if cmd[1:3] == ["tool", "list"]:
-                return mock.Mock(returncode=0, stdout="sparkrun v1.0.0\n", stderr="")
+                return mock.Mock(returncode=0, stdout="sparkrun v1.0.0 (%s)\n" % __import__("sys").prefix, stderr="")
             if cmd[1:3] == ["tool", "upgrade"]:
                 return mock.Mock(returncode=0, stdout="", stderr="")
-            if cmd == ["sparkrun", "setup", "version", "--json"]:
+            if cmd == [str(Path(__import__("sys").prefix) / "bin" / "sparkrun"), "setup", "version", "--json"]:
                 return mock.Mock(
                     returncode=0,
                     stdout='{"version": "1.1.0", "channel": "stable", "commit": null}',
                     stderr="",
                 )
-            if cmd == ["sparkrun", "registry", "update"]:
+            if cmd == [str(Path(__import__("sys").prefix) / "bin" / "sparkrun"), "registry", "update"]:
                 return mock.Mock(returncode=0, stdout="", stderr="")
             return mock.Mock(returncode=0, stdout="", stderr="")
 

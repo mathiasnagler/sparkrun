@@ -23,6 +23,9 @@ from the container name.
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import remote_cache_path, get_application_profile
+from sparkrun.core.ownership import OWNER_LABEL, owns_resource, assert_resource_namespace
+
 import logging
 import re
 import time
@@ -45,15 +48,21 @@ logger = logging.getLogger(__name__)
 # LocalExecutor uses the container_name as the pidfile basename so the
 # same parse works.
 _PID_NAME_RE = re.compile(
-    r"^(?P<cluster>sparkrun_(?P<intent>[0-9a-f]{%d})_[0-9a-f]{%d})_(?P<role>solo|head|worker|node_(?P<rank>\d+))$"
+    r"^(?P<cluster>[a-z][a-z0-9-]{0,47}_(?P<intent>[0-9a-f]{%d})_[0-9a-f]{%d})_(?P<role>solo|head|worker|node_(?P<rank>\d+))$"
     % (INTENT_ID_LEN, PLACEMENT_TOKEN_LEN)
 )
+
 
 # Where pidfiles/logfiles land when no explicit override is provided.
 # Lives under ``~/.cache/sparkrun/local/`` so it follows the same
 # convention as the rest of the sparkrun runtime state.
-_DEFAULT_PID_DIR = "$HOME/.cache/sparkrun/local/pids"
-_DEFAULT_LOG_DIR = "$HOME/.cache/sparkrun/local/logs"
+def default_pid_dir():
+    return remote_cache_path("local/pids")
+
+
+def default_log_dir():
+    return remote_cache_path("local/logs")
+
 
 # ``--gpus device=0,2`` → CUDA_VISIBLE_DEVICES=0,2.  Anything fancier
 # (``count=2``, capability filters) is ignored with a warning.
@@ -104,7 +113,7 @@ class LocalExecutor(Executor):
         cfg = self.config
         if cfg.pid_file:
             return cfg.pid_file
-        directory = cfg.pid_dir or _DEFAULT_PID_DIR
+        directory = cfg.pid_dir or default_pid_dir()
         return "%s/%s.pid" % (directory, container_name)
 
     def _resolve_log_file(self, container_name: str) -> str:
@@ -112,7 +121,7 @@ class LocalExecutor(Executor):
         cfg = self.config
         if cfg.log_file:
             return cfg.log_file
-        directory = cfg.log_dir or _DEFAULT_LOG_DIR
+        directory = cfg.log_dir or default_log_dir()
         return "%s/%s.log" % (directory, container_name)
 
     # ------------------------------------------------------------------
@@ -219,20 +228,32 @@ class LocalExecutor(Executor):
         # whole tree without needing tini.
         prelude = self._env_prelude(_hostify_env(env, volumes))
         body = (
-            "mkdir -p %(pid_dir_dq)s %(log_dir_dq)s\n"
+            "(\n"
+            "%(lock)s\n"
+            "%(guard)s\n"
+            "_existing_pid=$(cat %(pid)s 2>/dev/null || true)\n"
+            'if [ -n "$_existing_pid" ] && kill -0 "$_existing_pid" 2>/dev/null; then\n'
+            '    echo "Refusing to replace a running native workload" >&2; exit 1\n'
+            "fi\n"
+            "mkdir -p %(log_dir_dq)s || exit 1\n"
             "%(prelude)s"
-            "setsid bash -c %(b64_cmd)s >>%(log)s 2>&1 </dev/null &\n"
+            "printf %%s %(owner)s > %(pid)s.owner || exit 1\n"
+            ": > %(pid)s || exit 1\n"
+            "setsid bash -c %(b64_cmd)s >>%(log)s 2>&1 </dev/null 9>&- &\n"
             "_pid=$!\n"
             'echo "$_pid" > %(pid)s\n'
             'printf "Launched %%s (pid=%%s, log=%%s)\\n" %(name)s "$_pid" %(log)s\n'
+            ") || exit $?\n"
         ) % {
-            "pid_dir_dq": '"$(dirname %s)"' % pid_file,
+            "lock": self._pid_lock(pid_file),
+            "guard": self._owner_guard(container_name, pid_file),
             "log_dir_dq": '"$(dirname %s)"' % log_file,
             "prelude": prelude,
             "b64_cmd": _bash_safe_command(full_cmd),
             "log": log_file,
             "pid": pid_file,
             "name": quote(container_name),
+            "owner": quote(get_application_profile().id),
         }
         return body
 
@@ -257,12 +278,15 @@ class LocalExecutor(Executor):
 
     def stop_cmd(self, container_name: str, force: bool = True) -> str:
         """Signal the process group, wait briefly, SIGKILL, then prune pidfile."""
+        assert_resource_namespace(container_name)
         pid_file = self._resolve_pid_file(container_name)
         # Send to the negative PID to target the whole process group.
         # ``kill -0`` precheck avoids spurious "no such process" noise.
         # 2>/dev/null on the read guards against missing pidfile.
         return (
-            "{ "
+            "( "
+            "%(lock)s; "
+            "%(guard)s "
             "_pid=$(cat %(pid)s 2>/dev/null || true); "
             'if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then '
             '  kill -TERM -- -"$_pid" 2>/dev/null || kill -TERM "$_pid" 2>/dev/null || true; '
@@ -273,9 +297,26 @@ class LocalExecutor(Executor):
             '  kill -0 "$_pid" 2>/dev/null && '
             '    { kill -KILL -- -"$_pid" 2>/dev/null || kill -KILL "$_pid" 2>/dev/null || true; }; '
             "fi; "
-            "rm -f %(pid)s 2>/dev/null || true; "
-            "}"
-        ) % {"pid": pid_file}
+            "rm -f %(pid)s %(pid)s.owner 2>/dev/null || true; "
+            ") || exit $?"
+        ) % {"pid": pid_file, "guard": self._owner_guard(container_name, pid_file), "lock": self._pid_lock(pid_file)}
+
+    @staticmethod
+    def _pid_lock(pid_file):
+        # Never unlink the lock file: competing processes must lock the same
+        # inode. The workload closes fd 9 so it cannot retain the launch lock.
+        return 'mkdir -p "$(dirname %s)" && exec 9>%s.lock && flock -x 9 || exit 1' % (pid_file, pid_file)
+
+    def _owner_guard(self, name, pid_file):
+        legacy = owns_resource(name)
+        condition = '[ "$_owner" = %s ]' % quote(get_application_profile().id)
+        if legacy:
+            condition += ' || [ -z "$_owner" ]'
+        return (
+            "_owner=$(cat %(pid)s.owner 2>/dev/null || true); "
+            "{ { [ ! -e %(pid)s ] && [ ! -e %(pid)s.owner ]; } || %(condition)s; } || "
+            '{ echo "Refusing to modify a native workload owned by another application" >&2; exit 1; };'
+        ) % {"pid": pid_file, "condition": condition}
 
     def logs_cmd(
         self,
@@ -527,19 +568,19 @@ class LocalExecutor(Executor):
     ) -> "ClusterStatus":
         """Snapshot sparkrun-launched native subprocesses across *hosts*.
 
-        Reads pidfiles under :data:`_DEFAULT_PID_DIR` over SSH and
+        Reads pidfiles under :data:`default_pid_dir()` over SSH and
         ``kill -0``-checks each PID.  Workloads whose pidfile name
         matches the canonical ``sparkrun_<digest>_<role>`` convention
         are surfaced.  Unreachable hosts are omitted.
         """
         from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy
-        from sparkrun.core.hardware import default_dgx_spark_hardware
+        from sparkrun.core.hardware import resolve_fallback_hardware
         from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
         if not hosts:
             return ClusterStatus(hosts=(), queried_at=time.time(), executor=self.executor_name)
 
-        pid_dir = self.config.pid_dir or _DEFAULT_PID_DIR
+        pid_dir = self.config.pid_dir or default_pid_dir()
         # Print "<name>\t<pid>" for each pidfile whose PID is alive.
         script = (
             "shopt -s nullglob\n"
@@ -549,7 +590,8 @@ class LocalExecutor(Executor):
             '  pid=$(cat "$f" 2>/dev/null || true)\n'
             '  [ -n "$pid" ] || continue\n'
             '  kill -0 "$pid" 2>/dev/null || continue\n'
-            '  printf "%%s\\t%%s\\n" "$name" "$pid"\n'
+            '  owner=$(cat "$f.owner" 2>/dev/null || true)\n'
+            '  printf "%%s\\t%%s\\t%%s\\n" "$name" "$pid" "$owner"\n'
             "done\n"
         ) % pid_dir
 
@@ -578,7 +620,7 @@ class LocalExecutor(Executor):
                 errors[host] = (getattr(r, "stderr", "") or "").strip() or "unreachable"
                 continue
 
-            hw = (host_hardware or {}).get(host) or default_dgx_spark_hardware()
+            hw = (host_hardware or {}).get(host) or resolve_fallback_hardware()
             capacity = hw.total_gpus
 
             workloads, used = _parse_local_pidfile_output(r.stdout)
@@ -659,7 +701,10 @@ def _parse_local_pidfile_output(stdout: str) -> tuple[list, int]:
         line = line.strip()
         if not line:
             continue
-        name, _, _pid = line.partition("\t")
+        name, _, rest = line.partition("\t")
+        _pid, _, owner = rest.partition("\t")
+        if not owns_resource(name, {OWNER_LABEL: owner} if owner else None):
+            continue
         m = _PID_NAME_RE.match(name)
         if not m:
             continue

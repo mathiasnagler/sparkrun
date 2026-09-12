@@ -165,12 +165,12 @@ clean() {
 
 # Count running Docker containers whose name starts with "sparkrun_".
 count_sparkrun_jobs() {
-    docker ps --filter "name=^sparkrun_" --format "{{.ID}}" 2>/dev/null | wc -l | tr -d ' '
+    docker ps --filter "name=^@RESOURCE_NAMESPACE@_" --format "{{.ID}}" 2>/dev/null | wc -l | tr -d ' '
 }
 
 # List running Docker container names starting with "sparkrun_" (pipe-delimited).
 list_sparkrun_job_names() {
-    docker ps --filter "name=^sparkrun_" --format "{{.Names}}" 2>/dev/null | tr '\n' '|' | sed 's/|$//'
+    docker ps --filter "name=^@RESOURCE_NAMESPACE@_" --format "{{.Names}}" 2>/dev/null | tr '\n' '|' | sed 's/|$//'
 }
 
 # ---------------------------------------------------------------------------

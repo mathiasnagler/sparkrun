@@ -30,6 +30,11 @@ from sparkrun.plugins.sparkroute import release
 BINARY_BODY = b"#!/fake/sparkroute\n" + b"x" * 1024
 
 
+@pytest.fixture(autouse=True)
+def isolate_binary_overrides(monkeypatch):
+    monkeypatch.delenv("SPARKROUTE_BINARY", raising=False)
+
+
 def _tar_archive(members: dict[str, bytes]) -> bytes:
     """Build a .tar.gz the way the release workflow's ``tar -C stage .`` does."""
     buffer = io.BytesIO()
@@ -70,8 +75,6 @@ def pinned(monkeypatch, payload):
         "RELEASE_CHECKSUMS",
         {("9.9.9", "linux", "arm64"): hashlib.sha256(payload).hexdigest()},
     )
-    monkeypatch.delenv(release.BINARY_OVERRIDE_ENV, raising=False)
-    monkeypatch.delenv(release.LEGACY_BINARY_OVERRIDE_ENVS[0], raising=False)
     return "9.9.9"
 
 
@@ -130,8 +133,6 @@ def test_asset_and_url_shape():
 def test_unpinned_platform_refuses_to_download(monkeypatch, tmp_path):
     monkeypatch.setattr(release, "platform_target", lambda: ("linux", "arm64"))
     monkeypatch.setattr(release, "RELEASE_CHECKSUMS", {})
-    monkeypatch.delenv(release.BINARY_OVERRIDE_ENV, raising=False)
-    monkeypatch.delenv(release.LEGACY_BINARY_OVERRIDE_ENVS[0], raising=False)
     with mock.patch.object(release.urllib.request, "urlopen") as urlopen:
         with pytest.raises(release.GatewayReleaseError, match="No pinned checksum"):
             release.ensure_binary("9.9.9", cache_dir=tmp_path)
@@ -265,8 +266,6 @@ def test_plain_http_release_url_is_rejected(pinned, monkeypatch, tmp_path):
 def _pin(monkeypatch, archive: bytes, target=("linux", "arm64")):
     monkeypatch.setattr(release, "platform_target", lambda: target)
     monkeypatch.setattr(release, "RELEASE_CHECKSUMS", {("9.9.9", *target): hashlib.sha256(archive).hexdigest()})
-    monkeypatch.delenv(release.BINARY_OVERRIDE_ENV, raising=False)
-    monkeypatch.delenv(release.LEGACY_BINARY_OVERRIDE_ENVS[0], raising=False)
 
 
 def test_windows_asset_is_unpacked_from_a_zip(monkeypatch, tmp_path):
@@ -334,51 +333,25 @@ def test_decompression_bomb_is_bounded(monkeypatch, tmp_path):
 def test_binary_override_bypasses_acquisition(monkeypatch, tmp_path):
     local = tmp_path / "sparkroute"
     local.write_bytes(b"locally built")
-    monkeypatch.setenv(release.BINARY_OVERRIDE_ENV, str(local))
+    monkeypatch.setenv("SPARKROUTE_BINARY", str(local))
     with mock.patch.object(release.urllib.request, "urlopen") as urlopen:
         assert release.ensure_binary(cache_dir=tmp_path) == local
     urlopen.assert_not_called()
 
 
-def test_legacy_override_env_is_still_honoured(monkeypatch, tmp_path):
-    """An existing development setup must not silently start downloading."""
-    local = tmp_path / "sparkroute"
-    local.write_bytes(b"locally built")
-    monkeypatch.delenv(release.BINARY_OVERRIDE_ENV, raising=False)
-    monkeypatch.setenv(release.LEGACY_BINARY_OVERRIDE_ENVS[0], str(local))
-    with mock.patch.object(release.urllib.request, "urlopen") as urlopen:
-        assert release.ensure_binary(cache_dir=tmp_path) == local
-    urlopen.assert_not_called()
-
-
-def test_messages_name_the_env_var_that_was_actually_set(monkeypatch, tmp_path, caplog):
-    """Crediting the current name for a path that came from a legacy export is
-    how a stale export survives a debugging session."""
-    local = tmp_path / "sparkroute"
-    local.write_bytes(b"locally built")
-    monkeypatch.delenv(release.BINARY_OVERRIDE_ENV, raising=False)
-    monkeypatch.setenv(release.LEGACY_BINARY_OVERRIDE_ENVS[0], str(local))
-    with caplog.at_level("WARNING"):
-        release.ensure_binary(cache_dir=tmp_path)
-    assert release.LEGACY_BINARY_OVERRIDE_ENVS[0] in caplog.text
-    assert "Using SparkRoute binary from %s" % release.BINARY_OVERRIDE_ENV not in caplog.text
-
-
-def test_a_legacy_override_pointing_nowhere_names_the_legacy_var(monkeypatch, tmp_path):
-    monkeypatch.delenv(release.BINARY_OVERRIDE_ENV, raising=False)
-    monkeypatch.setenv(release.LEGACY_BINARY_OVERRIDE_ENVS[0], str(tmp_path / "missing"))
-    with pytest.raises(release.GatewayReleaseError, match=release.LEGACY_BINARY_OVERRIDE_ENVS[0]):
-        release.ensure_binary(cache_dir=tmp_path)
-
-
-def test_current_override_env_wins_over_the_legacy_one(monkeypatch, tmp_path):
-    current = tmp_path / "current"
-    current.write_bytes(b"current")
-    legacy = tmp_path / "legacy"
-    legacy.write_bytes(b"legacy")
-    monkeypatch.setenv(release.BINARY_OVERRIDE_ENV, str(current))
-    monkeypatch.setenv(release.LEGACY_BINARY_OVERRIDE_ENVS[0], str(legacy))
-    assert release.ensure_binary(cache_dir=tmp_path) == current
+@pytest.mark.parametrize(
+    "variable",
+    ["SPARKRUN_SPARKROUTE_BINARY", "SPARKRUN_FOXSCI_ROUTE_BINARY", "SPARKRUN_LLM_GATEWAY_BINARY", "JETSON_TEST_SPARKROUTE_BINARY"],
+)
+def test_other_binary_override_names_are_ignored(monkeypatch, tmp_path, pinned, payload, variable):
+    other = tmp_path / "other-binary"
+    other.write_bytes(b"not selected")
+    monkeypatch.setenv(variable, str(other))
+    with mock.patch.object(release.urllib.request, "urlopen", return_value=_Stream(payload)) as download:
+        result = release.ensure_binary(pinned, cache_dir=tmp_path)
+    assert result == release.binary_path(pinned, cache_dir=tmp_path)
+    assert result.read_bytes() == BINARY_BODY
+    download.assert_called_once()
 
 
 def test_binary_override_must_point_at_a_file(monkeypatch, tmp_path):

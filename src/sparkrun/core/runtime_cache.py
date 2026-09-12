@@ -28,6 +28,8 @@ host directory only.
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import product_env
+
 import hashlib
 import logging
 import re
@@ -303,9 +305,8 @@ def runtime_cache_disabled_by_env() -> bool:
 
     Mirrors ``SPARKRUN_NO_IMAGE_PROBE`` / ``SPARKRUN_NO_SESSION_GUARD``.
     """
-    import os
 
-    raw = os.environ.get("SPARKRUN_NO_RUNTIME_CACHE", "")
+    raw = product_env("NO_RUNTIME_CACHE", "")
     return raw.strip().lower() not in ("", "0", "false", "no", "off")
 
 

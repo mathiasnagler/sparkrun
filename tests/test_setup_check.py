@@ -51,6 +51,10 @@ def patched_cluster_mgr(cluster_mgr):
 # A fully-configured single host: every check passes.
 _FACTS_ALL_GOOD = {
     "CHECK_USER": "drew",
+    "CHECK_OS": "Linux",
+    "CHECK_APT": "1",
+    "CHECK_SYSTEMD": "1",
+    "CHECK_NETPLAN": "1",
     "CHECK_DOCKER_INSTALLED": "1",
     "CHECK_DOCKER_USABLE": "1",
     "CHECK_DOCKER_GROUP": "1",
@@ -68,7 +72,12 @@ _FACTS_ALL_GOOD = {
 
 
 def _facts_kv(facts: dict[str, str]) -> str:
-    return "\n".join("%s=%s" % (k, v) for k, v in facts.items()) + "\n"
+    hardware = (
+        "SPARKRUN_PROBE_ACCEL_START\nNVIDIA_PRESENT=1\nNVIDIA_GPU_COUNT=1\n"
+        "NVIDIA_GPU_0_NAME=NVIDIA GB10\nNVIDIA_GPU_0_MEMORY_MIB=131072\n"
+        "OS=Linux\nARCH=aarch64\nSPARKRUN_PROBE_ACCEL_END\n"
+    )
+    return hardware + "\n".join("%s=%s" % (k, v) for k, v in facts.items()) + "\n"
 
 
 def _state(facts: dict[str, str], cx7=None, host: str = "10.0.0.1") -> HostState:
@@ -146,12 +155,12 @@ def test_evaluate_nvidia_checks_skipped_without_gpu():
 
 
 def test_evaluate_docker_group_and_earlyoom_advisories():
-    facts = dict(_FACTS_ALL_GOOD, CHECK_DOCKER_GROUP="0", CHECK_EARLYOOM_ACTIVE="0", CHECK_EARLYOOM_INSTALLED="0")
+    facts = dict(_FACTS_ALL_GOOD, CHECK_DOCKER_GROUP="0", CHECK_DOCKER_USABLE="0", CHECK_EARLYOOM_ACTIVE="0", CHECK_EARLYOOM_INSTALLED="0")
     items = evaluate_host(_state(facts), CheckContext("mylab", False))
     assert _status(items, "docker_group") == WARN
     assert _status(items, "earlyoom") == WARN
-    # docker still usable (group not required if daemon works)
-    assert _status(items, "docker_usable") == OK
+    # The access problem is a critical gap; group membership is the remedy.
+    assert _status(items, "docker_usable") == FAIL
 
 
 def test_evaluate_sudoers_unknown_is_skip():
@@ -290,8 +299,8 @@ def test_check_reports_critical_gap_exits_one(runner, v, patched_cluster_mgr):
 def test_check_missing_cdi_is_not_a_gap_when_cluster_uses_gpus_mode(runner, v, patched_cluster_mgr):
     """A DGX Spark cluster requests GPUs with --gpus, so no CDI spec is needed.
 
-    Hardware defaults to DGX Spark when the cluster carries none (same fallback
-    the launcher uses), whose platform tier pins ``gpu_access_mode: gpus``.
+    The target probe identifies a DGX Spark, whose platform tier pins
+    ``gpu_access_mode: gpus``.
     """
     patched_cluster_mgr.create("mylab", ["10.0.0.1"])
 

@@ -37,6 +37,8 @@ developer's real config (see ``_DISABLE_ENV`` below).
 
 from __future__ import annotations
 
+from sparkrun.core.registration import enlist_registry_state
+
 import importlib
 import inspect
 import logging
@@ -84,8 +86,9 @@ def _plugin_base_types() -> list[type]:
     from sparkrun.orchestration.executors._base import Executor
     from sparkrun.core.scheduler import Scheduler
     from sparkrun.transports.base import Transport
+    from sparkrun.orchestration.telemetry._base import TelemetryProvider
 
-    return [RuntimePlugin, BenchmarkingPlugin, BuilderPlugin, Executor, Scheduler, Transport]
+    return [RuntimePlugin, BenchmarkingPlugin, BuilderPlugin, Executor, Scheduler, Transport, TelemetryProvider]
 
 
 # Plugin classes that select via a ``*_name`` attribute must set it non-blank to
@@ -110,6 +113,11 @@ def _is_registerable(cls: type) -> bool:
 # plugin sparkrun never loaded.
 _LOADED_PLUGIN_MODULES: dict[str, ModuleType] = {}
 
+enlist_registry_state(globals(), "_LOADED_PLUGIN_MODULES")
+_REGISTERED_MODULES: set[tuple[int, str]] = set()
+
+enlist_registry_state(globals(), "_REGISTERED_MODULES")
+
 
 def loaded_plugin_module(dotted: str) -> "ModuleType | None":
     """Return the module loaded as plugin *dotted*, or ``None`` if not loaded."""
@@ -119,6 +127,7 @@ def loaded_plugin_module(dotted: str) -> "ModuleType | None":
 def clear_loaded_plugin_modules() -> None:
     """Forget every recorded plugin module (test isolation)."""
     _LOADED_PLUGIN_MODULES.clear()
+    _REGISTERED_MODULES.clear()
 
 
 def iter_plugin_module_names(path: Path) -> list[str]:
@@ -157,7 +166,7 @@ def _scan_module_for_plugins(module, base: type) -> list[type]:
     return list(found.values())
 
 
-def load_plugin_module(module, v: "Variables", *, tier: "DeclarationTier | None" = None) -> None:
+def load_plugin_module(module, v: "Variables", *, tier: "DeclarationTier | None" = None, strict: bool = False) -> None:
     """Register everything *module* contributes: SAF subclasses, then ``register(v)``.
 
     Shared with :mod:`sparkrun.core.in_tree_plugins` — in-tree and out-of-tree
@@ -177,7 +186,14 @@ def load_plugin_module(module, v: "Variables", *, tier: "DeclarationTier | None"
     """
     from sparkrun.core.registry_defaults import DeclarationTier, declaring_tier
 
-    _LOADED_PLUGIN_MODULES[module.__name__] = module
+    if _LOADED_PLUGIN_MODULES.get(module.__name__) is module and (id(v), module.__name__) in _REGISTERED_MODULES:
+        return
+    from sparkrun.core.features import register_feature
+    from sparkrun.core.installed_plugins import claim_implementation, PluginConflictError
+
+    # Definitions precede extension gating; this runs only for selected modules.
+    for definition in getattr(module, "FEATURE_DEFINITIONS", ()):
+        register_feature(definition)
 
     with declaring_tier(tier or DeclarationTier.OUT_OF_TREE):
         # 1) Register SAF-scanned plugin subclasses (runtimes/executors/transports/…).
@@ -185,10 +201,13 @@ def load_plugin_module(module, v: "Variables", *, tier: "DeclarationTier | None"
             for cls in _scan_module_for_plugins(module, base):
                 if not _is_registerable(cls):
                     continue
+                claim_implementation(cls, v)
                 try:
                     register_plugin(cls, v=v)
                     logger.debug("Registered external plugin %s from %s", cls.__name__, module.__name__)
                 except (ValueError, TypeError) as e:
+                    if strict:
+                        raise
                     logger.debug("Skipping external plugin %s: %s", cls.__name__, e)
 
         # 2) Optional explicit hook — the home for in-process registrations
@@ -199,8 +218,13 @@ def load_plugin_module(module, v: "Variables", *, tier: "DeclarationTier | None"
             try:
                 hook(v)
                 logger.debug("Ran register(v) hook for external plugin module %s", module.__name__)
-            except Exception:  # noqa: BLE001 - a bad third-party hook must not crash startup
+            except Exception as exc:  # a bad optional hook is reported without marking it loaded
+                if strict or isinstance(exc, PluginConflictError):
+                    raise
                 logger.exception("register(v) hook failed for external plugin module %s", module.__name__)
+                return
+    _LOADED_PLUGIN_MODULES[module.__name__] = module
+    _REGISTERED_MODULES.add((id(v), module.__name__))
 
 
 def _configured_paths(v: "Variables") -> list[Path]:
@@ -211,11 +235,9 @@ def _configured_paths(v: "Variables") -> list[Path]:
     redirects the SAF stateful root to a tmp dir) keeps external plugin loading
     inert in the test suite.
     """
-    from sparkrun.core.config import SparkrunConfig, get_config_root
+    from sparkrun.core.config import SparkrunConfig, resolve_config_path
 
-    config_path = get_config_root(v) / "config.yaml"
-    if not config_path.exists():
-        return []
+    config_path = resolve_config_path(v)
     return SparkrunConfig(config_path=config_path).external_plugin_paths
 
 

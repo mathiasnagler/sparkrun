@@ -55,9 +55,9 @@ class ProxyConfig:
 
     def __init__(self, config_path: Path | None = None):
         if config_path is None:
-            from sparkrun.core.config import DEFAULT_CONFIG_DIR
+            from sparkrun.core.config import get_config_root
 
-            config_path = DEFAULT_CONFIG_DIR / "proxy.yaml"
+            config_path = get_config_root() / "proxy.yaml"
         self.config_path = config_path
         self._data: dict[str, Any] = {}
         self._reset_pending()

@@ -42,14 +42,13 @@ def resolve_host_list(
 
     Mirrors the resolution chain of
     ``cli/_common.py:_resolve_hosts_or_exit`` (CLI → file → cluster →
-    default), and applies the resolved cluster's SSH user to *config*
-    the same way, but raises :class:`HostsUnreachable` instead of
-    echoing + exiting when nothing resolves.
+    default), but raises :class:`HostsUnreachable` instead of echoing + exiting
+    when nothing resolves. It does not change caller connection configuration;
+    operation entry points use the resolved cluster's configuration view.
 
     Returns the resolved host list.
     """
     from sparkrun.core.hosts import resolve_hosts
-    from sparkrun.core.cluster_manager import resolve_cluster_config
 
     if sctx is not None:
         cluster_mgr = sctx.cluster_manager
@@ -69,9 +68,6 @@ def resolve_host_list(
     if not host_list:
         raise HostsUnreachable("No hosts specified. Use --hosts or configure defaults.")
 
-    cluster_user = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr).user
-    if cluster_user:
-        config.ssh_user = cluster_user
     return host_list
 
 

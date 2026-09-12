@@ -57,10 +57,9 @@ def docker_stop_cmd(container_name: str, force: bool = True) -> str:
     Returns:
         Command string that stops (and optionally removes) the container.
     """
-    quoted = quote(container_name)
-    if force:
-        return "docker rm -f %s 2>/dev/null || true" % quoted
-    return "docker stop %s 2>/dev/null || true" % quoted
+    from sparkrun.orchestration.executors.docker import DockerExecutor
+
+    return DockerExecutor().stop_cmd(container_name, force=force)
 
 
 def docker_teardown_script(container_names: list[str] | tuple[str, ...]) -> str:
@@ -112,7 +111,9 @@ def docker_teardown_script(container_names: list[str] | tuple[str, ...]) -> str:
         "_sr_removed=$(printf '%s\\n' \"$_sr_before\" | grep -Fxc " + patterns + " || true)",
     ]
     for name in container_names:
-        lines.append("docker rm -f " + quote(name) + " >/dev/null 2>&1 || true")
+        from sparkrun.core.ownership import docker_owner_guard
+
+        lines.append(docker_owner_guard(name) + " && { docker rm -f " + quote(name) + " >/dev/null 2>&1 || true; }")
 
     lines.extend(
         [

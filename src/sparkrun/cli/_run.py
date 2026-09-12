@@ -8,6 +8,8 @@ actual launch orchestration to :func:`sparkrun.api.run`.  All
 
 from __future__ import annotations
 
+from sparkrun.core.application_profile import render_identity_text
+
 import logging
 import sys
 from typing import Any
@@ -112,15 +114,17 @@ def _echo_endpoint_ready(readiness) -> None:
         # reports of the same launch cannot print different numbers.
         durations = startup_readiness_durations(observation)
         click.secho(
-            "\n[sparkrun] %s ready at http://%s:%d/v1; container-start TTR port-open %s, HTTP-ready %s, TTFT %s (%s, rank 0)\n"
-            % (
-                "Endpoint" if observation.get("inference_requested") is False else "Inference",
-                readiness.head_ip,
-                readiness.port,
-                durations["port_open"],
-                durations["http_ready"],
-                durations["ttft"],
-                observation["measurement"],
+            render_identity_text(
+                "\n[{app_command}] %s ready at http://%s:%d/v1; container-start TTR port-open %s, HTTP-ready %s, TTFT %s (%s, rank 0)\n"
+                % (
+                    "Endpoint" if observation.get("inference_requested") is False else "Inference",
+                    readiness.head_ip,
+                    readiness.port,
+                    durations["port_open"],
+                    durations["http_ready"],
+                    durations["ttft"],
+                    observation["measurement"],
+                )
             ),
             fg="green",
             err=True,
@@ -128,13 +132,15 @@ def _echo_endpoint_ready(readiness) -> None:
         return
 
     click.secho(
-        "\n[sparkrun] Endpoint ready at http://%s:%d/v1 after %s (engine init %s, model load %s)\n"
-        % (
-            readiness.head_ip,
-            readiness.port,
-            format_duration(readiness.total_wait_s),
-            format_duration(readiness.port_wait_s),
-            format_duration(readiness.health_wait_s),
+        render_identity_text(
+            "\n[{app_command}] Endpoint ready at http://%s:%d/v1 after %s (engine init %s, model load %s)\n"
+            % (
+                readiness.head_ip,
+                readiness.port,
+                format_duration(readiness.total_wait_s),
+                format_duration(readiness.port_wait_s),
+                format_duration(readiness.health_wait_s),
+            )
         ),
         fg="green",
         err=True,
@@ -162,7 +168,7 @@ def _report_readiness_outcome(readiness) -> None:
     else:
         detail = "%s never returned HTTP 200" % readiness.health_url
     click.secho(
-        "[sparkrun] WARNING: endpoint did not become ready — %s." % detail,
+        render_identity_text("[{app_command}] WARNING: endpoint did not become ready — %s." % detail),
         fg="yellow",
         err=True,
     )
@@ -175,7 +181,7 @@ def _summarize_platforms(
     """Build a platform summary string for the ``sparkrun run`` output block.
 
     For each host, resolves hardware (from *cluster* if available, else
-    :func:`~sparkrun.core.hardware.default_dgx_spark_hardware`), picks the
+    :func:`~sparkrun.core.hardware.resolve_fallback_hardware`), picks the
     matching :class:`~sparkrun.platforms.base.HardwarePlatformPlugin`, and
     selects a :class:`~sparkrun.core.backend_select.BackendBundle`.  The
     display line for each host is built as::
@@ -201,12 +207,12 @@ def _summarize_platforms(
         ``(host, line)`` tuples when heterogeneous, ``None`` when homogeneous.
     """
     from sparkrun.core.backend_select import NoMatchingBackendError, select_backends
-    from sparkrun.core.hardware import default_dgx_spark_hardware
+    from sparkrun.core.hardware import resolve_fallback_hardware
     from sparkrun import platforms as _platforms
 
     def _host_line(host: str) -> str:
         try:
-            hw = cluster.hardware_for(host) if cluster is not None else default_dgx_spark_hardware()
+            hw = cluster.hardware_for(host) if cluster is not None else resolve_fallback_hardware()
             platform = _platforms.resolve_platform(hw)
             pname = platform.display_name if platform is not None else "Unknown"
             if hw.accelerators:
@@ -410,17 +416,17 @@ def run(
 
     Examples:
 
-      sparkrun run glm-4.7-flash-awq --solo
+      {app_command} run glm-4.7-flash-awq --solo
 
-      sparkrun run glm-4.7-flash-awq --hosts 192.168.11.13,192.168.11.14
+      {app_command} run glm-4.7-flash-awq --hosts 192.168.11.13,192.168.11.14
 
-      sparkrun run glm-4.7-flash-awq --cluster mylab
+      {app_command} run glm-4.7-flash-awq --cluster mylab
 
-      sparkrun run my-recipe.yaml --port 9000 --gpu-mem 0.8
+      {app_command} run my-recipe.yaml --port 9000 --gpu-mem 0.8
 
-      sparkrun run my-recipe.yaml -o attention_backend=triton -o max_model_len=4096
+      {app_command} run my-recipe.yaml -o attention_backend=triton -o max_model_len=4096
 
-      sparkrun run my-recipe.yaml -e VLLM_USE_V1=1 -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      {app_command} run my-recipe.yaml -e VLLM_USE_V1=1 -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     """
     from sparkrun.core.bootstrap import get_runtime
 
@@ -659,7 +665,7 @@ def run(
     from sparkrun.core.version import display_version
 
     container_image = runtime.resolve_container(recipe, overrides)
-    click.echo("sparkrun v%s" % display_version(SparkrunConfig()))
+    click.echo(render_identity_text("{app_command} v%s" % display_version(SparkrunConfig())))
     click.echo()
     click.echo("Runtime:   %s" % runtime.runtime_name)
     click.echo("Image:     %s" % container_image)
@@ -957,7 +963,12 @@ def run(
                 cache_dir=str(config.cache_dir),
             )
             if not status.running:
-                click.secho("\n[sparkrun] CRITICAL: Container died unexpectedly after detached launch.", fg="red", err=True, bold=True)
+                click.secho(
+                    render_identity_text("\n[{app_command}] CRITICAL: Container died unexpectedly after detached launch."),
+                    fg="red",
+                    err=True,
+                    bold=True,
+                )
                 result.rc = 1
 
     # Printed last, and only here.  The tables are multi-line, so they cannot

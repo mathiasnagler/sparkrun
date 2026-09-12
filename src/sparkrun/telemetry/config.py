@@ -7,6 +7,7 @@ import os
 from uuid import uuid4
 
 from sparkrun.core.config import SparkrunConfig
+from sparkrun.core.application_profile import get_application_profile, product_env
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,9 @@ def env_telemetry_override() -> bool | None:
     opts out, a falsy value forces telemetry on, and an unset or unrecognized
     value defers to the persisted config.
     """
-    no_telemetry = parse_bool(os.environ.get(NO_TELEMETRY_ENV))
+    if get_application_profile().id != "sparkrun" and parse_bool(os.environ.get(NO_TELEMETRY_ENV)) is True:
+        return False  # shared hard test/CI containment, never an opt-in alias
+    no_telemetry = parse_bool(product_env("NO_TELEMETRY"))
     if no_telemetry is None:
         return None
     return not no_telemetry
@@ -73,13 +76,15 @@ def telemetry_enabled(config: SparkrunConfig) -> bool:
         logger.debug("Telemetry disabled: config is a %s, not a SparkrunConfig", type(config).__name__)
         return False
 
+    if get_application_profile().id != "sparkrun" and not telemetry_endpoint():
+        return False
     env_override = env_telemetry_override()
     if env_override is not None:
         return env_override
     configured = parse_bool(config.get(TELEMETRY_ENABLED_KEY))
     if configured is not None:
         return configured
-    return True
+    return get_application_profile().telemetry_enabled
 
 
 def persistent_telemetry_setting(config: SparkrunConfig) -> bool | None:
@@ -94,11 +99,11 @@ def set_persistent_telemetry(config: SparkrunConfig, enabled: bool) -> None:
 
 
 def telemetry_endpoint() -> str:
-    return os.environ.get(TELEMETRY_ENDPOINT_ENV, DEFAULT_TELEMETRY_ENDPOINT).strip() or DEFAULT_TELEMETRY_ENDPOINT
+    return product_env("TELEMETRY_ENDPOINT", get_application_profile().telemetry_endpoint or "").strip()
 
 
 def telemetry_key() -> str:
-    return os.environ.get(TELEMETRY_KEY_ENV, DEFAULT_TELEMETRY_KEY).strip() or DEFAULT_TELEMETRY_KEY
+    return product_env("TELEMETRY_KEY", get_application_profile().telemetry_key).strip() or DEFAULT_TELEMETRY_KEY
 
 
 def telemetry_timeout() -> float:

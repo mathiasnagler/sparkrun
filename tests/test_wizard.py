@@ -111,7 +111,7 @@ def test_wizard_dry_run(runner, v, patched_cluster_mgr):
         )
 
     assert result.exit_code == 0
-    assert "Setup Complete!" in result.output
+    assert "Setup preview complete" in result.output
     assert "drytest" in result.output
 
 
@@ -253,7 +253,7 @@ def test_wizard_yes_mode(runner, v, patched_cluster_mgr):
         )
 
     assert result.exit_code == 0
-    assert "Setup Complete!" in result.output
+    assert "Setup finished" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +262,7 @@ def test_wizard_yes_mode(runner, v, patched_cluster_mgr):
 
 
 def test_wizard_single_host(runner, v, patched_cluster_mgr):
-    """Single remote host still runs SSH mesh with control machine."""
+    """A single host only needs controller access, not a peer mesh."""
     with (
         mock.patch("subprocess.run") as mock_sub,
         mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts") as mock_cx7,
@@ -289,7 +289,7 @@ def test_wizard_single_host(runner, v, patched_cluster_mgr):
         )
 
     assert result.exit_code == 0
-    assert mock_mesh.called
+    mock_mesh.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +316,8 @@ def test_wizard_no_cx7(runner, v, patched_cluster_mgr):
         )
 
     assert result.exit_code == 0
-    assert "No CX7 interfaces detected" in result.output
+    assert "Enter host IPs/hostnames" in result.output
+    mock_sub.assert_not_called()
 
 
 def test_wizard_cx7_peer_discovery(runner, v, patched_cluster_mgr):
@@ -362,13 +363,12 @@ def test_wizard_cx7_peer_discovery(runner, v, patched_cluster_mgr):
             [
                 "setup",
                 "wizard",
-                "--dry-run",
             ],
             input="10.0.0.1,10.0.0.2\npeertest\n\nn\nn\nn\n",
         )
 
     assert result.exit_code == 0
-    assert "CX7 detected" in result.output
+    assert "CX7 interfaces detected" in result.output
     assert "peer" in result.output.lower()
 
 
@@ -417,41 +417,57 @@ def test_wizard_nopasswd(runner, v, patched_cluster_mgr):
     assert "[sudo] password" not in result.output
 
 
+def _action_probe(hosts, **kwargs):
+    from sparkrun.core.hardware import default_dgx_spark_hardware
+    from sparkrun.core.setup_models import HostState
+    from sparkrun.core.setup_probe import resolve_setup_context
+
+    states = {
+        h: HostState(
+            h,
+            facts={
+                "CHECK_OS": "Linux",
+                "CHECK_APT": "1",
+                "CHECK_SYSTEMD": "1",
+                "CHECK_USER": "tester",
+                "CHECK_DOCKER_INSTALLED": "1",
+                "CHECK_DOCKER_GROUP": "0",
+                "CHECK_DOCKER_USABLE": "0",
+                "CHECK_NVIDIA_CTK": "1",
+                "CHECK_CDI_SPEC": "0",
+                "CHECK_SUDOERS_CHOWN": "1",
+                "CHECK_SUDOERS_DROPCACHES": "1",
+                "CHECK_EARLYOOM_ACTIVE": "0",
+            },
+            hardware=default_dgx_spark_hardware(),
+        )
+        for h in hosts
+    }
+    return states, resolve_setup_context(
+        states, config=kwargs["config"], cluster=kwargs.get("cluster"), cluster_name=kwargs.get("cluster_name")
+    )
+
+
 def test_wizard_generates_cdi(runner, v, patched_cluster_mgr):
-    """Wizard runs the NVIDIA CDI phase and reports the generated spec."""
-    with (
-        mock.patch("subprocess.run") as mock_sub,
-        mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts") as mock_cx7,
-        mock.patch("sparkrun.cli._setup._ssh._run_ssh_mesh", return_value=True),
-        mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel") as mock_rsp,
-        mock.patch("sparkrun.orchestration.sudo.run_with_sudo_fallback") as mock_sudo,
-        mock.patch("sparkrun.orchestration.sudo.run_sudo_script_on_host") as mock_sudo_host,
-    ):
-        mock_sub.return_value = mock.Mock(returncode=0, stdout="CX7_DETECTED=0\n", stderr="")
-        mock_cx7.return_value = {"10.0.0.1": mock.Mock(detected=False)}
-        mock_rsp.return_value = [RemoteResult("10.0.0.1", 0, "", "")]
-        mock_sudo.return_value = (
-            {"10.0.0.1": RemoteResult("10.0.0.1", 0, "GENERATED: /etc/cdi/nvidia.yaml (1 device(s))", "")},
-            [],
-        )
-        mock_sudo_host.return_value = RemoteResult("10.0.0.1", 0, "OK", "")
-
-        result = runner.invoke(
-            main,
-            ["setup", "wizard", "--hosts", "10.0.0.1", "--cluster", "cditest", "--yes"],
-        )
-
-    assert result.exit_code == 0
-    assert "Phase 4b: NVIDIA CDI" in result.output
-    assert "GENERATED: /etc/cdi/nvidia.yaml" in result.output
-    assert "CDI:" in result.output
-
-    # The phase is recorded in the setup manifest.
+    """Only a target whose resolved executor needs CDI gets a spec generated."""
     from sparkrun.core.setup_manifest import ManifestManager
 
+    patched_cluster_mgr.create("cditest", ["10.0.0.1"], executor_config={"gpu_access_mode": "cdi"})
+    with (
+        mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stdout="CX7_DETECTED=0\n", stderr="")),
+        mock.patch("sparkrun.core.setup_probe.probe_setup_hosts", side_effect=_action_probe),
+        mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=[RemoteResult("10.0.0.1", 0, "OK", "")]),
+        mock.patch(
+            "sparkrun.orchestration.sudo.dispatch_sudo_script",
+            return_value=RemoteResult("10.0.0.1", 0, "GENERATED: /etc/cdi/nvidia.yaml", ""),
+        ) as dispatch,
+    ):
+        result = runner.invoke(main, ["setup", "wizard", "--cluster", "cditest", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert any("nvidia-ctk cdi generate" in call.args[1] for call in dispatch.call_args_list)
     manifest = ManifestManager(patched_cluster_mgr.clusters_dir).load("cditest")
     assert manifest is not None
-    assert "nvidia_cdi" in manifest.phases
+    assert manifest.phases["nvidia_cdi"].hosts == ["10.0.0.1"]
 
 
 def test_wizard_cdi_dry_run(runner, v, patched_cluster_mgr):
@@ -464,12 +480,14 @@ def test_wizard_cdi_dry_run(runner, v, patched_cluster_mgr):
         )
 
     assert result.exit_code == 0
-    assert "Would generate CDI spec" in result.output
+    assert "NVIDIA CDI spec" in result.output
+    mock_sub.assert_not_called()
 
 
 def test_wizard_sudo_password_reuse(runner, v, patched_cluster_mgr):
     """Password collected once is reused across phases."""
     with (
+        mock.patch("sparkrun.core.setup_probe.probe_setup_hosts", side_effect=_action_probe),
         mock.patch("subprocess.run") as mock_sub,
         mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts") as mock_cx7,
         mock.patch("sparkrun.cli._setup._ssh._run_ssh_mesh", return_value=True),
@@ -483,7 +501,9 @@ def test_wizard_sudo_password_reuse(runner, v, patched_cluster_mgr):
             stderr="",
         )
         mock_cx7.return_value = {"10.0.0.1": mock.Mock(detected=False)}
-        mock_rsp.return_value = [RemoteResult("10.0.0.1", 1, "", "sudo: password required")]
+        mock_rsp.side_effect = lambda hosts, script, **kwargs: [
+            RemoteResult(h, 1, "", "sudo: password required") if script == "sudo -n true" else RemoteResult(h, 0, "OK", "") for h in hosts
+        ]
         mock_sudo.return_value = (
             {"10.0.0.1": RemoteResult("10.0.0.1", 0, "OK", "")},
             [],
@@ -506,4 +526,4 @@ def test_wizard_sudo_password_reuse(runner, v, patched_cluster_mgr):
 
     assert result.exit_code == 0
     password_prompts = result.output.count("[sudo] password")
-    assert password_prompts == 1, "Expected 1 password prompt, got %d" % password_prompts
+    assert password_prompts == 1, "Expected 1 password prompt, got %d\n%s" % (password_prompts, result.output)
