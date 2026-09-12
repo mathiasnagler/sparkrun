@@ -31,6 +31,8 @@ from sparkrun.plugins.k8s.orchestration.kueue import KueueSetupResult, KueueStat
 from sparkrun.plugins.k8s.orchestration.launch import LaunchJobsetResult
 from sparkrun.plugins.k8s.orchestration.scheduling import FeasibilityReport, GpuRequest
 
+from ._logs import logs
+
 from ._errors import (
     ClusterUnreachable,
     JobSetLaunchError,
@@ -57,6 +59,7 @@ from ._ops import (
 
 __all__ = [
     # Functions
+    "logs",
     "ensure_kubectl",
     "cluster_info",
     "configure_service_account",

@@ -90,7 +90,6 @@ def run_k8s(
         kubeconfig=kubeconfig,
         context=kube_context,
         dry_run=options.dry_run,
-        follow=options.follow,
         before_start=before_start,
     )
 

@@ -185,19 +185,6 @@ def jobset_status(client: KubectlClient, name: str) -> dict:
     return result
 
 
-def jobset_logs(client: KubectlClient, name: str, *, follow: bool = False) -> int:
-    """Stream logs from all of a JobSet's pods (by label selector)."""
-    jobset_status(client, name)
-    args = ["logs", "-l", "%s=%s" % (JOBSET_NAME_LABEL, name), "--all-containers", "--prefix"]
-    if follow:
-        args.append("-f")
-    if client.dry_run:
-        return 0
-    import subprocess
-
-    return subprocess.call(client.base_args() + args)  # noqa: S603 — argv list, inherits stdio
-
-
 __all__ = [
     "RankGroup",
     "LaunchJobsetResult",
@@ -207,5 +194,4 @@ __all__ = [
     "submit_jobset",
     "stop_jobset",
     "jobset_status",
-    "jobset_logs",
 ]

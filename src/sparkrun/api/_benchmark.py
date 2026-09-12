@@ -1217,12 +1217,10 @@ def _execute_benchmark(
                         emitter.warning("benchmark exited with code %d (%.0fs elapsed)" % (returncode, elapsed))
                         if stderr_text:
                             emitter.warning("stderr: %s" % stderr_text[:500])
-                        if exit_on_first_fail:
-                            emitter.warning("Skipping result export (--exit-on-first-fail set and benchmark failed).")
-                            raise BenchmarkFailed(
-                                "benchmark exited with code %d" % returncode,
-                                exit_code=returncode,
-                            )
+                        raise BenchmarkFailed(
+                            "benchmark exited with code %d" % returncode,
+                            exit_code=returncode,
+                        )
                     else:
                         emitter.info("Benchmark completed successfully (%.0fs elapsed)." % elapsed)
                 except FileNotFoundError as exc:

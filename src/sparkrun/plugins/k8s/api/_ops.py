@@ -371,7 +371,6 @@ def launch_jobset(
     kubeconfig: str | None = None,
     context: str | None = None,
     precheck: bool = True,
-    follow: bool = False,
     dry_run: bool = False,
     before_start: Callable[[], None] | None = None,
 ) -> "LaunchJobsetResult":
@@ -383,7 +382,8 @@ def launch_jobset(
     verdict) without submitting.  Raises :class:`JobSetLaunchError` when a
     precheck fails or the apply is rejected. If supplied, *before_start* runs
     after preparation and prechecks, immediately before submission. An exception
-    aborts submission. Preview never invokes it.
+    aborts submission. Preview never invokes it. Returns after submission;
+    consume logs separately through :func:`sparkrun.plugins.k8s.api.logs`.
     """
     from sparkrun.plugins.k8s.orchestration import launch as _launch
     from sparkrun.plugins.k8s.orchestration.inventory import probe_nodes as _probe_nodes
@@ -437,8 +437,6 @@ def launch_jobset(
     if not apply_res.success:
         raise JobSetLaunchError("Failed to submit JobSet %s: %s" % (name, apply_res.stderr.strip()[:400]))
     result.submitted = True
-    if follow:
-        _launch.jobset_logs(client, name, follow=True)
     return result
 
 
@@ -493,7 +491,6 @@ def run_launcher_job(
     active_deadline_seconds: int | None = None,
     kubeconfig: str | None = None,
     context: str | None = None,
-    follow: bool = False,
     dry_run: bool = False,
 ) -> LauncherJobResult:
     """Apply an in-cluster launcher Job that runs *command* or *script*.
@@ -501,8 +498,8 @@ def run_launcher_job(
     The Job runs under the sparkrun service account and survives a CLI
     disconnect.  Exactly one of *command* / *script* must be given.  The
     image resolves from *image* or ``K8sSettings(config).k8s_launcher_image``; missing
-    both raises :class:`LauncherJobError`.  When *follow*, launcher logs
-    stream to the terminal until interrupted (the Job keeps running).
+    both raises :class:`LauncherJobError`. Returns after submission; consume
+    logs separately with ``api.logs(kind="job", ...)``.
     """
     service_account = resource_name("") if service_account is None else service_account
     from sparkrun.plugins.k8s.orchestration.job import DEFAULT_TTL_SECONDS
@@ -546,9 +543,6 @@ def run_launcher_job(
     if not apply_res.success:
         raise LauncherJobError("Failed to apply launcher Job %s: %s" % (name, apply_res.stderr.strip()[:400]))
     result.applied = True
-
-    if follow:
-        client.follow_job_logs(name)
 
     return result
 

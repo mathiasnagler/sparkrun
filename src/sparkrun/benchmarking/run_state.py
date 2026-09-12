@@ -512,16 +512,15 @@ class BenchmarkRunState:
     # Scheduling helpers
     # -------------------------------------------------------------------------
 
-    def next_pending(self, total_tasks: int) -> int | None:
+    def next_pending(self, total_tasks: int, *, exclude: set[int] | frozenset[int] = frozenset()) -> int | None:
         """Return the smallest index in ``[0, total_tasks)`` not yet completed.
 
-        Failed indices from previous sessions are retried; failed indices in the
-        *current* session are skipped to avoid tight crash loops.  Retry
-        semantics can be refined in a later iteration — for now this returns
-        the smallest idx not in ``completed_indices``.
+        ``exclude`` is invocation-local: the scheduler uses it to skip tasks
+        that failed in this invocation. Durable failures remain eligible on a
+        later resume; completed tasks are skipped in every invocation.
         """
         for idx in range(total_tasks):
-            if idx not in self.completed_indices:
+            if idx not in self.completed_indices and idx not in exclude:
                 return idx
         return None
 

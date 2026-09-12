@@ -160,7 +160,9 @@ class TestBuildReadCommand:
 
 class _FakeProc:
     def __init__(self, lines):
-        self.stdout = iter(lines)
+        from io import StringIO
+
+        self.stdout = StringIO("".join(lines))
         self._done = False
 
     def poll(self):

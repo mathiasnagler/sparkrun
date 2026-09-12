@@ -600,20 +600,18 @@ def run(
         dry_run=dry_run,
         follow=not no_follow,
         detached=not foreground,
-        trust=trust,
+        trust=bool(trust),
         transfer_mode=effective_transfer_mode,
         transfer_interface=effective_transfer_interface,
         cache_dir=remote_cache_dir,
         runtime_cache=runtime_cache,
         local_cache_dir=local_cache_dir,
-        port=port,
         ray_port=ray_port,
         dashboard_port=dashboard_port,
         dashboard=dashboard,
         init_port=init_port,
         executor_config=cli_executor_opts or None,
         rootful=rootful,
-        diagnostics_path=diagnostics_path,
         cluster_id_override=cluster_id_override,
         sync_tuning=not no_sync_tuning,
         extra_docker_opts=tuple(executor_args) if executor_args else None,
@@ -852,9 +850,10 @@ def run(
     if _run_span is not None:
         sctx.timing.end(_run_span, rc=int(run_result.rc))
 
-    # ``RunResult.launch_result`` is the raw LaunchResult — used by
-    # diagnostics emission, post-launch lifecycle, and crash logs.
-    result = run_result.launch_result
+    # Native handlers may return only the public result. Rendering and exit
+    # status use that contract; legacy lifecycle needs its private launch handle.
+    launch_result = run_result.launch_result
+    result = launch_result if launch_result is not None else run_result
 
     if diag:
         diag.phase_end("launch")
@@ -880,7 +879,7 @@ def run(
 
     # Post-serve lifecycle: run post_exec and post_commands if recipe defines them
     has_post_hooks = bool(recipe.post_exec or recipe.post_commands)
-    if result.rc == 0 and has_post_hooks and not foreground:
+    if launch_result is not None and result.rc == 0 and has_post_hooks and not foreground:
         from sparkrun.core.launcher import post_launch_lifecycle
 
         post_launch_lifecycle(result, remote_cache_dir=result.effective_cache_dir, trust=trust, dry_run=dry_run, progress=sctx.progress)
@@ -891,7 +890,7 @@ def run(
     # Follow container logs after a successful detached launch
     watcher = None
     serving_span = None
-    if result.rc == 0 and not foreground and not dry_run:
+    if launch_result is not None and result.rc == 0 and not foreground and not dry_run:
         if not no_follow:
             # The readiness poll runs *alongside* the log stream rather than
             # before it.  ``launch_inference`` returns once the containers are
@@ -1019,7 +1018,7 @@ def run(
 
     # --- Diagnostics finalize ---
     if diag:
-        if result.rc != 0:
+        if launch_result is not None and result.rc != 0:
             # Capture container logs on failure for debugging
             from sparkrun.orchestration.docker import generate_container_name, generate_node_container_name
             from sparkrun.orchestration.primitives import build_ssh_kwargs as _diag_ssh2

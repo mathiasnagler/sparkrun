@@ -143,3 +143,67 @@ def test_public_result_keeps_integration_selected_category(bench_env, monkeypatc
     register_benchmark_integration(BenchmarkIntegration("category", prepare=lambda options, ctx: replace(options, category="custom")))
     result = benchmark(replace(env.options, integrations={"category": {}}), sctx=env.sctx)
     assert result.category == "custom"
+
+
+@pytest.mark.parametrize("fail_fast", [False, True])
+def test_single_call_nonzero_exit_never_publishes_partial_measurements(bench_env, monkeypatch, fail_fast):
+    from sparkrun.core.benchmark_integrations import BenchmarkIntegration, register_benchmark_integration
+
+    env = bench_env
+    monkeypatch.setattr("sparkrun.core.benchmark_integrations._INTEGRATIONS", {})
+    publish = Mock()
+    register_benchmark_integration(BenchmarkIntegration("failure-contract", on_complete=publish))
+    env.fw.build_benchmark_command.return_value = [
+        sys.executable,
+        "-c",
+        "import sys; print(%r); sys.exit(7)" % json.dumps(env.rows),
+    ]
+    with pytest.raises(BenchmarkFailed) as failure:
+        benchmark(
+            replace(env.options, exit_on_first_fail=fail_fast, integrations={"failure-contract": {}}, export_files=False), sctx=env.sctx
+        )
+    assert failure.value.exit_code == 7
+    publish.assert_not_called()
+    env.fw.parse_results.assert_not_called()
+    env.stop.assert_called_once()
+
+
+@pytest.mark.parametrize("fail_fast", [False, True])
+@pytest.mark.parametrize("failure", ["nonzero", "timeout"])
+def test_failed_schedule_advances_once_and_retries_on_resume(scheduled_env, monkeypatch, fail_fast, failure):
+    import subprocess
+
+    env = scheduled_env
+    env.fw.build_task_list.return_value = [BenchTask(0, "first"), BenchTask(1, "second")]
+    calls = []
+    failing = True
+
+    def process(cmd, **kwargs):
+        # The fixture command contains the actual result-file path.
+        index = int("001.json" in cmd[-1])
+        calls.append(index)
+        assert len(calls) <= 2, "a failed task was retried within the same invocation"
+        if index == 0 and failing:
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(cmd, 1)
+            return 7
+        subprocess.run(cmd, check=True, capture_output=True)
+        return 0
+
+    monkeypatch.setattr("sparkrun.benchmarking.scheduler.run_benchmark_process", process)
+    with pytest.raises(BenchmarkFailed, match="incomplete"):
+        benchmark(replace(env.options, exit_on_first_fail=fail_fast, timeout=1, export_files=False), sctx=env.sctx)
+    assert calls == ([0] if fail_fast else [0, 1])
+    env.stop.assert_called_once()
+    state_path = next(env.sctx.config.cache_dir.glob("benchmarks/bench_*/state.yaml"))
+    saved = BenchmarkRunState.load(state_path.parent.name, str(env.sctx.config.cache_dir))
+    assert saved.failed_indices == [0]
+    assert saved.completed_indices == ([] if fail_fast else [1])
+    assert saved.sessions[-1]["ended_at"] is not None
+    failing = False
+    calls.clear()
+    resumed = resume_benchmark(state_path.parent.name, sctx=env.sctx, export_files=False)
+    assert resumed.success and resumed.resumed
+    assert calls == ([0, 1] if fail_fast else [0])
+    saved = BenchmarkRunState.load(state_path.parent.name, str(env.sctx.config.cache_dir))
+    assert sorted(saved.completed_indices) == [0, 1] and saved.failed_indices == []

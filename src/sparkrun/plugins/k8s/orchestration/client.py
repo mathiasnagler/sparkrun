@@ -190,22 +190,5 @@ class KubectlClient:
             timeout=timeout + 30,
         )
 
-    def follow_job_logs(self, name: str) -> int:
-        """Stream ``kubectl logs -f job/<name>`` to the terminal (blocking).
-
-        Inherits stdio so output streams live; a ``KeyboardInterrupt``
-        (Ctrl-C) at the CLI simply stops streaming and leaves the Job
-        running — the detach-on-disconnect affordance.  Returns the exit
-        code (0 on dry-run).
-        """
-        if self.dry_run:
-            logger.debug("[dry-run] logs -f job/%s", name)
-            return 0
-        cmd = self.base_args() + ["logs", "-f", "job/%s" % name]
-        try:
-            return subprocess.call(cmd)  # noqa: S603 — argv list, inherits stdio
-        except KeyboardInterrupt:
-            return 0
-
 
 __all__ = ["KubectlClient"]

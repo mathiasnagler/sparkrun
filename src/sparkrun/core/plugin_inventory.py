@@ -33,6 +33,7 @@ such as SparkRoute has its own version.
 from __future__ import annotations
 
 import logging
+from sparkrun.core.registration import plugin_load_failure
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -198,7 +199,8 @@ def _in_tree_plugins(v: "Variables | None") -> list[PluginInfo]:
                 enabled=enabled,
                 loaded=loaded_plugin_module(dotted) is not None,
                 feature_flag=flag if registered else None,
-                failure=plugin_application_profile_failure(name) if enabled else None,
+                failure=plugin_load_failure((SOURCE_IN_TREE, dotted, None))
+                or (plugin_application_profile_failure(name) if enabled else None),
                 version=version,
                 version_source=origin,
             )
@@ -239,6 +241,7 @@ def _external_plugins(config: "SparkrunConfig | None", v: "Variables | None") ->
                     version=version,
                     version_source=origin,
                     path=path,
+                    failure=plugin_load_failure((SOURCE_EXTERNAL, name, str(path.resolve()))),
                 )
             )
     return out

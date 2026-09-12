@@ -352,6 +352,14 @@ entry-point groups (`sparkrun.runtimes`, `sparkrun.benchmarking`,
 0.4.0; they are not alternate registration routes. Inventory includes bundled,
 directory, and installed modules, with selection/load/failure fields.
 
+Import and registration errors are retained in `PluginInfo.failure` for every
+source, even after contribution rollback. Failure identity includes the source
+and directory/package; a failure in one directory does not appear against an
+unattempted module with the same name elsewhere. Listing imports no plugin, even
+when reporting an earlier failure for a currently disabled source. Successful
+loading clears the prior failure for that source. This is process-local diagnostic
+state, not a persistent retry service.
+
 ### Installing a benchmark framework
 
 The package entry point targets the module that exports the framework class:

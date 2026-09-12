@@ -59,7 +59,6 @@ from .jobset import (
 from .launch import (
     build_launch_jobset,
     group_contiguous_ranks,
-    jobset_logs,
     jobset_status,
     precheck,
     stop_jobset,
@@ -126,7 +125,6 @@ __all__ = [
     "submit_jobset",
     "stop_jobset",
     "jobset_status",
-    "jobset_logs",
     "probe_job_manifest",
     "parse_probe_output",
     "probe_nodes_fallback",

@@ -62,6 +62,39 @@ accessors now belong to `K8sSettings`, and Kubernetes executor fields belong to
 `K8sExecutorConfig`; the persisted YAML keys are unchanged. The normal
 `resolve_executor()` chain chooses that config class automatically.
 
+## Submission and logs
+
+`launch_jobset()` and `run_launcher_job()` return after submission and do not
+attach to terminal output. Their former `follow` argument is removed in 0.4.0.
+Read logs explicitly through the same plugin API:
+
+```python
+from contextlib import closing
+from sparkrun.plugins.k8s import api as k8s
+
+submitted = k8s.run_launcher_job(
+    name="example",
+    image="my-launcher:latest",
+    command=["my-workload"],
+)
+with closing(k8s.logs(name=submitted.job_name, kind="job", namespace=submitted.namespace, follow=True)) as lines:
+    for line in lines:
+        consume(line)  # Send the LogLine to your application's UI or log sink.
+```
+
+For a JobSet use `name=submitted.name, kind="jobset"` (the default kind).
+Forward the same kubeconfig/context/namespace used for submission. Ownership and
+target checks run when `logs()` is called; the local reader starts on iteration.
+`follow=False` reads available output; `tail=N` limits kubectl's requested tail.
+Kubectl stdout/stderr are merged into captured `LogLine` records; a nonzero reader
+exit raises `SparkrunError` after any diagnostic lines. Closing the iterator stops
+and reaps the local reader, leaving the Kubernetes workload running.
+
+The CLI's `setup k8s launch --follow` and `setup k8s run-job --follow` render this
+iterator and stop reading on Ctrl-C. Dry-run never reads logs. The native
+`api.run()` / `run` JobSet path returns after submission regardless of
+`RunOptions.follow`; use the explicit log API for attachment.
+
 ## Existing launch limits
 
 The automatic `run` JobSet path currently supports a single pod and a homogeneous

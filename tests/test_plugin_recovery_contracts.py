@@ -25,6 +25,7 @@ def test_failed_plugin_rolls_back_and_independent_plugin_still_loads(tmp_path, m
 
     v = get_variables()
     before_good = v.get("RECOVERY_GOOD_VALUE", 0)
+    config = SparkrunConfig()
     package = tmp_path / "recovery_plugins"
     package.mkdir()
     (package / "__init__.py").write_text("")
@@ -57,6 +58,7 @@ def register(v):
 """)
     monkeypatch.syspath_prepend(str(tmp_path))
     if source == "directory":
+        config._data["plugins"] = {"paths": [str(package)]}
         loaded = load_external_plugins(v, paths=[package])
         prefix = ""
         assert loaded == ["recovery_good"]
@@ -67,6 +69,7 @@ def register(v):
             register_feature(FeatureFlag(flag, flag, default=True))
             gates[name] = flag
         monkeypatch.setattr("sparkrun.core.in_tree_plugins.IN_TREE_PLUGIN_FEATURES", gates)
+        monkeypatch.setattr("sparkrun.core.in_tree_plugins.IN_TREE_PLUGIN_PACKAGE", "recovery_plugins")
         loaded = load_in_tree_plugins(v, package="recovery_plugins")
         prefix = "recovery_plugins."
         assert loaded == ["recovery_good"]
@@ -90,6 +93,13 @@ def register(v):
         assert not rows["recovery_bad"].loaded and rows["recovery_bad"].failure
         assert rows["recovery_good"].loaded
         prefix = "recovery_plugins."
+    from sparkrun.core.plugin_inventory import list_plugins
+
+    inventory = {row.name: row for row in list_plugins(config, v)}
+    bad, good = inventory["recovery_bad"], inventory["recovery_good"]
+    assert not bad.loaded and bad.failure == "RuntimeError: bad " + ("import" if failure_phase == "import" else "registration")
+    assert good.loaded and good.failure is None
+    assert bad.to_dict()["failure"] == bad.failure
     assert loaded_plugin_module(prefix + "recovery_bad") is None
     assert loaded_plugin_module(prefix + "recovery_good") is not None
     assert get_feature("test.recovery_bad") is None
@@ -309,3 +319,38 @@ def test_setup_dependencies_allow_same_module_forward_references_and_loaded_prov
     assert load_plugin_module(consumer, v, strict=True)
     names = [s.key for s in all_setup_steps()]
     assert names.index("docker") < names.index("graph_parent") < names.index("graph_child") < names.index("graph_consumer")
+
+
+def test_directory_inventory_retains_source_failure_and_clears_on_success(tmp_path, monkeypatch, clean_sys):
+    from sparkrun.core.bootstrap import get_variables
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.external_plugins import load_external_plugins
+    from sparkrun.core.plugin_inventory import list_plugins
+    import sys
+
+    v = get_variables()
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    name = "recovery_source_outcome"
+    (first / (name + ".py")).write_text("def register(v):\n    if not v.get('RECOVERY_RETRY_OK'): raise RuntimeError('retry me')\n")
+    (second / (name + ".py")).write_text("raise AssertionError('listing must not import')\n")
+    config = SparkrunConfig()
+    config._data["plugins"] = {"paths": [str(first), str(second)]}
+    assert load_external_plugins(v, paths=[first]) == []
+    # The kill switch is still on: discovery reports the previous attempt but
+    # must not execute either directory's module during listing.
+    failed_module = sys.modules[name]
+    rows = [row for row in list_plugins(config, v) if row.name == name]
+    assert len(rows) == 2 and not any(row.enabled for row in rows)
+    by_path = {row.path: row for row in rows}
+    assert by_path[first].failure == "RuntimeError: retry me"
+    assert by_path[second].failure is None
+    assert sys.modules[name] is failed_module
+    v.set("RECOVERY_RETRY_OK", True)
+    try:
+        assert load_external_plugins(v, paths=[first]) == [name]
+        row = next(row for row in list_plugins(config, v) if row.name == name and row.path == first)
+        assert row.loaded and row.failure is None
+    finally:
+        v.set("RECOVERY_RETRY_OK", False)

@@ -318,6 +318,15 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
             logger.info("ensure: intent %s already running as %s; skipping launch", intent_id, match.cluster_id)
             return _already_running_result(match, plan=plan, options=options, started_at=started_at, sctx=sctx)
 
+    # Library execution must not fall through to the legacy TTY hook prompts.
+    # Keep the same local/registry trust policy and reject before preparation or
+    # replacement. Frontends supply explicit authorization via options.trust.
+    from sparkrun.core.launcher import resolve_recipe_trust
+
+    if any(getattr(recipe, name, None) for name in ("pre_exec", "post_exec", "post_commands")):
+        if not resolve_recipe_trust(recipe, options.trust):
+            raise SparkrunError("Recipe hooks require explicit authorization: pass RunOptions(trust=True) (CLI: --trust).")
+
     # Recipe-owned execution strategies are selected only from top-level items
     # present in this recipe.  Preparation happens before the shared launcher
     # starts pulling images or distributing a model, and therefore before its
@@ -469,7 +478,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         "auto_user": not options.rootful,
         "cluster": cluster_def,
         "placement": placement,
-        "trust": bool(options.trust),
+        "trust": options.trust,
         "sync_tuning": options.sync_tuning,
         "topology": options.topology,
         "cluster_id_override": cluster_id_for_launch,

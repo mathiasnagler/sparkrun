@@ -40,9 +40,9 @@ def test_run_options_defaults():
     assert opts.strategy_options == {}
     assert opts.solo is False
     assert opts.dry_run is False
-    assert opts.follow is True
+    assert opts.follow is False
     assert opts.detached is True
-    assert opts.trust is None
+    assert opts.trust is False
     assert opts.scheduler is None
 
 
@@ -289,3 +289,9 @@ def test_api_imports_without_click_in_sys_modules():
         result.stdout,
         result.stderr,
     )
+
+
+@pytest.mark.parametrize("option,value", [("port", 9001), ("diagnostics_path", "events.ndjson")])
+def test_run_options_reject_removed_inert_fields(option, value):
+    with pytest.raises(TypeError, match=option):
+        api.RunOptions(recipe="x", **{option: value})

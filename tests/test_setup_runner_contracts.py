@@ -164,3 +164,71 @@ def test_wizard_preflight_rejects_before_ssh_access(tmp_path, monkeypatch):
     result = CliRunner().invoke(setup_wizard, ["--cluster", "lab", "--yes", "--user", "tester"])
     assert result.exit_code != 0 and "another application" in result.output
     access.assert_not_called()
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("invalid", ["mismatch", "empty", "value", "not_mapping"])
+def test_invalid_host_states_fail_before_callbacks_and_recording(tmp_path, dry_run, invalid):
+    state, context = state_context()
+    states = {
+        "mismatch": {"other": state},
+        "empty": {"": replace(state, host="")},
+        "value": {state.host: object()},
+        "not_mapping": [state],
+    }[invalid]
+    callbacks = [Mock() for _ in range(4)]
+    action, approve, credentials, progress = callbacks
+    _step(action)
+    manager = ManifestManager(tmp_path / "clusters")
+    manager.recording = Mock()
+    with pytest.raises(SetupFailed, match="Setup state"):
+        run_setup_steps(
+            states,
+            context,
+            SetupActionContext("tester", dry_run=dry_run),
+            manifest_mgr=manager,
+            approve=approve,
+            credentials=credentials,
+            progress_callback=progress,
+            only_steps={"review"},
+        )
+    for callback in [*callbacks, manager.recording]:
+        callback.assert_not_called()
+    assert list(manager.clusters_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize("invalid", ["mismatch", "unexpected"])
+def test_invalid_reprobe_stops_further_actions_and_preserves_recorded_change(tmp_path, monkeypatch, invalid):
+    state, context = state_context()
+    first = Mock(side_effect=lambda current, *_: SetupActionResult(current.host, OK, "changed", changed=True))
+    second = Mock()
+    _step(first)
+    register_setup_step(
+        SetupStep(
+            "review_next",
+            "next",
+            requires=("review",),
+            checks=(lambda *_: CheckItem("next", "next", WARN),),
+            apply=second,
+            feature_flag="setup.steps.review",
+        )
+    )
+    refreshed = {state.host: replace(state, host="other")} if invalid == "mismatch" else {"other": replace(state, host="other")}
+    monkeypatch.setattr("sparkrun.core.setup_probe.probe_setup_hosts", lambda *a, **kw: (refreshed, context))
+    manager = ManifestManager(tmp_path / "clusters")
+    approve = Mock(return_value=True)
+    with pytest.raises(SetupFailed, match="(mapping key|unexpected host)"):
+        run_setup_steps(
+            {state.host: state},
+            context,
+            SetupActionContext("tester"),
+            manifest_mgr=manager,
+            approve=approve,
+            only_steps={"review", "review_next"},
+        )
+    first.assert_called_once()
+    second.assert_not_called()
+    assert approve.call_args.args[1] == (state.host,)
+    manifest = manager.load("lab", strict=True)
+    assert set(manifest.phases) == {"review"}
+    assert manifest.phases["review"].hosts == [state.host]

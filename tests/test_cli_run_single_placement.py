@@ -263,3 +263,47 @@ def test_named_cluster_survives_explicit_host_subset(runner, cluster_env, busy_c
     assert plan.scheduler == "occupancy-sparse"
     assert list(plan.host_list) == _FREE
     assert run.call_args.args[0].auto_port is False
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("diagnostics", [False, True])
+def test_native_handler_result_needs_no_private_launch_handle(
+    runner, cluster_env, busy_cluster_status, monkeypatch, tmp_path, dry_run, diagnostics
+):
+    from sparkrun import api
+
+    def native_run(options, *, sctx, plan):
+        assert options.trust is False
+        options.recipe.post_commands = ["native handler owns these hooks"]
+        return api.RunResult(
+            cluster_id=plan.cluster_id,
+            host_list=plan.host_list,
+            placement=plan.placement,
+            scheduler=plan.scheduler,
+            runtime=plan.runtime.runtime_name,
+            executor="native",
+            started_at=0,
+            dry_run=options.dry_run,
+            is_solo=plan.is_solo,
+            serve_command="native serve --port 9001",
+        )
+
+    monkeypatch.setattr(api, "run", native_run)
+    lifecycle, follow = mock.Mock(), mock.Mock()
+    monkeypatch.setattr("sparkrun.core.launcher.post_launch_lifecycle", lifecycle)
+    monkeypatch.setattr(SglangRuntime, "follow_logs", follow)
+    collector = mock.Mock()
+    monkeypatch.setattr("sparkrun.diagnostics.RunDiagnosticsCollector", mock.Mock(return_value=collector))
+    args = ["run", _RECIPE_NAME, "--cluster", "wopr", "--port", "9001"]
+    if dry_run:
+        args += ["--dry-run"]
+    if diagnostics:
+        args += ["--collect-diagnostics", str(tmp_path / "run.ndjson")]
+    result = runner.invoke(main, args)
+    assert result.exit_code == 0, result.output + repr(result.exception)
+    assert "native serve --port 9001" in result.output
+    lifecycle.assert_not_called()
+    follow.assert_not_called()
+    if diagnostics:
+        assert collector.emit_launch_result.call_args.args[0].launch_result is None
+        collector.close.assert_called_once()

@@ -603,11 +603,6 @@ def test_client_run_launcher_job_applies(monkeypatch):
     assert "kind: Job" in captured["yaml"]
 
 
-def test_client_follow_job_logs_dry_run_noop():
-    client = KubectlClient("/usr/bin/kubectl", dry_run=True)
-    assert client.follow_job_logs("cl-1") == 0
-
-
 def test_api_run_launcher_job_requires_image(tmp_path):
 
     sctx = _sctx(tmp_path)
@@ -1437,6 +1432,7 @@ def test_run_k8s_solo_homogeneous(tmp_path, monkeypatch):
     # launch received a single-rank gb10 plan
     assert captured["rank_models"] == ["gb10"]
     assert captured["name"] == "intent-token"
+    assert "follow" not in captured
 
 
 def test_run_k8s_rejects_multinode(tmp_path, monkeypatch):

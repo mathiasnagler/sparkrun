@@ -171,7 +171,7 @@ def test_setup_command_preserves_failure_across_hosts(tmp_path, monkeypatch, hos
     manager = SimpleNamespace(get_default=lambda: None, clusters_dir=tmp_path / "clusters")
     monkeypatch.setattr("sparkrun.cli._common._resolve_setup_context", lambda *args: (list(states), "tester", {}))
     monkeypatch.setattr("sparkrun.cli._common._get_cluster_manager", lambda: manager)
-    monkeypatch.setattr("sparkrun.core.setup_probe.probe_setup_hosts", lambda *args, **kw: (states, context))
+    monkeypatch.setattr("sparkrun.core.setup_probe.probe_setup_hosts", lambda hosts, **kw: ({h: states[h] for h in hosts}, context))
     monkeypatch.setattr("sparkrun.cli._setup._sudo.ensure_sudo_password", lambda *args, **kw: (None, []))
 
     def run(self, host, *args, **kwargs):

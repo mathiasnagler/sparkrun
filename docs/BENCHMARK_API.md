@@ -256,6 +256,17 @@ subsequent resumes. Old checkpoints without these fields use the historical
 do not turn publication-only retry into measurement. Initial `benchmark()` calls
 continue to resolve their own caller/profile policy, including implicit resumes.
 
+`exit_on_first_fail=False` continues to remaining scheduled tasks after a nonzero
+exit or timeout. Each failed task is skipped for the rest of that invocation; a
+later resume retries it while retaining completed tasks. An incomplete schedule
+raises `BenchmarkFailed`. The existing single bounded gap-analysis pass may still
+remeasure completed tasks with missing measurement coverage.
+
+For single-call frameworks, any nonzero exit raises `BenchmarkFailed`, regardless
+of `exit_on_first_fail`, even if the command emitted valid partial measurements.
+Those outputs never trigger successful-completion/publication hooks. Inference
+cleanup still runs on the failure path.
+
 Scheduled and single-call frameworks share one process runner. Each task's timeout
 covers process execution and output draining, with stdout/stderr drained together.
 On timeout, interruption, or output-callback failure, the runner terminates its

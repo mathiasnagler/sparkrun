@@ -127,6 +127,9 @@ def loaded_plugin_module(dotted: str) -> "ModuleType | None":
 
 def clear_loaded_plugin_modules() -> None:
     """Forget every recorded plugin module (test isolation)."""
+    from sparkrun.core.registration import clear_plugin_load_failures
+
+    clear_plugin_load_failures()
     _LOADED_PLUGIN_MODULES.clear()
     _REGISTERED_MODULES.clear()
 
@@ -276,7 +279,7 @@ def load_external_plugins(v: "Variables", paths: "list[Path] | None" = None) -> 
             sys.path.insert(0, path_str)
         for name in iter_plugin_module_names(path):
             try:
-                load_and_register_plugin(partial(importlib.import_module, name), v)
+                load_and_register_plugin(partial(importlib.import_module, name), v, source=("external", name, str(path.resolve())))
             except Exception:  # one broken plugin must not prevent independent loading
                 logger.exception("Failed to load external plugin module %r from %s", name, path)
                 continue

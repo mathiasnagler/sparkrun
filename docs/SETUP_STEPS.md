@@ -165,6 +165,14 @@ eligibility. The returned `SetupRunResult` contains:
 - Refreshed host `states`, `context`, final `plans`, and the readiness `findings`
   count. Action status and final observed readiness remain distinct.
 
+State mappings must use nonempty host names and `HostState` values whose `host`
+equals the corresponding key. Initial validation precedes planning, callbacks,
+and manifest access, including preview. The runner snapshots host state records
+so caller-side changes cannot retarget the input record during approval. Reprobe
+results are validated before merging and may contain only requested hosts. Invalid
+reprobes raise `SetupFailed` before further actions; changes already recorded remain
+available for teardown.
+
 Per-host action failures are recorded while other eligible steps continue.
 Partially successful changes are recorded per host before frontend notification.
 Reprobes decide whether dependent actions can proceed; a successful action return

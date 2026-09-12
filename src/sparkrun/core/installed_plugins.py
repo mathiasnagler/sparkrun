@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sparkrun.core.registration import enlist_registry_state, load_and_register_plugin
+from sparkrun.core.registration import enlist_registry_state, load_and_register_plugin, format_plugin_failure
 
 import logging
 import os
@@ -163,10 +163,10 @@ def load_installed_plugins(v, *, config=None) -> None:
         if row.failure or not row.selected:
             continue
         try:
-            load_and_register_plugin(providers[index].load, v, require_api_version=True)
+            load_and_register_plugin(providers[index].load, v, require_api_version=True, source=("installed", row.name, row.package))
             _inventory[index] = replace(row, loaded=True)
         except Exception as exc:
-            failure = "%s: %s" % (type(exc).__name__, exc)
+            failure = format_plugin_failure(exc)
             _inventory[index] = replace(row, failure=failure)
             logger.warning("Integration %s from %s failed: %s", row.name, row.package, failure)
 

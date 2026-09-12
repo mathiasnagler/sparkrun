@@ -85,7 +85,10 @@ Explicit profile/user policy overrides defaults. See the
 Installed integrations are selected by stable ID; installation alone does not
 load them. All plugin sources use registration rollback, including import-time
 contributions to enlisted registries. Failed plugins are not reported as loaded
-and independent plugins may continue. Provider conflicts remain launch blockers.
+and independent plugins may continue. Inventory retains import/registration failure
+messages for all three sources, with directory/package provenance. Listing does
+not import disabled modules; a successful reload clears a prior failure for that
+source. Provider conflicts remain launch blockers.
 Arbitrary plugin I/O is outside rollback. The SAF adapter depends on
 `scitrera-app-framework==0.0.69`, including private state-root/registry internals;
 changing that pin requires profile, rollback, and installed-wheel checks.
@@ -100,6 +103,37 @@ staging, immediately before submission; let failures abort the launch. It is `No
 in dry-run. Core no longer replaces a running deployment before dispatching to
 the plugin. Kubernetes forwards it to `launch_jobset(before_start=...)` so its
 manifest and feasibility prechecks finish first.
+
+The 0.4.0 `RunOptions` cleanup removes two ineffective fields:
+
+- Replace `RunOptions(port=9001)` with `RunOptions(overrides={"port": 9001})`.
+  This single input participates in planning, intent/fingerprint generation,
+  ensure matching, command generation, and handler dispatch.
+- `diagnostics_path` is removed from library options. The CLI's
+  `--collect-diagnostics PATH` still owns its collector; embedding applications
+  manage diagnostics collection separately.
+
+`RunOptions.trust` is a boolean, defaulting to `False`. It never requests an
+interactive prompt. False retains automatic trust for local recipes and trusted
+registries; `True` explicitly authorizes hooks and other trust-gated execution.
+Frontends must complete any prompt before calling the API. API execution now
+rejects untrusted hooks before preparation/launch even with a TTY attached, instead
+of reaching legacy interactive prompts. The CLI uses `--trust` for this explicit
+authorization; local/trusted-registry automatic trust remains unchanged.
+
+`RunOptions.follow` now defaults to `False`. It controls only legacy foreground
+runtime attachment (`detached=False`); detached API launches return without
+following. Read detached logs through `api.logs()` or a plugin's explicit iterator.
+The CLI selects its own log policy. Native handlers can return only `RunResult`;
+the CLI renders that public result without requiring a private launch handle or
+running the legacy host lifecycle.
+
+Kubernetes `launch_jobset()` and `run_launcher_job()` no longer accept `follow`.
+Both return after submission. Use `plugins.k8s.api.logs(name=..., kind="jobset")`
+or `kind="job"`, optionally with `follow=True`, to consume structured `LogLine`
+records. Close the iterator when stopping early. `setup k8s launch --follow` and
+`setup k8s run-job --follow` render that iterator in the CLI. Native `run` JobSet
+submission returns without attachment; use the explicit plugin log API.
 
 Run handlers reuse the supplied plan and standard executor resolver.
 `RunOptions.executor_overrides()` supplies the caller layer. Do not independently
@@ -245,3 +279,16 @@ Incomplete resumes now enforce the same framework prerequisites as initial
 measurements; preview and completed-result/publication paths remain independent
 of those tools. Custom setup undo mappings now derive reverse dependency order
 from the shared graph, independent of insertion order.
+
+## Measurement failure and setup targeting
+
+A nonzero single-call benchmark exit now raises `BenchmarkFailed` under either
+`exit_on_first_fail` setting, even when partial output parses. Successful-completion
+and publication hooks do not run. For schedules, false means attempt remaining
+tasks once per invocation; failed tasks stay resumable and retry on the next run.
+Timeouts follow the same rule. The bounded measurement-gap pass remains available.
+
+`run_setup_steps()` requires nonempty host keys and matching `HostState.host`
+values. Invalid initial mappings fail with `SetupFailed` before callbacks or
+manifest access. Reprobes must satisfy the same invariant and return only requested
+hosts; invalid results stop further actions while retaining changes already recorded.

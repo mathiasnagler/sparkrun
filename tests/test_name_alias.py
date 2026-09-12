@@ -31,6 +31,7 @@ def test_run_with_name_override(monkeypatch):
     # short-circuit doesn't crash on MagicMock attribute access.
     mock_recipe.max_nodes = None
     mock_recipe.layout = None
+    mock_recipe.pre_exec = None
     mock_recipe.post_exec = None
     mock_recipe.post_commands = None
     # Recipe validation resolves ``builder``/``executor`` selectors and errors

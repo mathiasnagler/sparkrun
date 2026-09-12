@@ -165,7 +165,9 @@ def load_in_tree_plugins(v: "Variables", package: str | None = None) -> list[str
 
         dotted = "%s.%s" % (package, name)
         try:
-            load_and_register_plugin(partial(importlib.import_module, dotted), v, tier=DeclarationTier.IN_TREE)
+            load_and_register_plugin(
+                partial(importlib.import_module, dotted), v, tier=DeclarationTier.IN_TREE, source=("in-tree", dotted, None)
+            )
         except Exception:
             logger.exception("Failed to load in-tree plugin %r", dotted)
             continue

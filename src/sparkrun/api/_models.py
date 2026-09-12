@@ -5,10 +5,9 @@ here.  These are stable contracts that third-party Python callers may
 depend on; field additions are non-breaking, field removals are
 breaking.
 
-The ``RunOptions`` dataclass mirrors the CLI ``run`` command's flag
-set as a typed struct so callers can construct it programmatically
-without parsing CLI strings.  Other ``Options`` dataclasses follow
-the same pattern for ``stop``, ``logs``, etc.
+Options describe library operations. Frontends translate flags or UI inputs
+into these values and own prompting, terminal rendering, and diagnostics
+collection.
 """
 
 from __future__ import annotations
@@ -31,9 +30,10 @@ if TYPE_CHECKING:
 class RunOptions:
     """Inputs to :func:`sparkrun.api.run`.
 
-    Mirrors the CLI ``run`` flag set.  ``recipe`` and one of
-    ``hosts`` / ``cluster`` are required; everything else has sensible
-    defaults that match the CLI defaults.
+    Frontends translate their inputs into this operation contract. Hosts may
+    be explicit, supplied by a cluster, or resolved from application defaults.
+    Recipe/runtime settings, including the serve port, belong in ``overrides``.
+    Terminal rendering and diagnostics collection belong to the frontend.
     """
 
     recipe: "str | Recipe"
@@ -63,14 +63,19 @@ class RunOptions:
     """Force single-host mode regardless of host count."""
     dry_run: bool = False
     """Compute everything but don't execute scripts on remote hosts."""
-    follow: bool = True
-    """Stream container logs after launch (CLI default)."""
+    follow: bool = False
+    """Legacy foreground-runtime log attachment (only when detached=False).
+
+    Detached API launches return without following logs; use api.logs() or the
+    plugin's log iterator. The CLI explicitly selects its attachment policy.
+    Kubernetes submissions always return before log consumption.
+    """
     detached: bool = True
     """Launch container detached (CLI default; inverse of --foreground)."""
-    trust: bool | None = None
-    """Pre-acknowledge trust for third-party recipe hooks.  ``None`` =
-    prompt interactively (CLI default), ``True`` = auto-trust,
-    ``False`` = refuse to run untrusted hooks."""
+    trust: bool = False
+    """Explicitly authorize recipe hooks. False keeps automatic trust for local
+    recipes and trusted registries; otherwise hooks require authorization.
+    The library does not prompt. True supplies that authorization."""
     ensure: bool = False
     """If True, skip the launch when this workload is already serving.
 
@@ -110,8 +115,6 @@ class RunOptions:
     ``SPARKRUN_NO_RUNTIME_CACHE`` kill switch."""
 
     # Networking / runtime ports.
-    port: int | None = None
-    """Override the inference serve port."""
     auto_port: bool = False
     """Select the next available serve port when the requested port is busy.
 
@@ -137,10 +140,6 @@ class RunOptions:
     """Executor option overrides (``shm_size``, ``memory_limit``, ``privileged``, …)."""
     rootful: bool = False
     """Run docker containers privileged + as root (disables rootless adjustments)."""
-
-    # Diagnostics / introspection.
-    diagnostics_path: str | None = None
-    """Path to write run-time diagnostics NDJSON.  ``None`` disables."""
 
     # Additional launcher passthroughs (CLI-shaped knobs threaded into
     # ``launch_inference`` for parity with the existing CLI command).

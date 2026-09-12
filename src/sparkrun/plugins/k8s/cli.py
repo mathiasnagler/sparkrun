@@ -17,6 +17,7 @@ def build_setup_command():
     """Construct the setup group only when the CLI attaches enabled plugins."""
     from sparkrun.core.application_profile import render_identity_text
 
+    from contextlib import closing
     import functools
     import shlex
 
@@ -35,6 +36,21 @@ def build_setup_command():
             return func(*args, **kwargs)
 
         return wrapper
+
+    def follow_logs(sctx, *, name, kind, namespace, kubeconfig, context):
+        from . import api
+        from sparkrun.api import SparkrunError
+
+        try:
+            with closing(
+                api.logs(sctx, name=name, kind=kind, namespace=namespace, kubeconfig=kubeconfig, context=context, follow=True)
+            ) as lines:
+                for line in lines:
+                    click.echo(line.text)
+        except KeyboardInterrupt:
+            pass  # Stop the local reader; the submitted workload keeps running.
+        except SparkrunError as exc:
+            raise click.ClickException(str(exc)) from exc
 
     SETUP_K8S_FEATURE = "cli.setup.k8s"
 
@@ -334,7 +350,6 @@ def build_setup_command():
                 kubeconfig=kubeconfig,
                 context=kube_context,
                 precheck=not no_precheck,
-                follow=follow,
                 dry_run=dry_run,
             )
         except (api.JobSetLaunchError, api.ClusterUnreachable, api.KubectlUnavailable) as exc:
@@ -350,6 +365,8 @@ def build_setup_command():
         click.secho("JobSet submitted.", fg="green")
         click.echo("  jobset: %s/%s" % (result.namespace, result.name))
         click.echo("Reattach with: kubectl -n %s logs -f -l jobset.sigs.k8s.io/jobset-name=%s" % (result.namespace, result.name))
+        if follow:
+            follow_logs(sctx, name=result.name, kind="jobset", namespace=result.namespace, kubeconfig=kubeconfig, context=kube_context)
 
     # ---------------------------------------------------------------------------
     # run-job (hidden — smoke-tests the launcher-Job transport)
@@ -380,7 +397,6 @@ def build_setup_command():
                 namespace=namespace,
                 kubeconfig=kubeconfig,
                 context=kube_context,
-                follow=follow,
                 dry_run=dry_run,
             )
         except api.LauncherJobError as exc:
@@ -394,5 +410,7 @@ def build_setup_command():
         click.echo("  job:   %s/%s" % (result.namespace, result.job_name))
         click.echo("  image: %s" % result.image)
         click.echo("Reattach with: kubectl -n %s logs -f job/%s" % (result.namespace, result.job_name))
+        if follow:
+            follow_logs(sctx, name=result.job_name, kind="job", namespace=result.namespace, kubeconfig=kubeconfig, context=kube_context)
 
     return setup_k8s

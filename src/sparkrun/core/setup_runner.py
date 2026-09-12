@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
@@ -44,6 +44,22 @@ def _cluster_name(context: CheckContext, cluster: ClusterDefinition | None, expl
     return next(iter(names), None)
 
 
+def _validated_states(states: Mapping[str, HostState], *, expected_hosts: list[str] | None = None) -> dict[str, HostState]:
+    """Keep approval, action targets, and recording on the same host identity."""
+    if not isinstance(states, Mapping):
+        raise TypeError("Setup states must be a mapping of host names to HostState")
+    checked: dict[str, HostState] = {}
+    for host, state in states.items():
+        if not isinstance(host, str) or not host.strip() or not isinstance(state, HostState):
+            raise ValueError("Setup states require nonempty host names and HostState values")
+        if state.host != host:
+            raise ValueError("Setup state host %r does not match mapping key %r" % (state.host, host))
+        if expected_hosts is not None and host not in expected_hosts:
+            raise ValueError("Setup reprobe returned an unexpected host: %r" % host)
+        checked[host] = replace(state)
+    return checked
+
+
 def run_setup_steps(
     states: dict[str, HostState],
     context: CheckContext,
@@ -67,7 +83,7 @@ def run_setup_steps(
     """
     from sparkrun.core.setup_probe import probe_setup_hosts
 
-    states = dict(states)
+    states = _validated_states(states)
     cluster_name = _cluster_name(context, cluster, cluster_name)
     if manifest_mgr is not None and cluster_name is None:
         raise ValueError("Setup manifest recording requires a cluster name")
@@ -149,14 +165,15 @@ def run_setup_steps(
                 emit(SetupEvent("result", step.key, step.label, (host,), outcome.status, outcome.detail))
             results[step.key] = aggregate_action_status(per_host)
             if changed:
+                reprobe_hosts = [host for host, state in states.items() if state.reachable]
                 refreshed, new_context = probe_setup_hosts(
-                    [host for host, state in states.items() if state.reachable],
+                    reprobe_hosts,
                     ssh_kwargs=action_context.ssh_kwargs,
                     config=context.config,
                     cluster=cluster,
                     cluster_name=cluster_name,
                 )
-                states.update(refreshed)
+                states.update(_validated_states(refreshed, expected_hosts=reprobe_hosts))
                 context = replace(new_context, multi_host=context.multi_host, cluster_name=cluster_name)
                 host_plans = plan_hosts()
 

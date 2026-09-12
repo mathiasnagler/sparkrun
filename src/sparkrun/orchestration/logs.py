@@ -104,13 +104,27 @@ def _read_one(
     """Yield every line from a single source, then return."""
     cmd = build_read_command(executor, source, follow=follow, tail=tail, ssh_kwargs=ssh_kwargs)
     logger.debug("Reading logs from %s: %s", source.label, " ".join(cmd))
+    yield from read_log_command(cmd, source)
+
+
+def read_log_command(cmd: list[str], source: LogSource, *, check: bool = False) -> Iterator[LogLine]:
+    """Read a local argv into structured lines; closing the iterator stops it.
+
+    Stderr is merged into the captured stream. Native control-plane plugins
+    reuse this reader without routing a local client command through SSH.
+    With check=True, a nonzero reader exit raises CalledProcessError.
+    """
     proc = _spawn(cmd)
     try:
         assert proc.stdout is not None
         for text in proc.stdout:
             yield _line(source, text)
+        if check and (rc := proc.wait()) != 0:
+            raise subprocess.CalledProcessError(rc, cmd)
     finally:
         _terminate(proc)
+        if proc.stdout is not None:
+            proc.stdout.close()
 
 
 def _terminate(proc: subprocess.Popen) -> None:
@@ -124,6 +138,7 @@ def _terminate(proc: subprocess.Popen) -> None:
         logger.debug("Log reader terminate failed; killing", exc_info=True)
         try:
             proc.kill()
+            proc.wait(timeout=5)
         except Exception:
             logger.debug("Log reader kill failed", exc_info=True)
 

@@ -85,6 +85,8 @@ def run_schedule(
         progress_ui: Task event sink (the keyword is retained for compatibility).
         cache_dir: Override for the sparkrun cache directory root.
         exit_on_first_fail: Stop immediately after the first task failure.
+            Otherwise attempt the remaining tasks, skipping failures for this
+            invocation. A later resume can retry those failed tasks.
         skip_run: When ``True``, the warmup/coherence steps are suppressed even
             for the first task of the session.
 
@@ -99,6 +101,7 @@ def run_schedule(
     state.mark_session_started()
     state.save(cache_dir)
 
+    failed_this_run: set[int] = set()
     session_first_task = True
     _gap_pass_done = False
 
@@ -111,7 +114,7 @@ def run_schedule(
         nonlocal session_first_task, consolidated
 
         while True:
-            idx = state.next_pending(total)
+            idx = state.next_pending(total, exclude=failed_this_run)
             if idx is None:
                 break
 
@@ -149,6 +152,7 @@ def run_schedule(
                 except subprocess.TimeoutExpired:
                     logger.warning("Task %d (%s) timed out after %s seconds", idx, task.label, timeout)
                     duration_s = time.monotonic() - t_start
+                    failed_this_run.add(idx)
                     state.mark_failed(idx, "timeout after %ds" % timeout)
                     state.save(cache_dir)
                     progress_ui.end_task(idx, success=False, duration_s=duration_s)
@@ -169,6 +173,7 @@ def run_schedule(
                     progress_ui.update_results_table(consolidated)
                     session_first_task = False
                 else:
+                    failed_this_run.add(idx)
                     state.mark_failed(idx, "exit code %d" % rc)
                     state.save(cache_dir)
                     progress_ui.end_task(idx, success=False, duration_s=duration_s)
