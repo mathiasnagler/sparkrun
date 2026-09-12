@@ -462,3 +462,29 @@ __all__ = [
     "resolve_cluster",
     "resolve_runtime",
 ]
+
+
+def resolve_operation_target(options=None, *, recipe, runtime=None, cluster, sctx=None):
+    """Return a destination-scoped cluster and frozen high-priority overrides."""
+    from dataclasses import replace
+    from sparkrun.orchestration.executor import resolve_executor_target
+
+    if runtime is None:
+        # Lifecycle recovery can still use recipe/cluster executor selection
+        # after a runtime plugin was uninstalled.
+        try:
+            runtime = resolve_runtime(recipe, sctx=sctx)
+        except SparkrunError:
+            logger.debug("Runtime unavailable during target resolution", exc_info=True)
+    target = resolve_executor_target(
+        cli_overrides=options.executor_overrides() if options is not None else None,
+        recipe=recipe,
+        runtime=runtime,
+        cluster=cluster,
+        config=sctx.config if sctx is not None else maybe_load_config(),
+        v=sctx.variables if sctx is not None else None,
+        dry_run=options.dry_run if options is not None else False,
+    )
+    settings = target.overrides
+    settings.pop("executor")
+    return replace(cluster, executor=target.executor, executor_config={**(cluster.executor_config or {}), **settings}), target

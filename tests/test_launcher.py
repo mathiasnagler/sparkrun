@@ -926,14 +926,8 @@ def test_post_launch_lifecycle_dry_run_skips_health_waits(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_launch_inference_save_job_metadata_failure_is_best_effort(monkeypatch, tmp_path):
-    """save_job_metadata raising must NOT abort a non-dry-run launch.
-
-    Exercises the best-effort ``except Exception`` guard around the
-    initial metadata persistence in launch_inference: the launch still
-    completes and returns rc=0 from the stub runtime even though metadata
-    persistence blew up.
-    """
+def test_launch_inference_metadata_failure_aborts_before_submission(monkeypatch, tmp_path):
+    """An unrecordable workload must not be submitted and become unmanageable."""
     from sparkrun.core import launcher
     from sparkrun.core.launcher import launch_inference
 
@@ -1011,20 +1005,22 @@ def test_launch_inference_save_job_metadata_failure_is_best_effort(monkeypatch, 
 
     runtime = _StubRuntime()
 
-    # dry_run=False so save_job_metadata is actually reached.
-    result = launch_inference(
-        recipe=_Recipe(),
-        runtime=runtime,
-        host_list=["nv-host"],
-        overrides={},
-        config=_Cfg(),
-        is_solo=True,
-        dry_run=False,
-        sync_tuning=False,
-    )
+    from unittest.mock import Mock
 
-    assert result.rc == 0
-    assert save_calls, "save_job_metadata should have been attempted"
+    runtime.run = Mock(side_effect=AssertionError("must not submit without metadata"))
+    with pytest.raises(OSError, match="disk full"):
+        launch_inference(
+            recipe=_Recipe(),
+            runtime=runtime,
+            host_list=["nv-host"],
+            overrides={},
+            config=_Cfg(),
+            is_solo=True,
+            dry_run=False,
+            sync_tuning=False,
+        )
+    assert save_calls == [1]
+    runtime.run.assert_not_called()
 
 
 def test_launch_inference_records_cluster_and_ssh_user(monkeypatch, tmp_path):

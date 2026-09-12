@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from sparkrun.orchestration.executor import ExecutorTarget
     from sparkrun.core.cluster_manager import ClusterDefinition, ClusterStatusResult
     from sparkrun.core.recipe import Recipe
     from sparkrun.core.scheduler import RankAssignment
@@ -239,12 +240,18 @@ class RunPlan:
     """Deterministic hex identifier for (recipe + parallelism + port)."""
     placement_token: str = ""
     """Token disambiguating this launch from other instances of the intent.
-    Derived from :attr:`candidate_hosts` under a deterministic scheduler,
-    random under a status-aware one."""
+    Derived from candidate hosts and any executor destination key under a
+    deterministic scheduler, random under a status-aware one."""
     cluster_id: str = ""
     """``sparkrun_<intent_id>_<placement_token>`` — the id the launch will
     use, so a renderer can show it (and ``--ensure`` can look it up) before
     anything starts."""
+    executor_target: "ExecutorTarget | None" = None
+    """Resolved executor destination and connection snapshot.
+
+    Consumers must treat this snapshot as read-only. It pins discovery and
+    launch to the same destination; hardware launch policy is resolved later.
+    """
     recipe_fingerprint: str = ""
     """Serve-configuration digest of the *declared* recipe.
 
@@ -430,7 +437,9 @@ class RunResult:
     then describe the **pre-existing** deployment, and
     :attr:`launch_result` is ``None`` (there was no launch)."""
     recipe_fingerprint: str = ""
-    """Serve-configuration digest for a fresh launch; empty on an ensure hit.
+    """Declared serve-configuration digest, or a verified saved digest on reuse.
+
+    Empty when the existing deployment has no recorded digest.
 
     Derived from the *declared* recipe before the launcher folds in
     host-dependent platform runtime-flag defaults, so a caller can reproduce it

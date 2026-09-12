@@ -1267,36 +1267,6 @@ def launch_inference(
     job_cluster_name = getattr(cluster, "name", "") or ""
     job_ssh_user = getattr(config, "ssh_user", None)
 
-    # Save job metadata
-    if not dry_run:
-        try:
-            save_job_metadata(
-                cluster_id,
-                recipe,
-                host_list,
-                overrides=overrides,
-                cache_dir=str(config.cache_dir),
-                recipe_ref=recipe_ref,
-                container_image=container_image,
-                container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
-                runtime=runtime,
-                backends=backends,
-                recipe_fingerprint=recipe_fingerprint,
-                owner=owner,
-                cluster_name=job_cluster_name,
-                ssh_user=job_ssh_user,
-            )
-        except Exception:
-            # Not fatal to the launch, but it is not cosmetic either: without
-            # metadata, `stop` and `logs` can't recover this job's hosts from
-            # the cluster id alone.  Warn rather than whisper at debug — a
-            # silent debug line hid a total write failure on Windows.
-            logger.warning(
-                "Could not save job metadata for %s; `sparkrun logs`/`stop` may not find this job by cluster id (pass --hosts if so)",
-                cluster_id,
-                exc_info=True,
-            )
-
     # Pre-launch preparation (post-container builds)
     if asset_policy is None or asset_policy.prepare_runtime:
         runtime.prepare(
@@ -1311,6 +1281,7 @@ def launch_inference(
     # -- Phase 3: Distribution --
     comm_env = None
     ib_ip_map: dict[str, str] = {}
+    mgmt_ip_map: dict[str, str] = {}
     ib_iface_map: dict[str, str] = {}
     if not runtime.is_delegating_runtime():
         if p:
@@ -1439,29 +1410,6 @@ def launch_inference(
             job_cluster_id=cluster_id,
             cluster_name=getattr(cluster, "name", "") or "",
         )
-        # Re-save job metadata with IP maps from IB detection
-        if not dry_run and (ib_ip_map or mgmt_ip_map):
-            try:
-                save_job_metadata(
-                    cluster_id,
-                    recipe,
-                    host_list,
-                    overrides=overrides,
-                    cache_dir=str(config.cache_dir),
-                    ib_ip_map=ib_ip_map,
-                    mgmt_ip_map=mgmt_ip_map,
-                    recipe_ref=recipe_ref,
-                    container_image=container_image,
-                    container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
-                    runtime=runtime,
-                    backends=backends,
-                    recipe_fingerprint=recipe_fingerprint,
-                    owner=owner,
-                    cluster_name=job_cluster_name,
-                    ssh_user=job_ssh_user,
-                )
-            except Exception:
-                logger.debug("Failed to update job metadata: %s", cluster_id, exc_info=True)
         if p:
             p.phase_end()
     else:
@@ -1605,6 +1553,47 @@ def launch_inference(
         _rt_display = RUNTIME_DISPLAY.get(runtime.runtime_name, runtime.runtime_name)
         p.phase(5, "Launching %s runtime" % _rt_display)
 
+    # Resolve one executor for preparation and launch. The head host supplies
+    # the hardware-default tier. Freeze local inputs before replacement so
+    # every worker uses the same policy even if a source file changes later.
+    from sparkrun.orchestration.executor import resolve_executor
+
+    executor = resolve_executor(
+        recipe=recipe,
+        cluster=cluster,
+        runtime=runtime,
+        config=config,
+        cli_overrides=executor_config if isinstance(executor_config, dict) else None,
+        rootless=rootless,
+        auto_user=auto_user,
+        host_hardware=_head_hw,
+        v=v,
+    )
+
+    def record_launch_metadata(runtime_info=None):
+        if not dry_run:
+            save_job_metadata(
+                cluster_id,
+                recipe,
+                host_list,
+                overrides=overrides,
+                cache_dir=str(config.cache_dir),
+                ib_ip_map=ib_ip_map,
+                mgmt_ip_map=mgmt_ip_map,
+                recipe_ref=recipe_ref,
+                runtime_info=runtime_info,
+                container_image=container_image,
+                container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
+                runtime=runtime,
+                backends=backends,
+                recipe_fingerprint=recipe_fingerprint,
+                owner=owner,
+                cluster_name=job_cluster_name,
+                ssh_user=job_ssh_user,
+                executor=executor,
+                sctx=sctx,
+            )
+
     # A strategy gets one final prepare-only call with sparkrun's resolved
     # transport and resident image/model state.  It must complete before the
     # core-owned eviction barrier below: everything slow and interruptible is
@@ -1633,42 +1622,16 @@ def launch_inference(
         # deployment it replaces is torn down.
         if before_start is not None and not dry_run:
             before_start()
+        record_launch_metadata()
         with timed(timeline, "execution.activate", strategy=prepared_execution.strategy):
             activation_result = execution_strategy.activate(activation_context, activation_receipt)
         rc = int(activation_result.rc)
         runtime_info = dict(activation_result.runtime_info)
         runtime_info.setdefault("execution_strategy", prepared_execution.strategy)
-        if not dry_run:
-            try:
-                # Every field the normal path records must be recorded here too:
-                # save_job_metadata rewrites the file wholesale, so an omission
-                # is an erasure, and the symptom (a teardown that cannot
-                # authenticate) looks nothing like the cause.
-                save_job_metadata(
-                    cluster_id,
-                    recipe,
-                    host_list,
-                    overrides=overrides,
-                    cache_dir=str(config.cache_dir),
-                    ib_ip_map=ib_ip_map,
-                    mgmt_ip_map=mgmt_ip_map,
-                    recipe_ref=recipe_ref,
-                    runtime_info=runtime_info,
-                    container_image=container_image,
-                    container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
-                    runtime=runtime,
-                    backends=backends,
-                    recipe_fingerprint=recipe_fingerprint,
-                    owner=owner,
-                    cluster_name=job_cluster_name,
-                    ssh_user=job_ssh_user,
-                )
-            except Exception:
-                logger.warning(
-                    "Could not persist execution-strategy metadata for %s; later lifecycle commands may lose strategy context",
-                    cluster_id,
-                    exc_info=True,
-                )
+        try:
+            record_launch_metadata(runtime_info)
+        except Exception:
+            logger.warning("Could not update execution-strategy metadata for %s", cluster_id, exc_info=True)
         if p:
             p.phase_end()
         timeline.end(launch_span, status=STATUS_ERROR if rc else "ok", rc=rc, cluster_id=cluster_id)
@@ -1696,32 +1659,7 @@ def launch_inference(
             timeline=timeline,
         )
 
-    # Resolve one executor for preparation and launch. The head host supplies
-    # the hardware-default tier. Freeze local inputs before replacement so
-    # every worker uses the same policy even if a source file changes later.
-    from sparkrun.orchestration.executor import resolve_executor
-
-    executor = resolve_executor(
-        recipe=recipe,
-        cluster=cluster,
-        runtime=runtime,
-        config=config,
-        cli_overrides=executor_config if isinstance(executor_config, dict) else None,
-        rootless=rootless,
-        auto_user=auto_user,
-        host_hardware=_head_hw,
-        v=v,
-    )
-
     executor.prepare_launch(extra_opts=(runtime.get_extra_docker_opts() or []) + (extra_docker_opts or []))
-
-    # Last point before containers start.  Everything that can fail slowly and
-    # cheaply — image distribution, model download, tuning sync — is behind us,
-    # so a caller can safely tear down the deployment this launch replaces.
-    # Doing it any earlier means an interrupted `sparkrun run` leaves the
-    # cluster with neither the old workload nor the new one.
-    if before_start is not None and not dry_run:
-        before_start()
 
     # Build runtime.run() kwargs — include runtime-specific options only
     # when they were explicitly provided.
@@ -1827,6 +1765,12 @@ def launch_inference(
     if platform_env or cluster_env:
         effective_env = {**platform_env, **cluster_env, **(recipe.env or {})}
 
+    # Commit only after all preparation and the replacement callback succeed.
+    # Persist before submission so an interrupted start remains recoverable.
+    if before_start is not None and not dry_run:
+        before_start()
+    record_launch_metadata()
+
     # Launch
     rc = runtime.run(
         hosts=host_list,
@@ -1897,23 +1841,7 @@ def launch_inference(
                     logger.debug("Container label collection failed", exc_info=True)
             if runtime_info:
                 try:
-                    save_job_metadata(
-                        cluster_id,
-                        recipe,
-                        host_list,
-                        overrides=overrides,
-                        cache_dir=str(config.cache_dir),
-                        recipe_ref=recipe_ref,
-                        runtime_info=runtime_info,
-                        container_image=container_image,
-                        container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
-                        runtime=runtime,
-                        backends=backends,
-                        recipe_fingerprint=recipe_fingerprint,
-                        owner=owner,
-                        cluster_name=job_cluster_name,
-                        ssh_user=job_ssh_user,
-                    )
+                    record_launch_metadata(runtime_info)
                 except Exception:
                     logger.debug("Failed to save runtime_info to job metadata", exc_info=True)
         except Exception:

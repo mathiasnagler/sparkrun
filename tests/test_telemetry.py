@@ -399,4 +399,8 @@ def test_api_run_calls_api_level_telemetry():
     assert emit.call_args.args[0] is not None
     assert emit.call_args.kwargs["result"].cluster_id == result.cluster_id
     assert emit.call_args.kwargs["recipe"] is recipe
-    assert emit.call_args.kwargs["options"] is options
+    effective_options = emit.call_args.kwargs["options"]
+    assert effective_options.recipe is options.recipe
+    assert effective_options.hosts == options.hosts and effective_options.dry_run == options.dry_run
+    assert effective_options.executor_overrides()["executor"] == "docker"
+    assert options.executor is None and options.executor_config is None

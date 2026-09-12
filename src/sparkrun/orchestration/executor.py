@@ -38,6 +38,7 @@ from sparkrun.orchestration.executors._base import (
     EXT_EXECUTOR,
     Executor,
     ExecutorConfig,
+    ExecutorTarget,
     accelerator_vendor_for,
 )
 from sparkrun.orchestration.executors.docker import DOCKER_DEFAULTS, DockerExecutor
@@ -66,6 +67,7 @@ __all__ = [
     "DOCKER_DEFAULTS",
     "Executor",
     "ExecutorConfig",
+    "ExecutorTarget",
     "ExecutorUnavailableError",
     "accelerator_vendor_for",
     "cluster_status_scope",
@@ -73,6 +75,7 @@ __all__ = [
     "list_executors",
     "query_status_for_cluster",
     "resolve_executor",
+    "resolve_executor_target",
 ]
 
 
@@ -638,3 +641,16 @@ def resolve_executor(
     # resolving its kubectl binary from sparkrun's managed cache).
     executor.finalize_config(config=config, v=v)
     return executor
+
+
+def resolve_executor_target(
+    *, recipe=None, cluster=None, runtime=None, config=None, cli_overrides=None, v=None, dry_run=False
+) -> ExecutorTarget:
+    """Resolve a destination snapshot through the canonical executor chain.
+
+    The returned target carries the executor selector and destination/connection
+    settings. Carry them at caller precedence for the rest of the operation;
+    hardware-dependent launch policy is still resolved after placement.
+    """
+    executor = resolve_executor(recipe=recipe, cluster=cluster, runtime=runtime, config=config, cli_overrides=cli_overrides, v=v)
+    return executor.resolve_target(dry_run=dry_run)

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import logging
 from abc import abstractmethod
-from dataclasses import dataclass
-from typing import ClassVar, Mapping, TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import Any, ClassVar, Mapping, TYPE_CHECKING
 
 from scitrera_app_framework import Plugin, Variables, ext_parse_bool, get_extensions
 
@@ -256,6 +256,35 @@ class ExecutorConfig:
             self.auto_remove = False
 
 
+@dataclass(frozen=True)
+class ExecutorTarget:
+    """Executor-derived destination and connection settings for one operation.
+
+    ``destination_key`` distinguishes provider destinations beyond the candidate
+    hosts; it is derived, never a configurable controller ID. ``config`` also
+    carries connection details (such as a kubectl binary) that do not change
+    destination identity. Hardware-dependent launch policy does not belong here.
+    """
+
+    executor: str
+    config: Mapping[str, Any] = field(default_factory=dict)
+    destination_key: str = ""
+
+    def __post_init__(self):
+        from sparkrun.utils.data import freeze, normalize_data
+
+        if not isinstance(self.config, Mapping):
+            raise TypeError("ExecutorTarget.config must be a mapping")
+        object.__setattr__(self, "config", freeze(normalize_data(self.config, path="ExecutorTarget.config")))
+
+    @property
+    def overrides(self) -> dict:
+        """A detached highest-priority layer for the executor resolution chain."""
+        from sparkrun.utils.data import thaw
+
+        return {**thaw(self.config), "executor": self.executor}
+
+
 class Executor(Plugin):
     """Abstract base for executors.
 
@@ -304,6 +333,20 @@ class Executor(Plugin):
     # it would launch with, so status sweeps exactly the executors that could
     # have placed workloads on that cluster.
     status_scope: ClassVar[str] = "host"
+
+    # True only when launch hosts identify the serving endpoint. Control-plane
+    # executors must opt out until they provide a reachable endpoint contract.
+    supports_host_endpoint: ClassVar[bool] = True
+
+    def resolve_target(self, *, dry_run: bool = False) -> ExecutorTarget:
+        """Snapshot destination-only settings before planning or discovery.
+
+        Return canonical destination identity and connection overrides.
+        This may read local configuration but must not mutate remote state.
+        Host executors need no extra scope; providers pin mutable defaults here.
+        Do not include credentials, resource sizing, or other launch policy.
+        """
+        return ExecutorTarget(self.executor_name)
 
     def readiness_observer(self) -> ReadinessObserver | None:
         """Declare observation support for this resolved executor configuration.

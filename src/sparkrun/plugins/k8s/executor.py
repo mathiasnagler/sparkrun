@@ -45,10 +45,11 @@ from .config import K8sSettings
 
 from dataclasses import dataclass
 import logging
+import json
 import re
 from typing import TYPE_CHECKING
 
-from sparkrun.orchestration.executors._base import Executor, ExecutorConfig
+from sparkrun.orchestration.executors._base import Executor, ExecutorConfig, ExecutorTarget
 from sparkrun.core.application_profile import get_application_profile, resource_name
 from sparkrun.core.ownership import OWNER_LABEL, assert_resource_namespace
 from sparkrun.plugins.k8s.orchestration.client import KubectlClient
@@ -108,6 +109,7 @@ class K8sExecutor(Executor):
     # Own control plane (kubectl), not the SSH-host substrate — queried alone
     # for a k8s cluster, never merged with the docker/local host executors.
     status_scope = "k8s"
+    supports_host_endpoint = False
 
     def is_multi_extension(self, v):
         from sparkrun.core.features import feature_gate_enabled
@@ -168,6 +170,25 @@ class K8sExecutor(Executor):
             logger.debug("No managed kubectl available; K8sExecutor will use bare 'kubectl'.")
             return
         self.config.kubectl_path = str(binary.path)
+
+    def resolve_target(self, *, dry_run=False) -> ExecutorTarget:
+        from .orchestration.context import _pin_client_target
+
+        client = self._client()
+        # Previews do not require a configured local kubectl. Real plans pin
+        # current-context before it can influence identity or status queries.
+        if not dry_run:
+            _pin_client_target(client)
+        return ExecutorTarget(
+            self.executor_name,
+            {
+                "kubeconfig": client.kubeconfig,
+                "k8s_context": client.context,
+                "k8s_namespace": client.namespace,
+                "kubectl_path": self.config.kubectl_path,
+            },
+            destination_key=json.dumps([client.kubeconfig, client.context, client.namespace], separators=(",", ":")),
+        )
 
     def _client(self) -> KubectlClient:
         """Build a :class:`KubectlClient` from this executor's config."""

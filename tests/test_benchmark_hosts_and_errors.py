@@ -14,6 +14,8 @@ Two independent defects on the benchmark CLI paths:
 from __future__ import annotations
 
 from unittest.mock import patch
+import pytest
+from test_benchmark_startup_collection import bench_env as bench_env
 
 from click.testing import CliRunner
 
@@ -178,31 +180,12 @@ def test_benchmark_options_trust_defaults_to_false():
     assert BenchmarkOptions(recipe="r", trust=True).trust is True
 
 
-def test_execute_benchmark_forwards_trust_to_run_options():
-    """The ``BenchmarkOptions.trust`` -> ``RunOptions.trust`` hop.
+@pytest.mark.parametrize("trust", [False, True])
+def test_execute_benchmark_forwards_trust_to_run_options(bench_env, trust):
+    """Run the orchestration and inspect the actual launch's trust decision."""
+    from dataclasses import replace
+    from sparkrun.api import benchmark
 
-    ``RunOptions.trust`` is the field ``resolve_recipe_trust`` consults, and it
-    was previously hardcoded to ``None`` — so no flag on any benchmark command
-    could ever have reached it.  Asserted against the parsed AST rather than a
-    live call: every test harness for this module mocks ``_execute_benchmark``
-    out wholesale, and standing up enough cluster/recipe state to reach the
-    ``RunOptions`` construction would test the fixtures, not the wiring.
-    """
-    import ast
-    import inspect
-
-    import sparkrun.api._benchmark as mod
-
-    tree = ast.parse(inspect.getsource(mod))
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "RunOptions"
-    ]
-    assert calls, "no api.RunOptions(...) construction found in api._benchmark"
-    for call in calls:
-        trust_kw = next((kw for kw in call.keywords if kw.arg == "trust"), None)
-        assert trust_kw is not None, "RunOptions built without an explicit trust= argument"
-        assert isinstance(trust_kw.value, ast.Attribute) and trust_kw.value.attr == "trust", (
-            "RunOptions.trust must come from the caller's options, not a literal"
-        )
+    env = bench_env
+    assert benchmark(replace(env.options, trust=trust), sctx=env.sctx).success
+    assert env.run.call_args.args[0].trust is trust

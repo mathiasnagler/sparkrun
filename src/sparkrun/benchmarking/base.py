@@ -485,36 +485,6 @@ class BenchmarkExecution:
     container_image_sha: str | None = None
     container_image_sha_pinned: bool = False
 
-    @property
-    def output_csv(self):
-        return self.outputs.get("csv") if self.outputs else None
-
-    @output_csv.setter
-    def output_csv(self, value):
-        if self.outputs is None:
-            self.outputs = {}
-        self.outputs["csv"] = value
-
-    @property
-    def output_json(self):
-        return self.outputs.get("json") if self.outputs else None
-
-    @output_json.setter
-    def output_json(self, value):
-        if self.outputs is None:
-            self.outputs = {}
-        self.outputs["json"] = value
-
-    @property
-    def output_yaml(self):
-        return self.outputs.get("yaml") if self.outputs else None
-
-    @output_yaml.setter
-    def output_yaml(self, value):
-        if self.outputs is None:
-            self.outputs = {}
-        self.outputs["yaml"] = value
-
     def _launch_timing_meta(self) -> dict[str, Any]:
         """Launch-stage timing for ``metadata["timing"]``.
 

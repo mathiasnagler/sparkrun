@@ -55,3 +55,19 @@ def resolve_kube_target(
 
 
 __all__ = ["KubeTarget", "resolve_kube_target"]
+
+
+def _pin_client_target(client) -> None:
+    """Persist explicit context/path selection instead of mutable shell defaults."""
+    from sparkrun.api._errors import SparkrunError
+    from pathlib import Path
+
+    source = client.kubeconfig or os.environ.get("KUBECONFIG") or str(Path.home() / ".kube" / "config")
+    if os.pathsep in source:
+        raise SparkrunError("Native runs require a single kubeconfig file; select kubeconfig explicitly")
+    client.kubeconfig = str(Path(source).expanduser().resolve())
+    if not client.context:
+        result = client.run(["config", "current-context"], check=True)
+        client.context = result.stdout.strip()
+        if not client.context:
+            raise SparkrunError("Native runs require a Kubernetes context")

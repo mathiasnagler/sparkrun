@@ -1510,14 +1510,13 @@ def test_api_run_branches_to_k8s_when_flag_on(tmp_path, monkeypatch):
     """api.run routes to run_k8s only when executor=k8s AND api.run.k8s is on."""
     from sparkrun import api
     from sparkrun.core.recipe import Recipe
+    from sparkrun.core.cluster_manager import ClusterDefinition
 
     monkeypatch.setenv("SPARKRUN_FEATURE_API_RUN_K8S", "1")
     recipe = Recipe({"sparkrun_version": "2", "runtime": "vllm", "model": "M"})
 
     # Stub the heavy resolution pipeline so we reach the branch deterministically.
-    monkeypatch.setattr(
-        "sparkrun.api._resolve.resolve_cluster", lambda *a, **k: type("C", (), {"hosts": ["s0"], "user": None, "scheduler": None})()
-    )
+    monkeypatch.setattr("sparkrun.api._resolve.resolve_cluster", lambda *a, **k: ClusterDefinition(name="", hosts=["s0"]))
     monkeypatch.setattr("sparkrun.api._resolve.resolve_recipe", lambda *a, **k: recipe)
     monkeypatch.setattr("sparkrun.api._resolve.resolve_runtime", lambda *a, **k: _FakeRuntime())
     monkeypatch.setattr("sparkrun.api._hosts.resolve_effective_hosts", lambda *a, **k: (["s0"], True, [], None))

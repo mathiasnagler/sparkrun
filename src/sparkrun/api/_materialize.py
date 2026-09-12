@@ -339,7 +339,7 @@ def _resolved_executor_mounts(options: RunOptions, *, plan: RunPlan, runtime, sc
         cluster=plan.cluster,
         runtime=runtime,
         config=sctx.config,
-        cli_overrides=options.executor_overrides(),
+        cli_overrides={**options.executor_overrides(), **(plan.executor_target.overrides if plan.executor_target else {})},
         rootless=False,
         auto_user=False,
         host_hardware=plan.cluster.hardware_for(hosts[0]),

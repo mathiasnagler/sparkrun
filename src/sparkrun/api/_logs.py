@@ -110,6 +110,9 @@ def logs(
         cluster_def = resolve_cluster(cluster, hosts, sctx=sctx)
         prepare_transport(cluster_def)
         resolved_recipe = resolve_recipe(recipe, sctx=sctx)
+        from sparkrun.api._resolve import resolve_operation_target
+
+        cluster_def, _ = resolve_operation_target(recipe=resolved_recipe, cluster=cluster_def, sctx=sctx)
         target_hosts = list(cluster_def.hosts)
         cluster_id = discover_cluster_id_by_intent(
             generate_intent_id(resolved_recipe, overrides=overrides),

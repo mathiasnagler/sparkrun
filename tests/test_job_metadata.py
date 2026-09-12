@@ -326,9 +326,8 @@ def test_save_job_metadata_is_owner_only(tmp_path: Path, mock_recipe):
     assert stat.S_IMODE((tmp_path / "jobs").stat().st_mode) == 0o700
 
 
-def test_save_job_metadata_refuses_symlinked_target(tmp_path: Path, mock_recipe):
-    """S2: a pre-planted symlink at the metadata path is refused (O_NOFOLLOW),
-    so a secret-bearing write is never redirected through another user's link."""
+def test_save_job_metadata_replaces_symlink_without_writing_through_it(tmp_path: Path, mock_recipe):
+    """Atomic replacement never redirects a secret-bearing write through a link."""
     intent = "a" * INTENT_ID_LEN
     token = "e" * PLACEMENT_TOKEN_LEN
     cid = "sparkrun_%s_%s" % (intent, token)
@@ -338,8 +337,9 @@ def test_save_job_metadata_refuses_symlinked_target(tmp_path: Path, mock_recipe)
     victim.write_text("untouched")
     (jobs / ("%s_%s.yaml" % (intent, token))).symlink_to(victim)
 
-    with pytest.raises(OSError):
-        save_job_metadata(cid, mock_recipe, ["h1"], cache_dir=str(tmp_path))
+    save_job_metadata(cid, mock_recipe, ["h1"], cache_dir=str(tmp_path))
+    assert not (jobs / ("%s_%s.yaml" % (intent, token))).is_symlink()
+    assert load_job_metadata(cid, cache_dir=str(tmp_path))["hosts"] == ["h1"]
     assert victim.read_text() == "untouched"  # write was not followed through
 
 
@@ -829,3 +829,19 @@ def test_save_job_metadata_records_owner_only_when_given(tmp_path: Path, mock_re
     unowned = _make_cluster_id("e", "4")
     save_job_metadata(unowned, mock_recipe, ["host-a"], cache_dir=str(tmp_path))
     assert "owner" not in load_job_metadata(unowned, cache_dir=str(tmp_path))
+
+
+@pytest.mark.parametrize("failure", ["serialize", "replace"])
+def test_metadata_update_failure_keeps_previous_record(tmp_path, mock_recipe, monkeypatch, failure):
+    cid = generate_cluster_id("a" * INTENT_ID_LEN, "b" * PLACEMENT_TOKEN_LEN)
+    save_job_metadata(cid, mock_recipe, ["old-host"], cache_dir=str(tmp_path))
+    before = next((tmp_path / "jobs").glob("*.yaml")).read_bytes()
+
+    def fail(*args, **kwargs):
+        raise OSError("interrupted metadata write")
+
+    monkeypatch.setattr("yaml.safe_dump" if failure == "serialize" else "os.replace", fail)
+    with pytest.raises(OSError, match="interrupted"):
+        save_job_metadata(cid, mock_recipe, ["new-host"], cache_dir=str(tmp_path))
+    assert next((tmp_path / "jobs").glob("*.yaml")).read_bytes() == before
+    assert len(list((tmp_path / "jobs").iterdir())) == 1

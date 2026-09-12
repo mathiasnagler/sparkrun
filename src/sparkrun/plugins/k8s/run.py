@@ -84,27 +84,8 @@ def run_k8s(
         rootless=not options.rootful,
         auto_user=not options.rootful,
     )
-    exec_cfg = executor.config
     client = executor._client()
-    if not options.dry_run:
-        _pin_client_target(client)
-        exec_cfg.kubeconfig, exec_cfg.k8s_context = client.kubeconfig, client.context
     namespace = client.namespace
-
-    if options.ensure:
-        from sparkrun.api._intent import find_running_intent
-        from sparkrun.api._run import _already_running_result
-        from sparkrun.orchestration.job_metadata import load_job_metadata
-        from dataclasses import replace
-
-        snapshot = executor.query_status(list(plan.candidate_hosts))
-        if snapshot.errors:
-            raise SparkrunError("Cannot check existing native workloads: %s" % snapshot.errors)
-        match = find_running_intent(plan.intent_id, plan.candidate_hosts, status=snapshot)
-        if match is not None:
-            result = _already_running_result(match, plan=plan, options=options, started_at=started_at, sctx=sctx)
-            saved = load_job_metadata(match.cluster_id, cache_dir=str(sctx.config.cache_dir)) or {}
-            return replace(result, executor="k8s", recipe_fingerprint=saved.get("recipe_fingerprint", ""))
 
     model = _resolve_single_gpu_class(client)
 
@@ -181,22 +162,6 @@ def run_k8s(
         serve_port=serve_port,
         metadata=metadata,
     )
-
-
-def _pin_client_target(client) -> None:
-    """Persist explicit context/path selection instead of mutable shell defaults."""
-    import os
-    from pathlib import Path
-
-    source = client.kubeconfig or os.environ.get("KUBECONFIG") or str(Path.home() / ".kube" / "config")
-    if os.pathsep in source:
-        raise SparkrunError("Native runs require a single kubeconfig file; select kubeconfig explicitly")
-    client.kubeconfig = str(Path(source).expanduser().resolve())
-    if not client.context:
-        result = client.run(["config", "current-context"], check=True)
-        client.context = result.stdout.strip()
-        if not client.context:
-            raise SparkrunError("Native runs require a Kubernetes context")
 
 
 def _resolve_single_gpu_class(client) -> str:

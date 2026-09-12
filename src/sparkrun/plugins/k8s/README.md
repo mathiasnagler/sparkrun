@@ -145,11 +145,18 @@ control-plane invocation scopes, not inferred GPU-node placements. Shared intent
 queries, ensure, replacement, bulk `stop_all()`, and benchmark cleanup consume the same identity.
 A failed control-plane query produces status errors, not an empty healthy result.
 
-Native launch pins one explicit kubeconfig path and context, using current-context
-when no context was supplied. Merged `KUBECONFIG` file lists must be reduced to
+Real planning pins one explicit canonical kubeconfig path and context, using
+current-context when no context was supplied, before occupancy or ensure queries.
+The destination (path, context, namespace) contributes to deterministic workload
+identity, so otherwise identical jobs in different destinations can be stopped
+independently. Changes to the kubectl binary do not change that identity.
+Dry-run previews may leave current-context unresolved when it was not supplied. Merged `KUBECONFIG` file lists must be reduced to
 one explicitly selected file. Changing credentials inside that selected file is
 still possible. Launch remains submission-only; it does not create an externally
-reachable inference endpoint or assert server readiness.
+reachable inference endpoint or assert server readiness. Benchmarking (including
+skip-run and pending-task resume) rejects this executor before submission or
+endpoint probing. Completed-artifact processing and publication-only resume-by-ID
+do not need a live endpoint.
 
 Use the plugin log API with the returned `k8s_jobset` reference. Common `api.logs()`
 rejects recorded native resources with a diagnostic rather than guessing child

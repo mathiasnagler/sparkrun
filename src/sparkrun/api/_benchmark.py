@@ -295,6 +295,26 @@ def _validated_benchmark_options(options: BenchmarkOptions) -> BenchmarkOptions:
     return dataclasses.replace(options, **values)
 
 
+def _require_host_endpoint(*, recipe, cluster, sctx, executor_overrides=None):
+    """Reject control-plane-only executors before launch or endpoint probing."""
+    from sparkrun.orchestration.executor import get_executor, resolve_executor_name
+    from sparkrun.core.bootstrap import get_runtime
+
+    name = resolve_executor_name(
+        recipe=recipe,
+        runtime=get_runtime(recipe.runtime, sctx.variables),
+        cluster=cluster,
+        cli_overrides=executor_overrides,
+        config=sctx.config,
+        v=sctx.variables,
+    )
+    if not get_executor(name, sctx.variables).supports_host_endpoint:
+        raise BenchmarkFailed(
+            "Executor %r does not provide a reachable inference endpoint for benchmarking; "
+            "control-plane hosts cannot be used as serving endpoints." % name
+        )
+
+
 def _check_measurement_prerequisites(fw, emitter: _ProgressEmitter) -> None:
     missing = fw.check_prerequisites()
     if missing:
@@ -329,7 +349,7 @@ def _execute_benchmark(
         KeyboardInterrupt: Re-raised after state is preserved (Ctrl+C).
     """
     import sparkrun.api as api
-    from sparkrun.benchmarking.base import startup_timing_metadata, BenchmarkExecution as _InternalBenchmarkResult
+    from sparkrun.benchmarking.base import startup_timing_metadata, BenchmarkExecution
     from sparkrun.core.benchmark_profiles import BenchmarkSpec
     from sparkrun.core.bootstrap import get_runtime, get_benchmarking_framework
     from sparkrun.utils import is_local_host
@@ -557,7 +577,14 @@ def _execute_benchmark(
         cluster_cfg = resolve_cluster(options.cluster, options.hosts or None, sctx=sctx, config=config)
     except api.HostsUnreachable as e:
         raise BenchmarkFailed("Error: %s" % e, exit_code=1) from e
+    _require_host_endpoint(recipe=recipe, cluster=cluster_cfg, sctx=sctx)
     if skip_run:
+        # Reuse must observe the same recipe/cluster target precedence as run.
+        from sparkrun.api._resolve import resolve_operation_target
+
+        cluster_cfg, _ = resolve_operation_target(
+            api.RunOptions(recipe=recipe, dry_run=dry_run), recipe=recipe, runtime=runtime, cluster=cluster_cfg, sctx=sctx
+        )
         prepare_transport(cluster_cfg, dry_run=dry_run)
     host_list = list(cluster_cfg.hosts)
     if not host_list:
@@ -680,7 +707,7 @@ def _execute_benchmark(
     # -----------------------------------------------------------------------
     from sparkrun.core.progress import PROGRESS as _PROGRESS_LEVEL
 
-    bench_result = _InternalBenchmarkResult(recipe_name=recipe_name)
+    bench_result = BenchmarkExecution(recipe_name=recipe_name)
     bench_result.framework = fw
     bench_result.framework_name = fw.framework_name
     bench_result.category = category or fw.primary_category
@@ -865,7 +892,9 @@ def _execute_benchmark(
                 # artifact is self-describing: ``timing`` covers this invocation,
                 # ``measured_at`` covers the data (issue #267).
                 bench_result.resumed = True
-                bench_result.measured_at = _restore_measurement_time(existing_state)
+                context = _restore_measurement_context(existing_state, category=bench_result.category)
+                bench_result.category = context["category"]
+                bench_result.measured_at = context["measured_at"]
                 # Backfill on legacy state that predates the field, so the next
                 # session can answer the host question this one had to assume.
                 if not state.host_list:
@@ -893,6 +922,7 @@ def _execute_benchmark(
                 from copy import deepcopy
 
                 state.extras.update(deepcopy(options.state_extras))
+                state.extras["benchmark_category"] = bench_result.category
 
             from sparkrun.benchmarking._specification import measurement_specification, restore_measurement_specification
 
@@ -1132,6 +1162,10 @@ def _execute_benchmark(
         logger.log(_PROGRESS_LEVEL, "Step 2/3: Running benchmark (%s)...", fw.framework_name)
 
         bench_result.start_time = datetime.now(tz=timezone.utc)
+        if state is not None and not dry_run:
+            state.begin_measurement(bench_result.category, bench_result.start_time.isoformat())
+            bench_result.measured_at = state.extras["measurement_started_at"]
+            state.save(cache_dir)
         integrations.checkpoint()
 
         est_tests = fw.estimate_test_count(bench_args)
@@ -1398,15 +1432,18 @@ def _complete_integrations(integrations) -> None:
         integrations.complete()
 
 
-def _restore_measurement_time(state):
-    """Pin one legacy fallback before a hook/save can advance updated_at."""
-    if not state.completed_indices:
-        return None
-    fallback = state.updated_at or state.created_at or datetime.now(timezone.utc).isoformat()
-    started = state.extras.setdefault("measurement_started_at", fallback)
-    if state.is_complete(len(state.schedule)):
-        state.extras.setdefault("measurement_completed_at", fallback)
-    return started
+def _restore_measurement_context(state, *, category=""):
+    """Restore one measurement context; pin inference only for legacy records."""
+    if state.completed_indices and not state.extras.get("measurement_context_version"):
+        fallback = state.updated_at or state.created_at or datetime.now(timezone.utc).isoformat()
+        state.extras.setdefault("measurement_started_at", fallback)
+        if state.is_complete(len(state.schedule)):
+            state.extras.setdefault("measurement_completed_at", fallback)
+    return {
+        "category": state.extras.get("benchmark_category") or category,
+        "measured_at": state.extras.get("measurement_started_at"),
+        "measurement_completed_at": state.extras.get("measurement_completed_at"),
+    }
 
 
 @contextlib.contextmanager
@@ -1701,7 +1738,6 @@ def _saved_execution(state, cache_dir):
     return BenchmarkExecution(
         benchmark_id=state.benchmark_id,
         framework_name=state.framework,
-        category=state.extras.get("benchmark_category", ""),
         host_list=state.host_list,
         outputs=state.extras.get("benchmark_outputs", {}),
         container_image=state.extras.get("container_image_sha") or state.extras.get("container_image"),
@@ -1715,8 +1751,7 @@ def _saved_execution(state, cache_dir):
         profile=state.profile,
         benchmark_args=state.base_args,
         resumed=True,
-        measured_at=_restore_measurement_time(state),
-        measurement_completed_at=state.extras.get("measurement_completed_at"),
+        **_restore_measurement_context(state),
     )
 
 
@@ -1869,6 +1904,15 @@ def _resume_locked(
     if processing_only:
         meta = load_job_metadata(state.cluster_id, cache_dir=cache_dir)
         restore_measurement_specification(state, meta, config=config)
+    _require_host_endpoint(
+        recipe=recipe,
+        cluster=None,
+        sctx=sctx,
+        executor_overrides={
+            **((meta or {}).get("executor_config") or {}),
+            **({"executor": meta["executor"]} if (meta or {}).get("executor") else {}),
+        },
+    )
     _check_measurement_prerequisites(fw, emitter)
 
     effective_timeout = timeout if timeout is not None else (state.timeout or DEFAULT_BENCHMARK_TIMEOUT)
@@ -1947,6 +1991,9 @@ def _resume_locked(
 
     title = _benchmark_title(recipe.name, state.profile)
 
+    state.begin_measurement(result.category, datetime.now(timezone.utc).isoformat())
+    result.measured_at = state.extras["measurement_started_at"]
+    state.save(cache_dir)
     try:
         with emitter.schedule_progress(total_tasks=len(tasks), benchmark_id=benchmark_id, fw=fw, title=title) as pui:
             sched_result = run_schedule(

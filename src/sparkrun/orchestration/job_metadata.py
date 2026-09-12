@@ -416,15 +416,18 @@ def generate_placement_token() -> str:
     return secrets.token_hex(PLACEMENT_TOKEN_BYTES)
 
 
-def derive_placement_token_from_hosts(hosts: "list[str] | tuple[str, ...]") -> str:
+def derive_placement_token_from_hosts(hosts: "list[str] | tuple[str, ...]", *, destination: dict | None = None) -> str:
     """Deterministic placement_token derived from a host set.
 
     Used by lookup-style call sites (status / stop / logs / ensure)
     that need a stable cluster_id from a ``(recipe, hosts)`` pair
     without consulting a launcher.  Hosts are sorted before hashing so
-    ordering does not affect the result.
+    ordering does not affect the result. Provider planners also pass a normalized
+    destination scope; omitting it preserves existing host-only identifiers.
     """
     host_key = "\0".join(sorted(str(h) for h in hosts))
+    if destination:
+        host_key += "\0destination=" + json.dumps(destination, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(host_key.encode()).hexdigest()[:PLACEMENT_TOKEN_LEN]
 
 
@@ -434,10 +437,10 @@ def derive_cluster_id(recipe: "Recipe", hosts: "list[str] | tuple[str, ...]", ov
     Convenience for lookup paths: composes :func:`generate_intent_id`
     with :func:`derive_placement_token_from_hosts` so callers that need
     the "same recipe + hosts → same cluster_id" lookup semantics don't
-    have to repeat the derivation themselves.  New launches via
-    :func:`sparkrun.api.run` use :func:`generate_placement_token`
-    instead, so derived and live cluster_ids occupy disjoint token
-    spaces and never collide.
+    have to repeat the derivation themselves. This helper covers host-only
+    deterministic placement. Native provider plans include their destination;
+    status-aware schedulers use random tokens. Use the returned run ID or live
+    intent discovery for those cases.
     """
     intent_id = generate_intent_id(recipe, overrides=overrides)
     placement_token = derive_placement_token_from_hosts(hosts)
@@ -738,26 +741,11 @@ def save_job_metadata(
         logger.debug("Failed to serialize recipe state for %s", cluster_id, exc_info=True)
 
     meta_path = jobs_dir / f"{digest}.yaml"
-    # ``meta`` may hold the resolved upstream ``api_key`` (and a full recipe
-    # state that can include env secrets), so create the file owner-only from
-    # the start — never a umask-default 0644 window where another local user
-    # could read the key.  O_TRUNC mirrors the previous "w" overwrite semantics.
-    # O_NOFOLLOW refuses to write through a symlink: if another local user
-    # pre-planted ``<digest>.yaml`` as a link to a file they can read, the open
-    # fails (ELOOP) rather than leaking the key through the link's target.
-    # (open_private_write applies it only where it exists — naming it directly
-    # is an AttributeError on a Windows control node, which meant no job
-    # metadata was written there at all.)
-    fd = open_private_write(meta_path)
-    with os.fdopen(fd, "w") as f:
-        yaml.safe_dump(meta, f, default_flow_style=False)
-    # If the file pre-existed as a regular file with looser perms, O_CREAT won't
-    # re-chmod it; tighten explicitly (best-effort).  O_NOFOLLOW above already
-    # guaranteed the fd is not a symlink, so this chmod can't be redirected.
-    try:
-        os.chmod(meta_path, 0o600)
-    except OSError:
-        logger.debug("Could not chmod 0600 %s", meta_path, exc_info=True)
+    # Serialize first and atomically replace the owner-only record. A failed
+    # serialization/write must leave the previous authoritative record intact.
+    from sparkrun.utils.fs import atomic_private_write
+
+    atomic_private_write(meta_path, yaml.safe_dump(meta, default_flow_style=False))
     logger.debug("Saved job metadata to %s", meta_path)
 
 

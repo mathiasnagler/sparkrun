@@ -630,7 +630,21 @@ def run(
     # is configured.  Hosts are the full candidate list — a deployment that
     # landed on hosts this launch wouldn't pick still counts as running.
     if ensure:
+        from dataclasses import replace
+        from sparkrun.api._resolve import resolve_operation_target, resolve_cluster
         from sparkrun.orchestration.job_metadata import generate_intent_id
+
+        try:
+            cluster_def, target = resolve_operation_target(
+                run_options,
+                recipe=recipe,
+                runtime=runtime,
+                cluster=run_options.cluster or resolve_cluster(None, run_options.hosts, sctx=sctx, config=config),
+                sctx=sctx,
+            )
+        except (ValueError, api.SparkrunError) as error:
+            raise click.ClickException(str(error)) from error
+        run_options = replace(run_options, cluster=cluster_def, executor_config={**run_options.executor_overrides(), **target.overrides})
 
         _match = api.find_running_intent(
             generate_intent_id(recipe, overrides),

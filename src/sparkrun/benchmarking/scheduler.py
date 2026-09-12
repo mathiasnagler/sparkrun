@@ -236,7 +236,7 @@ def run_schedule(
             progress_ui.log("Found %d gap(s); re-queueing" % len(gaps))
             for gap_task in gaps:
                 if gap_task.index in state.completed_indices:
-                    state.completed_indices.remove(gap_task.index)
+                    state.mark_failed(gap_task.index, "missing measurement coverage")
             state.save(cache_dir)
             # Re-enter the loop for gap tasks.
             aborted, interrupted = _do_loop()

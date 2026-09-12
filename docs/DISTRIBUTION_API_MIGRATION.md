@@ -358,3 +358,32 @@ security policies when adding its rootless defaults.
 `vllm-distributed` no longer defines `OMP_NUM_THREADS=4`. The image/runtime can
 choose its own thread count. Explicit `recipe.env.OMP_NUM_THREADS` values still
 pass through unchanged, including clustered runs.
+
+## Destination and recovery contracts
+
+`RunPlan.executor_target` now records an `ExecutorTarget` (exported from
+`sparkrun.orchestration.executor`). Native plugins derive destination identity
+and snapshot connection settings through `Executor.resolve_target()`. Planning,
+ensure, and replacement use the same target as launch. Native Kubernetes IDs
+now distinguish namespaces, contexts, and canonical kubeconfig paths; use the
+ID returned by `run()` for durable lifecycle calls. Existing saved native IDs
+remain stoppable using their recorded targets. Controller identity remains one
+per configuration directory, with no new configurable IDs.
+
+Native Kubernetes does not expose a serving endpoint, so new benchmarks,
+skip-run, and pending-task resumes reject it before using control-plane hosts as
+an inference URL. Finished-artifact recovery and publication-only resume-by-ID
+remain supported. Control-plane-only providers should set
+`Executor.supports_host_endpoint = False` until they can supply a usable endpoint.
+
+Initial job-metadata persistence is now required before submission. Preparation
+and replacement-callback failures preserve the active record; writes are atomic.
+A failed initial write aborts launch. Submission failure after replacement can
+still leave the old workload stopped; the recorded new target supports recovery.
+
+Benchmark recovery preserves the selected category and original measurement
+interval through partial execution, consolidation, decoding, and final commit
+failures. Legacy records retain their documented timestamp fallback. The private
+`BenchmarkExecution` record uses `outputs` exclusively; the unused
+`output_csv`/`output_json`/`output_yaml` aliases are removed. Public
+`BenchmarkResult` is unchanged.

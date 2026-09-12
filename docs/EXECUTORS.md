@@ -433,3 +433,37 @@ local inputs. The shared runtime launcher calls it before replacement, including
 previews; it must not start workloads or mutate remote state. Direct command
 and script generation also works without prior preparation. Generated Docker
 commands require Bash, as do the existing host launch scripts.
+
+## Operation targets and endpoint support
+
+`resolve_executor_target()` returns an `ExecutorTarget` before placement and
+reuse queries. Its `executor` selects the provider, `config` is a read-only
+snapshot of destination and connection settings, and `destination_key` is the
+provider-derived destination identity. `overrides` returns a detached mapping
+for the highest-priority layer of `resolve_executor()`. Hardware and resource
+settings continue to resolve after placement.
+
+Provider executors override `resolve_target(dry_run=...)`. The hook may read
+local configuration but must not start workloads or mutate remote state. Include
+connection settings needed by discovery as well as launch. Exclude credentials
+and launch policy from the destination key: changing a kubectl executable, for
+example, must not create a different workload identity.
+
+`RunPlan.executor_target` carries this snapshot. The plan's cluster is scoped to
+it for occupancy, ensure, and replacement. Native handlers receive options with
+the same target at caller precedence; they must not choose a new target. Native
+Kubernetes keys include the canonical kubeconfig path, context, and namespace.
+Separate destinations have separate deterministic workload IDs and saved lifecycle
+records. Host-only executors retain their existing deterministic IDs.
+
+A destination key does not change application/controller identity: one canonical
+configuration directory still has one controller. It also does not describe a
+reachable inference endpoint. Executors whose hosts refer only to a control plane
+set `supports_host_endpoint = False`; benchmarking then rejects that executor
+before submission or endpoint probing. Native Kubernetes currently does so.
+
+The shared launcher writes the complete resolved executor and IP mappings only
+after preparation and its replacement callback succeed, immediately before
+submission. Writes atomically replace an owner-only file. An initial persistence
+failure aborts submission; an interrupted submission retains the saved record for
+recovery. Later version-info updates preserve the same target and IP mappings.

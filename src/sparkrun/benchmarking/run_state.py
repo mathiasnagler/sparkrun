@@ -471,10 +471,21 @@ class BenchmarkRunState:
     # Progress tracking
     # -------------------------------------------------------------------------
 
+    def begin_measurement(self, category: str, started_at: str) -> None:
+        """Persistable context established before executing any measurement task.
+
+        Partial recovery retains the original category and first request time.
+        Completion is updated by task progress before consolidation can fail.
+        """
+        self.extras.setdefault("benchmark_category", category)
+        self.extras.setdefault("measurement_started_at", started_at)
+        self.extras["measurement_context_version"] = 1
+
     def mark_started(self, idx: int, pid: int | None = None) -> None:
         """Record that task *idx* has started (optionally with process *pid*)."""
         if idx in self.completed_indices:
             self.completed_indices.remove(idx)
+        self.extras.pop("measurement_completed_at", None)
         logger.debug("Benchmark %s: task %d started (pid=%s)", self.benchmark_id, idx, pid)
 
     def mark_completed(self, idx: int) -> None:
@@ -487,6 +498,8 @@ class BenchmarkRunState:
             self.completed_indices.append(idx)
         if idx in self.failed_indices:
             self.failed_indices.remove(idx)
+        if self.is_complete(len(self.schedule)):
+            self.extras.setdefault("measurement_completed_at", _now_iso())
 
     def mark_failed(self, idx: int, error: str | None = None) -> None:
         """Record task *idx* as failed for this session."""
@@ -494,6 +507,7 @@ class BenchmarkRunState:
             self.completed_indices.remove(idx)
         if idx not in self.failed_indices:
             self.failed_indices.append(idx)
+        self.extras.pop("measurement_completed_at", None)
         logger.debug("Benchmark %s: task %d failed — %s", self.benchmark_id, idx, error or "no detail")
 
     def mark_session_started(self) -> None:

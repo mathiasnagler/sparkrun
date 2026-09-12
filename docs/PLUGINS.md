@@ -558,6 +558,15 @@ An executor may set `config_class` to an `ExecutorConfig` subclass with a
 `from_chain()` implementation for its own fields. The shared resolution chain
 selects this class instead of keeping plugin-specific fields in core.
 
+Executors with destinations beyond the host list implement `resolve_target()`
+and return `ExecutorTarget` from `sparkrun.orchestration.executor`. Its derived
+`destination_key` participates in deterministic workload placement identity;
+its read-only `config` carries destination and connection settings. Core retains
+this as `RunPlan.executor_target` and uses the scoped cluster for occupancy,
+early ensure, and replacement. `options.executor_overrides()` passed to handlers
+already includes the pinned target. Do not re-read current-context or other
+mutable destination defaults. See [executor targets](EXECUTORS.md#operation-targets-and-endpoint-support).
+
 Plugins with a native control-plane launch may register a
 `RunHandler(executor, callback, feature_flag=...)` through
 `sparkrun.core.run_handlers.register_run_handler()`. The typed callback receives
@@ -601,8 +610,12 @@ reference cannot fall back silently. Implement `query_status()` with the same
 portable IDs so shared discovery, ensure, and replacement see the workloads.
 Common `api.logs()` currently rejects recorded native resources; provide a plugin
 log API rather than addressing controller children with container-style names.
-Benchmarking rejects nonzero real
-launch status before endpoint waits, checkpoint hooks, or measurement.
+Executors whose hosts represent a control plane rather than a serving endpoint
+set `supports_host_endpoint = False`. Benchmarking rejects them before launch,
+including skip-run discovery and resumes that need more measurements. Completed
+artifact processing and publication-only resume-by-ID remain available without
+an inference endpoint. Benchmarking also rejects nonzero real launch status
+before endpoint waits, checkpoint hooks, or measurement.
 The Kubernetes plugin uses the same
 executor configuration chain for its target settings. `options.executor_overrides()`
 returns the caller layer for `resolve_executor()`; do not independently merge the

@@ -177,8 +177,9 @@ boundary; there may not yet be a validated measurement to attach. Callbacks
 should not use exceptions to communicate ordinary decisions.
 
 Measurement timestamps are distinct from state bookkeeping. New runs record
-`measurement_started_at` and `measurement_completed_at` in state extras;
-integration snapshots expose them as `measured_at` and `completed_at`. Publication
+the effective `benchmark_category` and `measurement_started_at` before task
+execution, then `measurement_completed_at` when the last required task succeeds,
+before consolidation or decoding. These live in state extras; integration snapshots expose them as `measured_at` and `completed_at`. Publication
 retries preserve this interval while `updated_at` continues advancing. A resume
 that measures remaining tasks retains the start of the earlier data and records
 the completion of the combined measurement. Legacy states lacking the interval
@@ -316,10 +317,24 @@ JSON strings remain strings even when named `recipe_yaml` or
 Generic credential-field/command redaction still applies.
 Core reserves `framework_version`, `benchmark_integrations`, `benchmark_category`,
 `benchmark_outputs`, `measurement_complete`, `measurement_started_at`,
-`measurement_completed_at`, `container_image`, `container_image_sha`,
+`measurement_completed_at`, `measurement_context_version`, `container_image`, `container_image_sha`,
 `container_image_longterm_ref`, and `container_image_longterm_pinned`.
 Do not seed or overwrite these keys. Integration-specific persistence belongs
 in `context.data`; older Arena metadata is read only for migration compatibility.
 
 See [plugin lifecycle contracts](PLUGINS.md#benchmark-integrations) and
 [migration notes](DISTRIBUTION_API_MIGRATION.md) for plugin and caller changes.
+
+## Executor endpoint requirements
+
+Benchmarking currently requires launch hosts to identify a reachable serving
+endpoint. A provider that only submits control-plane resources declares
+`Executor.supports_host_endpoint = False`. Native Kubernetes benchmarking is
+therefore rejected before submission, including `skip_run=True`, rather than
+constructing a controller-local URL. Resuming pending native tasks is rejected
+before endpoint discovery or measurement commands. Resume-by-ID can still finish
+accepted artifacts or retry publication without a live inference endpoint.
+
+The private orchestration record is `BenchmarkExecution`, with one `outputs`
+mapping. Its former `output_csv`, `output_json`, and `output_yaml` properties
+have been removed; public `BenchmarkResult.outputs` is unchanged.

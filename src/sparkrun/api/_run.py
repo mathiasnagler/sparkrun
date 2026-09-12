@@ -120,6 +120,10 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
     recipe = resolve_recipe(options.recipe, sctx=sctx, overrides=options.overrides)
     hosts = list(cluster_def.hosts)
     runtime = resolve_runtime(recipe, sctx=sctx)
+    from sparkrun.api._resolve import resolve_operation_target
+
+    with _launch_errors("executor target resolution"):
+        cluster_def, executor_target = resolve_operation_target(options, recipe=recipe, runtime=runtime, cluster=cluster_def, sctx=sctx)
     from sparkrun.core.readiness import validate_readiness_policy
 
     try:
@@ -204,7 +208,12 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
         # fall back to a random token — it can never collide.
         deterministic_placement = False
     if deterministic_placement:
-        placement_token = derive_placement_token_from_hosts(hosts)
+        placement_token = derive_placement_token_from_hosts(
+            hosts,
+            destination={"executor": executor_target.executor, "key": executor_target.destination_key}
+            if executor_target.destination_key
+            else None,
+        )
     else:
         placement_token = generate_placement_token()
     cluster_id_for_launch = options.cluster_id_override or generate_cluster_id(intent_id, placement_token)
@@ -237,6 +246,7 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
         placement_token=placement_token,
         cluster_id=cluster_id_for_launch,
         recipe_fingerprint=recipe_fingerprint,
+        executor_target=executor_target,
     )
 
 
@@ -292,6 +302,12 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     except ValueError as error:
         raise SparkrunError(str(error)) from error
     cluster_def = plan.cluster
+    if plan.executor_target is not None:
+        options = replace(
+            options,
+            executor=plan.executor_target.executor,
+            executor_config={**options.executor_overrides(), **plan.executor_target.overrides},
+        )
     sctx = sctx.for_cluster(cluster_def)
     config = sctx.config
     hosts = list(plan.candidate_hosts)
@@ -644,6 +660,9 @@ def _already_running_result(match, *, plan: RunPlan, options: RunOptions, starte
     except ValueError:
         matched_token = ""
 
+    from sparkrun.orchestration.job_metadata import load_job_metadata
+
+    saved = load_job_metadata(match.cluster_id, cache_dir=str(sctx.config.cache_dir)) or {}
     return RunResult(
         cluster_id=match.cluster_id,
         intent_id=match.intent_id,
@@ -652,7 +671,8 @@ def _already_running_result(match, *, plan: RunPlan, options: RunOptions, starte
         placement=None,
         scheduler=plan.scheduler or _resolve_scheduler_name(plan.scheduler_selector, sctx),
         runtime=match.runtime or plan.runtime.runtime_name,
-        executor="",
+        executor=saved.get("executor", ""),
+        recipe_fingerprint=saved.get("recipe_fingerprint", ""),
         started_at=started_at,
         dry_run=options.dry_run,
         is_solo=len(match.hosts) <= 1,

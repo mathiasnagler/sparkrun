@@ -69,6 +69,9 @@ def stop(
             raise SparkrunError("api.stop requires cluster_id or recipe+hosts")
         cluster_def = resolve_cluster(cluster, hosts, sctx=sctx)
         resolved_recipe = resolve_recipe(recipe, sctx=sctx)
+        from sparkrun.api._resolve import resolve_operation_target
+
+        cluster_def, _ = resolve_operation_target(recipe=resolved_recipe, cluster=cluster_def, sctx=sctx)
         intent_id = generate_intent_id(resolved_recipe, overrides=overrides)
         # Default cache_dir from sctx.config when not explicitly passed.
         if cache_dir is None and sctx is not None:
@@ -97,7 +100,8 @@ def stop(
         # against the *job's*, which the metadata may name even when this
         # invocation didn't (see ``resolve_cluster_for_job``).  Hosts stay as
         # resolved above — only the connection identity is recovered.
-        cluster_def = resolve_cluster_for_job(cluster, target_hosts, meta=meta, sctx=sctx)
+        if meta:
+            cluster_def = resolve_cluster_for_job(cluster, target_hosts, meta=meta, sctx=sctx)
     else:
         # cluster_id given — load metadata to recover hosts/executor.
         if cache_dir is None and sctx is not None:
