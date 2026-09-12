@@ -10,6 +10,7 @@ from __future__ import annotations
 from sparkrun.core.registration import enlist_registry_state, register_unique
 
 from copy import deepcopy
+from sparkrun.benchmarking.metadata import public_benchmark_data, public_recipe_text
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, TYPE_CHECKING, Protocol, Mapping
@@ -88,7 +89,7 @@ def _measurement_snapshot(execution: BenchmarkExecution) -> BenchmarkMeasurement
         launch = execution.launch_result
         recipe = launch.recipe if launch else execution.recipe
         overrides = launch.overrides if launch else execution.overrides
-        recipe_yaml = recipe.export(overrides=overrides, container_image=provenance["recipe"]["container"])
+        recipe_yaml = public_recipe_text(recipe.export(overrides=overrides, container_image=provenance["recipe"]["container"]))
     return BenchmarkMeasurement(
         benchmark_id=execution.benchmark_id,
         success=execution.success,
@@ -101,7 +102,7 @@ def _measurement_snapshot(execution: BenchmarkExecution) -> BenchmarkMeasurement
         cluster_id=execution.cluster_id,
         host_list=tuple(execution.host_list or ()),
         container_image=execution.container_image,
-        benchmark_args=freeze(normalize_data(execution.benchmark_args or {}, path="benchmark_args")),
+        benchmark_args=freeze(normalize_data(public_benchmark_data(execution.benchmark_args or {}), path="benchmark_args")),
         resumed=execution.resumed,
         measured_at=execution.measured_at,
         completed_at=execution.measurement_completed_at,
@@ -254,6 +255,8 @@ class BenchmarkIntegrationSession:
 
     def bind(self, result: BenchmarkExecution, state: BenchmarkRunState | None = None, *, resumed=False) -> None:
         """Restore plugin data and bind the record before launching or measuring."""
+        if state is not None:
+            state.extras = public_benchmark_data(state.extras)
         self.state, self.result = state, result
         saved = state.extras.get(STATE_KEY, {}) if state is not None else {}
         for name, payload in saved.items():

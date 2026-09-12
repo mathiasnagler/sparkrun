@@ -339,6 +339,13 @@ These identifiers serve different purposes:
 | Benchmark framework | `llama-benchy` | Measurement implementation selected with `framework`. |
 | Benchmark integration | `arena` | Publication hooks selected with `BenchmarkOptions.integrations`. |
 
+Only `sparkrun.plugins` is consumed for installed plugin discovery. Core
+implementations are scanned from bundled packages. The unused per-kind package
+entry-point groups (`sparkrun.runtimes`, `sparkrun.benchmarking`,
+`sparkrun.builders`, and `sparkrun.executors`) were removed from host metadata in
+0.4.0; they are not alternate registration routes. Inventory includes bundled,
+directory, and installed modules, with selection/load/failure fields.
+
 ### Installing a benchmark framework
 
 The package entry point targets the module that exports the framework class:
@@ -402,6 +409,12 @@ combined accelerator/IB probes include selected providers, and failed installed
 plugin registration rolls back their probe registrations. See
 [MULTIPLATFORM.md](MULTIPLATFORM.md#plugin-owned-hardware-probes) for the contract.
 Plugin-specific devices and qualification tests belong to the integration repository.
+
+Framework task definitions contain measurement arguments only. The scheduler
+injects `args["api_key"]` into the detached dictionary passed to
+`build_benchmark_command()` at execution time. Frameworks must not depend on
+finding it in `build_task_list()`, persist it in result artifacts, or log it.
+Publication hooks receive credential-free argument and recipe projections.
 
 ## Benchmark integrations
 
@@ -585,6 +598,10 @@ uses the same boundary. `core.registration.registry_transaction(v)` is available
 for explicit transactions over enlisted containers and SAF state. Only completed
 registration is reported as loaded. A failed hook rolls back its contributions
 before optional-plugin error handling continues to independent plugins.
+Setup dependency graphs are checked before committing module registration.
+Same-module forward references are supported; dependencies on another module
+must already be registered. Unknown providers and cycles roll back the module
+instead of breaking all later setup planning. See [setup dependency policy](SETUP_STEPS.md).
 Nested mutable containers and registry imports during registration participate
 in rollback. Identical registrations are allowed; conflicting providers fail.
 Enlistment tracks the namespace entry, so deliberately replacing a container

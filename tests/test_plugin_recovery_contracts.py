@@ -187,3 +187,125 @@ def test_legacy_direct_module_may_omit_but_not_misdeclare_api(monkeypatch, decla
         module.SPARKRUN_PLUGIN_API_VERSION = True
     assert load_plugin_module(module, get_variables()) is (not declared)
     assert module.register.call_count == int(not declared)
+
+
+@pytest.mark.parametrize("source", ["directory", "bundled", "installed"])
+@pytest.mark.parametrize("invalid", ["missing", "cycle"])
+def test_invalid_setup_graph_rolls_back_before_plugin_is_reported_loaded(tmp_path, monkeypatch, clean_sys, source, invalid):
+    import importlib
+    from types import SimpleNamespace
+    from sparkrun.core.bootstrap import get_variables
+    from sparkrun.core.external_plugins import load_external_plugins, loaded_plugin_module
+    from sparkrun.core.in_tree_plugins import load_in_tree_plugins, IN_TREE_PLUGIN_FEATURES
+    from sparkrun.core.installed_plugins import (
+        load_installed_plugins,
+        installed_plugin_inventory,
+        require_integrations,
+        RequiredIntegrationError,
+    )
+    from sparkrun.core.application_profile import get_application_profile
+    from sparkrun.core.features import FeatureFlag, register_feature, get_feature
+    from sparkrun.core.setup_steps import all_setup_steps
+    from sparkrun.api.setup import run_setup_steps, SetupActionContext, run_setup_undo, SetupManifest
+    from test_setup_steps import state_context
+    from dataclasses import replace
+
+    v = get_variables()
+    package = tmp_path / "graph_plugins"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    dependency = "graph_bad" if invalid == "cycle" else "graph_missing"
+    (package / "graph_bad.py").write_text(
+        """
+from sparkrun.core.features import FeatureFlag, register_feature
+from sparkrun.core.setup_steps import SetupStep, register_setup_step
+SPARKRUN_PLUGIN_API_VERSION = 1
+def register(v):
+    register_feature(FeatureFlag("setup.steps.graph_bad", "bad", default=False))
+    register_setup_step(SetupStep("graph_bad", "bad", requires=(%r,), feature_flag="setup.steps.graph_bad"))
+"""
+        % dependency
+    )
+    (package / "graph_good.py").write_text("""
+SPARKRUN_PLUGIN_API_VERSION = 1
+def register(v):
+    v.set("GRAPH_GOOD_LOADED", True)
+""")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    if source == "directory":
+        assert load_external_plugins(v, paths=[package]) == ["graph_good"]
+        prefix = ""
+    elif source == "bundled":
+        gates = dict(IN_TREE_PLUGIN_FEATURES)
+        for name in ("graph_bad", "graph_good"):
+            flag = "test.gate_" + name
+            register_feature(FeatureFlag(flag, flag, default=True))
+            gates[name] = flag
+        monkeypatch.setattr("sparkrun.core.in_tree_plugins.IN_TREE_PLUGIN_FEATURES", gates)
+        assert load_in_tree_plugins(v, package="graph_plugins") == ["graph_good"]
+        prefix = "graph_plugins."
+    else:
+        monkeypatch.delenv("SPARKRUN_NO_INSTALLED_PLUGINS", raising=False)
+        monkeypatch.setattr("sparkrun.core.installed_plugins._attempted", set())
+        monkeypatch.setattr(
+            "sparkrun.core.installed_plugins.get_application_profile",
+            lambda: replace(get_application_profile(), required_integrations=("graph-bad",)),
+        )
+        eps = [
+            SimpleNamespace(
+                name=name.replace("_", "-"),
+                value="graph_plugins." + name,
+                dist=None,
+                load=lambda name=name: importlib.import_module("graph_plugins." + name),
+            )
+            for name in ("graph_bad", "graph_good")
+        ]
+        monkeypatch.setattr("sparkrun.core.installed_plugins.entry_points", lambda **kw: eps)
+        load_installed_plugins(v, config=SimpleNamespace(get=lambda *a: {"graph-bad": True, "graph-good": True}))
+        rows = installed_plugin_inventory()
+        assert not rows[0].loaded and rows[0].failure and rows[1].loaded
+        with pytest.raises(RequiredIntegrationError, match="graph-bad"):
+            require_integrations()
+        prefix = "graph_plugins."
+    assert loaded_plugin_module(prefix + "graph_bad") is None
+    assert get_feature("setup.steps.graph_bad") is None
+    assert "graph_bad" not in {step.key for step in all_setup_steps()}
+    assert v.get("GRAPH_GOOD_LOADED") is True
+    state, context = state_context()
+    assert (
+        run_setup_steps({state.host: state}, context, SetupActionContext("tester", dry_run=True), only_steps={"docker"}).steps["docker"]
+        == "ok"
+    )
+    empty = SetupManifest(1, "lab", "", "", "tester", [state.host])
+    assert run_setup_undo(empty, SetupActionContext("tester")).complete
+
+
+def test_setup_dependencies_allow_same_module_forward_references_and_loaded_providers(monkeypatch):
+    from sparkrun.core.bootstrap import get_variables
+    from sparkrun.core.external_plugins import load_plugin_module
+    from sparkrun.core.features import FeatureFlag, register_feature
+    from sparkrun.core.setup_steps import SetupStep, register_setup_step, all_setup_steps
+
+    v = get_variables()
+    provider = ModuleType("graph_provider")
+    consumer = ModuleType("graph_consumer")
+
+    def register_provider(v):
+        register_feature(FeatureFlag("setup.steps.graph_provider", "provider", default=False))
+        # Forward reference to another step in the same module is supported.
+        register_setup_step(SetupStep("graph_child", "child", requires=("graph_parent",), feature_flag="setup.steps.graph_provider"))
+        register_setup_step(SetupStep("graph_parent", "parent", requires=("docker",), feature_flag="setup.steps.graph_provider"))
+
+    def register_consumer(v):
+        register_feature(FeatureFlag("setup.steps.graph_consumer", "consumer", default=False))
+        register_setup_step(SetupStep("graph_consumer", "consumer", requires=("graph_child",), feature_flag="setup.steps.graph_consumer"))
+
+    provider.register = register_provider
+    consumer.register = register_consumer
+    # Unknown providers fail now; there is no deferred or automatic import.
+    with pytest.raises(ValueError, match="Unknown setup prerequisite"):
+        load_plugin_module(consumer, v, strict=True)
+    assert load_plugin_module(provider, v, strict=True)
+    assert load_plugin_module(consumer, v, strict=True)
+    names = [s.key for s in all_setup_steps()]
+    assert names.index("docker") < names.index("graph_parent") < names.index("graph_child") < names.index("graph_consumer")

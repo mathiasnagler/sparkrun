@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sparkrun.benchmarking.metadata import public_benchmark_data, model_metadata, public_recipe_text
+
 import hashlib
 import logging
 import math
@@ -132,7 +134,8 @@ class BenchmarkingPlugin(Plugin):
         Args:
             target_url: The inference endpoint URL (e.g. http://host:8000/v1).
             model: Model name for the --model flag.
-            args: Merged profile + CLI override args.
+            args: Detached measurement args, with ephemeral api_key when authenticated.
+                Do not persist or log the credential; task definitions omit it.
             result_file: Path where the framework should save results.
 
         Returns:
@@ -588,28 +591,10 @@ class BenchmarkExecution:
             except Exception:
                 logger.debug("Long-term image resolution failed", exc_info=True)
 
-        recipe_hash = hashlib.sha256(recipe.export(overrides=None).encode("utf-8")).hexdigest()
+        recipe_hash = hashlib.sha256(public_recipe_text(recipe.export(overrides=None)).encode("utf-8")).hexdigest()
 
         hf_model = parse_gguf_model_spec(recipe.model)[0]
-        model_meta: dict[str, Any] = {}
-        if recipe.metadata.get("model_dtype"):
-            model_meta["dtype"] = recipe.metadata["model_dtype"]
-        if recipe.model_revision:
-            model_meta["revision"] = recipe.model_revision
-        if recipe.metadata.get("model_params"):
-            model_meta["params"] = recipe.metadata["model_params"]
-        if recipe.metadata.get("num_layers"):
-            model_meta["num_layers"] = recipe.metadata["num_layers"]
-        if recipe.metadata.get("num_kv_heads"):
-            model_meta["num_kv_heads"] = recipe.metadata["num_kv_heads"]
-        if recipe.metadata.get("head_dim"):
-            model_meta["head_dim"] = recipe.metadata["head_dim"]
-        if recipe.metadata.get("quantization"):
-            model_meta["quantization"] = recipe.metadata["quantization"]
-        if recipe.metadata.get("quant_bits"):
-            model_meta["quant_bits"] = recipe.metadata["quant_bits"]
-        if recipe.metadata.get("kv_dtype"):
-            model_meta["kv_dtype"] = recipe.metadata["kv_dtype"]
+        model_meta = model_metadata(recipe)
 
         metadata = {
             "recipe": {
@@ -656,7 +641,7 @@ class BenchmarkExecution:
         except Exception:
             pass
 
-        return metadata
+        return public_benchmark_data(metadata)
 
 
 # Compatibility for existing framework consumers; new code names the execution record.
@@ -712,30 +697,12 @@ def export_results(
     """
     output_path = Path(output_path)
     # noinspection PyProtectedMember
-    recipe_text = recipe.export(path=None)
+    recipe_text = public_recipe_text(recipe.export(path=None))
     recipe_hash = hashlib.sha256(recipe_text.encode("utf-8")).hexdigest()
 
     # Build model metadata from recipe metadata (includes auto-detected
     # values written back by Recipe.estimate_vram).
-    model_meta: dict[str, Any] = {}
-    if recipe.metadata.get("model_dtype"):
-        model_meta["dtype"] = recipe.metadata["model_dtype"]
-    if recipe.model_revision:
-        model_meta["revision"] = recipe.model_revision
-    if recipe.metadata.get("model_params"):
-        model_meta["params"] = recipe.metadata["model_params"]
-    if recipe.metadata.get("num_layers"):
-        model_meta["num_layers"] = recipe.metadata["num_layers"]
-    if recipe.metadata.get("num_kv_heads"):
-        model_meta["num_kv_heads"] = recipe.metadata["num_kv_heads"]
-    if recipe.metadata.get("head_dim"):
-        model_meta["head_dim"] = recipe.metadata["head_dim"]
-    if recipe.metadata.get("quantization"):
-        model_meta["quantization"] = recipe.metadata["quantization"]
-    if recipe.metadata.get("quant_bits"):
-        model_meta["quant_bits"] = recipe.metadata["quant_bits"]
-    if recipe.metadata.get("kv_dtype"):
-        model_meta["kv_dtype"] = recipe.metadata["kv_dtype"]
+    model_meta = model_metadata(recipe)
 
     data = {
         "sparkrun_benchmark": {
@@ -776,7 +743,7 @@ def export_results(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False, indent=2)
+        yaml.dump(public_benchmark_data(data), f, default_flow_style=False, sort_keys=False, indent=2)
 
     logger.info("Results exported to %s", output_path)
     return output_path

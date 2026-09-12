@@ -21,7 +21,8 @@ Two things were silently dropped:
 
 Unit tests of ``prepare_benchmark_args`` cannot see this: they exercise the
 plugin in isolation and pass whether or not the flow ever uses the result.
-These assert on what the flow actually hands downstream.
+These assert on what the flow actually hands downstream. Authentication is now
+injected only into command construction; test_benchmark_auth_and_state covers it.
 """
 
 from __future__ import annotations
@@ -119,12 +120,12 @@ def test_served_model_name_reaches_the_scheduled_tasks(runner, bench_env):
     assert base_args.get("served_model_name") == "served-alias"
 
 
-def test_api_key_reaches_the_scheduled_tasks(runner, bench_env):
-    """A recipe-derived key was merged after the tasks were built, so never sent."""
+def test_api_key_stays_out_of_scheduled_task_definitions(runner, bench_env):
+    """Authentication is injected into execution, not persisted task inputs."""
     result, base_args = _spy_task_args(runner, bench_env)
 
     assert result.exit_code == 0, result.output
-    assert base_args.get("api_key") == "sk-from-recipe"
+    assert "api_key" not in base_args
 
 
 def test_the_rendered_command_carries_them(runner, bench_env):

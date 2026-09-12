@@ -1,18 +1,14 @@
 """Enumerate the plugin *modules* sparkrun knows about, loaded or not.
 
-The console-free source behind ``sparkrun setup plugins list``, and the
-inventory peer of :mod:`sparkrun.core.in_tree_plugins` /
-:mod:`sparkrun.core.external_plugins`: those two decide what to *load*, this
-one reports what exists.  Both enumerate through the loaders' own helpers
-(:func:`~sparkrun.core.in_tree_plugins.iter_in_tree_plugin_names`,
-:func:`~sparkrun.core.external_plugins.iter_plugin_module_names`) so a listing
-can never name a plugin the loader would skip, or omit one it would load — a
-catalog that disagrees with the loader is worse than none, because it is read
-as an answer.
+The console-free source behind ``sparkrun setup plugins list``. Bundled and
+directory enumeration use their loaders' discovery helpers; installed rows use
+the installed loader's metadata inventory. Listing does not import plugins or
+invent a separate discovery policy.
 
-**Scope is plugin modules**, i.e. exactly the set those two loaders govern:
+**Scope is plugin modules** from bundled, directory, and installed sources:
 in-tree subpackages of ``sparkrun.plugins`` and out-of-tree top-level modules
-under ``plugins.paths``.  Deliberately *not* every SAF extension — a runtime or
+under ``plugins.paths``, plus installed ``sparkrun.plugins`` entry points.
+Deliberately *not* every SAF extension — a runtime or
 an executor shipped in core has no version distinct from sparkrun's, and
 ``list-runtimes`` / ``list-executors`` already enumerate those.
 
@@ -22,20 +18,16 @@ safe with a plugin's gate off: the module stays unimported and its version is
 honestly reported as unknown rather than obtained by importing something the
 user has switched off.
 
-Version resolution, in order:
+Version resolution follows the source:
 
-1. ``module.__version__`` on the loaded module — the declared contract (see
-   ``docs/PLUGINS.md``).
-2. For **out-of-tree** plugins only, the version of the installed distribution
-   providing that top-level module.
-3. ``None`` — *unknown*, rendered as such and never guessed.
+- Bundled modules use the loaded module's ``__version__``, otherwise unknown.
+- Directory modules use ``__version__`` first, then an installed distribution
+  providing that top-level module, otherwise unknown.
+- Installed entry points use their owning distribution's metadata version.
 
-Step 2 is restricted to out-of-tree on purpose.  Every in-tree plugin's
-top-level package maps to the ``sparkrun`` distribution, so applying the
-fallback there would report sparkrun's own version as the plugin's.  That is
-wrong wherever it matters most: ``sparkroute`` is vendored from its own
-repository at its own version, and a plugin silently inheriting the host's
-version is a fabricated answer where the honest one is "the plugin did not say".
+A bundled plugin never inherits the host package version: a vendored plugin
+such as SparkRoute has its own version.
+
 """
 
 from __future__ import annotations
@@ -55,6 +47,7 @@ logger = logging.getLogger(__name__)
 #: ``source`` values.
 SOURCE_IN_TREE = "in-tree"
 SOURCE_EXTERNAL = "external"
+SOURCE_INSTALLED = "installed"
 
 #: ``version_source`` values (``None`` when the version is unknown).
 VERSION_FROM_MODULE = "module"
@@ -72,7 +65,7 @@ class PluginInfo:
     """Plugin name as the loader spells it (the module/subpackage name)."""
 
     source: str
-    """:data:`SOURCE_IN_TREE` or :data:`SOURCE_EXTERNAL`."""
+    """:data:`SOURCE_IN_TREE`, :data:`SOURCE_EXTERNAL`, or :data:`SOURCE_INSTALLED`."""
 
     module: str
     """Dotted module name the loader imports."""
@@ -252,7 +245,7 @@ def _external_plugins(config: "SparkrunConfig | None", v: "Variables | None") ->
 
 
 def list_plugins(config: "SparkrunConfig | None" = None, v: "Variables | None" = None) -> list[PluginInfo]:
-    """Return every known plugin module, in-tree first then out-of-tree.
+    """Return every known plugin module: bundled, directory, then installed.
 
     Args:
         config: Config supplying ``plugins.paths``. When ``None``, out-of-tree
@@ -263,7 +256,8 @@ def list_plugins(config: "SparkrunConfig | None" = None, v: "Variables | None" =
     Returns:
         In-tree plugins sorted by name, then out-of-tree ones sorted by
         ``(path, name)`` so entries stay grouped by the directory they came
-        from. Never raises: an unreadable source contributes no rows.
+        from, followed by installed metadata rows. Loader/configuration
+        validation errors propagate; listing does not import any plugin.
     """
     plugins = sorted(_in_tree_plugins(v), key=lambda p: p.name)
     plugins.extend(sorted(_external_plugins(config, v), key=lambda p: (str(p.path), p.name)))
@@ -272,7 +266,7 @@ def list_plugins(config: "SparkrunConfig | None" = None, v: "Variables | None" =
     plugins.extend(
         PluginInfo(
             name=p.name,
-            source="installed",
+            source=SOURCE_INSTALLED,
             module=p.module,
             enabled=p.selected,
             loaded=p.loaded,
@@ -291,6 +285,7 @@ def list_plugins(config: "SparkrunConfig | None" = None, v: "Variables | None" =
 __all__ = [
     "PluginInfo",
     "SOURCE_EXTERNAL",
+    "SOURCE_INSTALLED",
     "SOURCE_IN_TREE",
     "VERSION_ATTR",
     "VERSION_FROM_DISTRIBUTION",

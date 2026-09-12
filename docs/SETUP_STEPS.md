@@ -63,6 +63,16 @@ to the normal `enable`, `disable`, and `reset` commands.
 Applicability runs against each actual target, so mixed clusters need not select
 the same steps. Profile defaults do not establish hardware support.
 
+A plugin's complete setup dependency graph is validated inside its registration
+transaction, even for disabled steps. Forward references between steps in the
+same module are allowed. Cross-module prerequisites must already be registered;
+loading does not import or defer a missing provider automatically. Keep tightly
+coupled steps in one module, or explicitly arrange provider loading first. A
+missing prerequisite or cycle rejects the plugin and rolls back its registry
+contributions. Required-plugin failures still block launches, while unrelated
+setup/undo remains available. Direct step registration outside a module loader
+must complete its graph before calling a planner.
+
 Call `sparkrun.application.initialize()` first to load the selected integrations.
 
 `probe_setup_hosts(hosts, ssh_kwargs=..., config=..., cluster=...)` returns a host

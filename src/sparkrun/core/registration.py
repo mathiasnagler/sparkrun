@@ -125,4 +125,7 @@ def load_and_register_plugin(
             if type(api_version) is not int or api_version != PLUGIN_API_VERSION:
                 raise ValueError("Plugin API %r is incompatible with supported API %s" % (api_version, PLUGIN_API_VERSION))
         _register_plugin_module(module, v, tier=tier)
+        from sparkrun.core.setup_steps import all_setup_steps
+
+        all_setup_steps()  # Validate forward references after the whole module registered.
     return module

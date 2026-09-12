@@ -23,6 +23,52 @@ from sparkrun.core.config import resolve_sparkrun_cache_dir
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_BENCHMARK_TIMEOUT = 14400
+
+
+class BenchmarkStateError(ValueError):
+    """Existing benchmark state cannot safely be resumed or replaced implicitly."""
+
+
+def _validate_state_data(data, benchmark_id):
+    if not isinstance(data, dict) or not data:
+        raise ValueError("State must be a nonempty mapping")
+    if type(data.get("schema_version", 1)) is not int or data.get("schema_version", 1) != 1:
+        raise ValueError("Unsupported benchmark state schema version")
+    if data.get("benchmark_id") != benchmark_id:
+        raise ValueError("Benchmark ID does not match its directory")
+    for key in ("benchmark_id", "cluster_id", "recipe_qualified_name", "framework", "intent_id", "created_at", "updated_at"):
+        if key in data and not isinstance(data[key], str):
+            raise ValueError("%s must be a string" % key)
+    for key in ("profile", "api_key_env"):
+        if data.get(key) is not None and not isinstance(data[key], str):
+            raise ValueError("%s must be a string or None" % key)
+    for key in ("base_args", "extras"):
+        value = data.get(key, {})
+        if not isinstance(value, dict) or any(not isinstance(k, str) for k in value):
+            raise ValueError("%s must be a mapping with string keys" % key)
+    for key in ("schedule", "sessions"):
+        value = data.get(key, [])
+        if not isinstance(value, list) or any(not isinstance(v, dict) for v in value):
+            raise ValueError("%s must be a list of mappings" % key)
+    hosts = data.get("host_list", [])
+    if not isinstance(hosts, list) or any(not isinstance(h, str) or not h for h in hosts):
+        raise ValueError("host_list must contain nonempty strings")
+    for key in ("completed_indices", "failed_indices"):
+        values = data.get(key, [])
+        if not isinstance(values, list) or any(type(i) is not int or i < 0 or i >= len(data.get("schedule", [])) for i in values):
+            raise ValueError("%s must contain valid task indices" % key)
+    for key in ("crash_count", "session_count"):
+        if type(data.get(key, 0)) is not int or data.get(key, 0) < 0:
+            raise ValueError("%s must be a nonnegative integer" % key)
+    if data.get("timeout") is not None and (type(data["timeout"]) is not int or data["timeout"] <= 0):
+        raise ValueError("timeout must be a positive integer or None")
+    if type(data.get("api_key_required", False)) is not bool:
+        raise ValueError("api_key_required must be a boolean")
+    if type(data.get("exit_on_first_fail", False)) is not bool:
+        raise ValueError("exit_on_first_fail must be a boolean")
+
+
 LOCK_FILE_NAME = "run.lock"
 
 # A benchmark holds its state directory for the whole sweep, which for a large
@@ -85,10 +131,10 @@ def derive_benchmark_id(
     intent — same model, port, parallelism — but differ in a serve argument
     (e.g. ``--speculative-config``) are different workloads and must never
     resume into each other's results.  Obtain it from
-    :func:`sparkrun.orchestration.job_metadata.derive_recipe_fingerprint`,
-    which is the single definition of *what* gets hashed: declared
-    configuration only, never resolved artifacts or placement, so it is stable
-    across relaunches of the same logical workload.
+    :func:`sparkrun.benchmarking.metadata.benchmark_recipe_fingerprint`,
+    which excludes credential fields from the shared fingerprint of declared
+    configuration. Resolved artifacts and placement remain excluded, keeping
+    it stable across relaunches of the same logical workload.
 
     Malformed (legacy) cluster_ids that do not parse fall back to hashing the
     full string verbatim — they will not match a relaunch, but they also won't
@@ -117,7 +163,9 @@ def derive_benchmark_id(
         payload["recipe_fingerprint"] = recipe_fingerprint
     if host_key := canonical_host_key(hosts):
         payload["hosts"] = host_key
-    raw = json.dumps(payload, sort_keys=True, default=str)
+    from sparkrun.benchmarking.metadata import public_benchmark_data
+
+    raw = json.dumps(public_benchmark_data(payload), sort_keys=True, default=str)
     digest = hashlib.sha256(raw.encode()).hexdigest()[:12]
     return "bench_%s" % digest
 
@@ -308,6 +356,11 @@ class BenchmarkRunState:
     extras: dict[str, Any] = field(default_factory=dict)  # arena uses for submission_id, etc.
     created_at: str = ""  # ISO-8601 UTC
     updated_at: str = ""  # ISO-8601 UTC
+    schema_version: int = 1
+    api_key_required: bool = False
+    api_key_env: str | None = None  # reference only; never a credential value
+    timeout: int | None = None  # None means legacy default on resume
+    exit_on_first_fail: bool = False  # legacy resume policy
 
     def __post_init__(self) -> None:
         """Derive ``intent_id`` from ``cluster_id`` if not already set."""
@@ -372,7 +425,9 @@ class BenchmarkRunState:
         state_path = sdir / "state.yaml"
         tmp_path = sdir / "state.yaml.tmp"
 
-        data = asdict(self)
+        from sparkrun.benchmarking.metadata import public_benchmark_data
+
+        data = public_benchmark_data(asdict(self))
         with open(tmp_path, "w") as fh:
             yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=False)
 
@@ -381,19 +436,32 @@ class BenchmarkRunState:
         return state_path
 
     @classmethod
-    def load(cls, benchmark_id: str, cache_dir: str | None = None) -> "BenchmarkRunState | None":
-        """Load state from disk. Returns ``None`` if no state file exists."""
+    def load(cls, benchmark_id: str, cache_dir: str | None = None, *, strict: bool = False) -> "BenchmarkRunState | None":
+        """Load validated state; strict operations distinguish missing from unusable.
+
+        Lenient inventory reads may skip invalid state. Loading never writes or
+        migrates files in place; old embedded API keys are removed from the view.
+        """
+        from sparkrun.benchmarking.metadata import public_benchmark_data
+
         state_path = _state_dir_for(benchmark_id, cache_dir) / "state.yaml"
-        if not state_path.exists():
-            return None
         try:
             with open(state_path) as fh:
                 data = yaml.safe_load(fh)
-            if not data:
-                return None
-            return cls(**data)
-        except Exception:
-            logger.debug("Failed to load benchmark run state for %s", benchmark_id, exc_info=True)
+            _validate_state_data(data, benchmark_id)
+            if data.get("base_args", {}).get("api_key"):
+                data["api_key_required"] = True
+            return cls(**public_benchmark_data(data))
+        except FileNotFoundError:
+            return None
+        except Exception as exc:
+            if strict:
+                # Parser diagnostics can include secret-bearing source lines.
+                raise BenchmarkStateError(
+                    "Cannot read benchmark state %r; preserve it for recovery or explicitly start fresh (%s)"
+                    % (benchmark_id, type(exc).__name__)
+                ) from None
+            logger.debug("Unusable benchmark state for %s", benchmark_id)
             return None
 
     # -------------------------------------------------------------------------

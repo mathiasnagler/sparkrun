@@ -246,7 +246,7 @@ def test_scheduled_export_omits_startup_when_any_results_are_reused(bench_env, m
     if prior_completed:
         monkeypatch.setattr(
             "sparkrun.benchmarking.run_state.BenchmarkRunState.load",
-            lambda bid, cache: BenchmarkRunState(
+            lambda bid, cache, *, strict=False: BenchmarkRunState(
                 benchmark_id=bid,
                 cluster_id="test-job",
                 recipe_qualified_name=env.recipe.qualified_name,

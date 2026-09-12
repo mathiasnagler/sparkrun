@@ -98,6 +98,12 @@ Run handlers reuse the supplied plan and standard executor resolver.
 `RunOptions.executor_overrides()` supplies the caller layer. Do not independently
 merge recipe/cluster/default layers or repeat placement in a handler.
 
+The unused per-kind package entry-point groups were removed from host metadata;
+installed plugins use `sparkrun.plugins` module entry points. Setup-step graphs
+must be valid when module registration completes. Same-module forward references
+work; cross-module providers must already be registered. Failed validation rolls
+back the module, including when the affected step's feature is disabled.
+
 ## Benchmark callers
 
 | Previous surface | 0.4.0 surface |
@@ -108,6 +114,17 @@ merge recipe/cluster/default layers or repeat placement in a handler.
 | `BenchmarkOptions(on_prompt_required=..., on_complete_state=...)` | One `decision_callback(BenchmarkDecision) -> bool`. The old fields are removed. |
 | `BenchmarkResult.submission_id` | `result.integration_results.get("arena", {}).get("submission_id")`. |
 | `BenchmarkFailed(exit_code=0)` for completed resume | Successful saved `BenchmarkResult` with `already_complete=True`. |
+
+Benchmark authentication is now execution-only. Use `api_key_env` rather than
+persisting API keys in task args or publication data. Resume saves/reuses the
+variable name and resolves its current value; it accepts `api_key_env`, `timeout`,
+and `exit_on_first_fail` keyword overrides. Completed publication retries need no
+inference credential. Legacy embedded keys are removed from loaded snapshots;
+old authenticated IDs can be resumed explicitly with a current reference.
+
+Checkpoints now distinguish absent state from unreadable/invalid state. Implicit
+resume raises a typed operational error for the latter; only explicit fresh
+execution replaces it. See [benchmark authentication and recovery](BENCHMARK_API.md#authentication-and-checkpoint-recovery).
 
 Preloaded `Recipe` and `ClusterDefinition` objects retain their in-memory edits;
 recipe resolution may mutate the supplied recipe. Use a separate instance when

@@ -183,6 +183,46 @@ These options do not turn completed result loading or publication retry into an
 export-repair operation. The default `export_files=True` matches initial execution.
 A corrupt/missing validated result file still raises `BenchmarkFailed`.
 
+## Authentication and checkpoint recovery
+
+`BenchmarkOptions.api_key_env` names the environment/Variables key containing the
+inference credential. An explicitly named missing or empty key is an error for
+real measurement; previews do not resolve authentication. When
+omitted, the runtime's resolved recipe credential can supply authentication.
+Authentication is injected only into framework command construction. It is not
+part of task definitions, measurement arguments, benchmark IDs, result metadata,
+exports, or publication snapshots. Core command/stream logging redacts the active
+key. Shared metadata projections remove API-key fields and the runtime-native
+`auth_token` alias, and redact literal `--api-key`/`--auth-token` arguments.
+Credential templates remain intact. Frameworks must also keep execution
+credentials out of their own artifacts and custom recipe fields.
+
+New checkpoints record only `api_key_env` and whether authentication is required.
+`resume_benchmark(id, api_key_env="INFERENCE_API_KEY")` can supply or replace that
+reference; otherwise resume resolves the saved reference again. Rotating the
+variable's value does not change measurement identity. Runtime authentication
+can be resolved again from the recipe and recorded launch overrides. Legacy
+checkpoints with embedded keys are sanitized when loaded; an incomplete run
+without a recoverable credential reference requires a current `api_key_env`.
+Completed result loading and publication-only retries do not resolve credentials.
+Old authenticated runs may have IDs derived from their key; resume those by ID.
+
+Resume-by-ID uses the saved timeout and failure policy. Optional `timeout=...`
+and `exit_on_first_fail=...` keywords override them for the next execution and
+subsequent resumes. Old checkpoints without these fields use the historical
+14,400-second timeout and `exit_on_first_fail=False`. These execution overrides
+do not turn publication-only retry into measurement. Initial `benchmark()` calls
+continue to resolve their own caller/profile policy, including implicit resumes.
+
+Execution and resume distinguish absent state from unusable state. Missing state
+permits a new benchmark; malformed YAML, invalid field shapes, unsupported schema
+versions, or read errors raise `SparkrunError` without replacing the checkpoint.
+The explicit `ResumeMode.FRESH` path can discard malformed prior state without
+first decoding it. A fresh dry run previews that operation and preserves files.
+Low-level `BenchmarkRunState.load(..., strict=True)` raises `BenchmarkStateError`;
+lenient reads remain available for inventory. Loading never rewrites files;
+sanitized state is persisted on the next normal save.
+
 ## Caller metadata
 
 `BenchmarkOptions.state_extras` is copied into newly created scheduled state.

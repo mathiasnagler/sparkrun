@@ -146,7 +146,11 @@ class BenchmarkOptions:
     timeout: int | None = None
     """Per-task benchmark timeout in seconds.  ``None`` uses the framework default."""
     api_key_env: str | None = None
-    """Environment variable name whose value is used as the inference API key."""
+    """Credential variable name, resolved only for execution; its value is never persisted.
+
+    An explicit missing/empty variable is an error. Resume stores this reference
+    and reacquires its current value, independently of measurement identity.
+    """
 
     # --- Mode ---
     integrations: dict[str, dict[str, Any]] = field(default_factory=dict)

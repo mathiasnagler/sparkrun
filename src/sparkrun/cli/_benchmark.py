@@ -5,6 +5,8 @@ CLI presentation shell.  Orchestration lives in ``sparkrun.api._benchmark``.
 
 from __future__ import annotations
 
+from sparkrun.benchmarking.run_state import DEFAULT_BENCHMARK_TIMEOUT
+
 import logging
 import sys
 from typing import Callable, NoReturn, TYPE_CHECKING
@@ -28,7 +30,6 @@ from ._common import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
 
 if TYPE_CHECKING:
     from sparkrun.api._benchmark_models import ResumeMode, BenchmarkDecision

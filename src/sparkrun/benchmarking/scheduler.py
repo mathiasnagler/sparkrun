@@ -14,6 +14,8 @@ import logging
 import os
 import subprocess
 import time
+from threading import Thread
+from sparkrun.benchmarking._credentials import BenchmarkCredentials
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -69,6 +71,7 @@ def run_schedule(
     cache_dir: str | None = None,
     exit_on_first_fail: bool = False,
     skip_run: bool = False,
+    credentials: BenchmarkCredentials | None = None,
 ) -> ScheduleRunResult:
     """Iterate pending tasks. Returns when the schedule is complete or aborts.
 
@@ -79,6 +82,7 @@ def run_schedule(
         target_url: Inference endpoint URL forwarded to the benchmark command.
         model: Model name forwarded to the benchmark command.
         timeout: Per-task subprocess timeout in seconds, or ``None`` for no limit.
+        credentials: Ephemeral authentication injected only into command construction.
         progress_ui: Task event sink (the keyword is retained for compatibility).
         cache_dir: Override for the sparkrun cache directory root.
         exit_on_first_fail: Stop immediately after the first task failure.
@@ -88,6 +92,7 @@ def run_schedule(
     Returns:
         :class:`ScheduleRunResult` describing the outcome.
     """
+    credentials = credentials or BenchmarkCredentials()
     total = len(tasks)
     consolidated: dict[str, Any] = consolidate_results(state.state_dir(cache_dir), fw)
 
@@ -127,7 +132,7 @@ def run_schedule(
             result_file = state.runs_dir(cache_dir) / ("%03d%s.json" % (idx, suffix))
             log_file = state.runs_dir(cache_dir) / ("%03d%s.log" % (idx, suffix))
 
-            cmd = fw.build_benchmark_command(target_url, model, run_args, result_file=str(result_file))
+            cmd = fw.build_benchmark_command(target_url, model, credentials.arguments(run_args), result_file=str(result_file))
 
             state.mark_started(idx)
             state.save(cache_dir)
@@ -137,9 +142,31 @@ def run_schedule(
             t_start = time.monotonic()
 
             try:
+                reader = None
+                reader_errors = []
                 log_fh = open(log_file, "w")  # closed in finally block below
                 try:
-                    proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT, text=True, env=env)
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE if credentials.api_key else log_fh,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        errors="replace",
+                        env=env,
+                    )
+                    if credentials.api_key:
+
+                        def copy_output(source, sink, errors):
+                            for line in source:
+                                if not errors:
+                                    try:
+                                        sink.write(credentials.redact(line))
+                                        sink.flush()
+                                    except OSError as error:
+                                        errors.append(error)
+
+                        reader = Thread(target=copy_output, args=(proc.stdout, log_fh, reader_errors), daemon=True)
+                        reader.start()
                     try:
                         proc.wait(timeout=timeout)
                     except subprocess.TimeoutExpired:
@@ -156,7 +183,15 @@ def run_schedule(
                             return True, False
                         continue
                 finally:
+                    if reader is not None:
+                        if proc.poll() is None:
+                            proc.kill()
+                            proc.wait()
+                        reader.join()
+                        proc.stdout.close()
                     log_fh.close()
+                    if reader_errors:
+                        raise reader_errors[0]
 
                 duration_s = time.monotonic() - t_start
                 rc = proc.returncode

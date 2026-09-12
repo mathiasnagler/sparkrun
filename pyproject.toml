@@ -47,29 +47,6 @@ dev = [
 [project.scripts]
 sparkrun = "sparkrun.application:main"
 
-[project.entry-points."sparkrun.runtimes"]
-vllm-distributed = "sparkrun.runtimes.vllm_distributed:VllmDistributedRuntime"
-vllm-ray = "sparkrun.runtimes.vllm_ray:VllmRayRuntime"
-sglang = "sparkrun.runtimes.sglang:SglangRuntime"
-eugr-vllm = "sparkrun.runtimes.eugr_vllm_ray:EugrVllmRayRuntime"
-llama-cpp = "sparkrun.runtimes.llama_cpp:LlamaCppRuntime"
-trtllm = "sparkrun.runtimes.trtllm:TrtllmRuntime"
-atlas = "sparkrun.runtimes.atlas:AtlasRuntime"
-tokenary = "sparkrun.runtimes.tokenary:TokenaryRuntime"
-modular-max = "sparkrun.runtimes.modular_max:ModularMaxRuntime"
-
-[project.entry-points."sparkrun.benchmarking"]
-llama-benchy = "sparkrun.benchmarking.llama_benchy:LlamaBenchyFramework"
-tool-eval-bench = "sparkrun.benchmarking.tool_eval_bench:ToolEvalBenchFramework"
-
-[project.entry-points."sparkrun.builders"]
-docker-pull = "sparkrun.builders.docker_pull:DockerPullBuilder"
-eugr = "sparkrun.builders.eugr:EugrBuilder"
-
-[project.entry-points."sparkrun.executors"]
-docker = "sparkrun.orchestration.executors.docker:DockerExecutor"
-local = "sparkrun.orchestration.executors.local:LocalExecutor"
-
 [tool.setuptools.packages.find]
 where = ["src"]
 
