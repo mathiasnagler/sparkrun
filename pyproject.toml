@@ -42,7 +42,6 @@ dependencies = [
 dev = [
     "pytest==9.0.3",
     "pytest-cov==7.1.0",
-    "pytest-asyncio==1.3.0",
 ]
 
 [project.scripts]
@@ -81,7 +80,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 140
