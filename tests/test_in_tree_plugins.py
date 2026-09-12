@@ -1,7 +1,7 @@
 """Tests for in-tree plugin loading — the mate of the external plugin loader.
 
 The property that matters is that in-tree and out-of-tree plugins register
-*identically*: both go through ``load_plugin_module``, so a first-party
+*identically*: both go through ``load_and_register_plugin``, so a first-party
 integration has no capability an external one lacks, and neither can drift into
 a different notion of what counts as a registration.
 """
@@ -111,9 +111,8 @@ def test_a_failing_register_hook_is_contained(plugin_package):
             raise RuntimeError('boom')
         """,
     )
-    # Reported as loaded: the module imported fine, and one bad hook must not
-    # look like a discovery failure.
-    assert load_in_tree_plugins(None, package="fake_plugins") == ["bad_hook"]
+    # Successful import alone does not make a partially initialized plugin loaded.
+    assert load_in_tree_plugins(None, package="fake_plugins") == []
 
 
 def test_private_modules_are_skipped(plugin_package):

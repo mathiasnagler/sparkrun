@@ -174,7 +174,7 @@ def _write_consolidated(state_dir: Path, consolidated: dict[str, Any]) -> Path:
 
 def _should_remeasure_complete_state(
     resume_mode: "ResumeMode",
-    on_complete_state: "Callable[[Any], bool] | None",
+    decision_callback: "Callable[[BenchmarkDecision], bool] | None",
     existing_state: Any,
 ) -> bool:
     """Whether COMPLETE prior state should be discarded and re-measured.
@@ -183,15 +183,24 @@ def _should_remeasure_complete_state(
     results into the new output — indistinguishable from a real measurement, so
     it must never happen silently (the caller warns on the reuse path).
 
-    ``ResumeMode.AUTO`` delegates the choice to *on_complete_state* (the CLI
+    ``ResumeMode.AUTO`` delegates the choice to *decision_callback* (the CLI
     wires an interactive confirm); with no callback the library default is
     reuse, matching prior behaviour.  ``IF_EXISTS`` / ``REQUIRED`` asked for a
     resume explicitly, so they always reuse.  (``FRESH`` never reaches here —
     it deletes the state before this decision.)
     """
-    if resume_mode != ResumeMode.AUTO or on_complete_state is None:
+    if resume_mode != ResumeMode.AUTO or decision_callback is None:
         return False
-    return bool(on_complete_state(existing_state))
+    return bool(
+        decision_callback(
+            BenchmarkDecision(
+                "remeasure_complete",
+                "Found COMPLETE benchmark state. Delete and re-measure?",
+                False,
+                existing_state.benchmark_id,
+            )
+        )
+    )
 
 
 def _resolve_running_deployment(
@@ -359,22 +368,6 @@ def _execute_benchmark(
     executor_args = options.extra_docker_opts or ()
     export_results_files = options.export_files
     resume_mode = options.resume
-    on_prompt_required = options.on_prompt_required
-    on_complete_state = options.on_complete_state
-    if options.decision_callback is not None:
-
-        def on_prompt_required(state):
-            return bool(
-                options.decision_callback(BenchmarkDecision("resume_incomplete", "Resume incomplete benchmark?", True, state.benchmark_id))
-            )
-
-        def on_complete_state(state):
-            return bool(
-                options.decision_callback(
-                    BenchmarkDecision("remeasure_complete", "Discard completed measurements and measure again?", False, state.benchmark_id)
-                )
-            )
-
     scheduler_name = options.scheduler
     category = options.category
 
@@ -824,7 +817,7 @@ def _execute_benchmark(
                         clear_state_dir(benchmark_id, cache_dir)
                         logger.debug("Deleted complete benchmark state at %s (--fresh)", state_dir)
                     existing_state = None
-                elif _should_remeasure_complete_state(resume_mode, on_complete_state, existing_state):
+                elif _should_remeasure_complete_state(resume_mode, options.decision_callback, existing_state):
                     if not dry_run and state_dir and state_dir.exists():
                         clear_state_dir(benchmark_id, cache_dir)
                         logger.debug("Deleted complete benchmark state at %s (user chose re-measure)", state_dir)
@@ -843,17 +836,15 @@ def _execute_benchmark(
                 elif resume_mode in (ResumeMode.IF_EXISTS, ResumeMode.REQUIRED):
                     pass
                 else:  # AUTO
-                    # Library policy: consult the caller-supplied
-                    # ``on_prompt_required`` callback to decide whether to resume
-                    # incomplete state.  When no callback is given, default to
-                    # resume (True) — the console-free default that matches the
-                    # prior non-TTY behaviour.  The CLI shell supplies a callback
-                    # that renders the interactive ``click.confirm`` prompt, so
-                    # the API never imports CLI/console code.
-                    if on_prompt_required is not None:
-                        prompt_ok = bool(on_prompt_required(existing_state))
-                    else:
-                        prompt_ok = True
+                    # Public callbacks receive a decision, never mutable saved state.
+                    decision = BenchmarkDecision(
+                        "resume_incomplete",
+                        "Found existing incomplete benchmark state (%d/%d tasks done). Resume?"
+                        % (len(existing_state.completed_indices), len(existing_state.schedule)),
+                        True,
+                        existing_state.benchmark_id,
+                    )
+                    prompt_ok = bool(options.decision_callback(decision)) if options.decision_callback else decision.default
                     if not prompt_ok:
                         if not dry_run and state_dir and state_dir.exists():
                             clear_state_dir(benchmark_id, cache_dir)
@@ -962,23 +953,23 @@ def _execute_benchmark(
 
             bench_result.run_result = run_result
             launch_result = run_result.launch_result
-            if launch_result is not None and launch_result.rc != 0 and not dry_run:
+            if run_result.rc != 0 and not dry_run:
                 raise BenchmarkFailed(
-                    "inference launch failed (exit code %d)" % launch_result.rc,
-                    exit_code=launch_result.rc,
+                    "inference launch failed (exit code %d)" % run_result.rc,
+                    exit_code=run_result.rc,
                 )
 
             cluster_id = run_result.cluster_id
             serve_port = run_result.serve_port
+            # Establish ownership before invoking any frontend/plugin callback.
+            launched = not getattr(run_result, "already_running", False)
+            bench_result.launch_result = launch_result
 
             if run_result.serve_command:
                 logger.info("Serve command:")
                 for line in run_result.serve_command.strip().splitlines():
                     logger.info("  %s", line)
                 emitter.info("")
-
-            launched = True
-            bench_result.launch_result = launch_result
 
             if tasks is not None:
                 if "container_image_sha" not in state.extras:
@@ -1031,8 +1022,6 @@ def _execute_benchmark(
                 try:
                     target_ip = detect_host_ip(head_host, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
                 except RuntimeError as e:
-                    if launched and not no_stop:
-                        _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=emitter)
                     raise BenchmarkFailed("Error detecting head IP: %s" % e, exit_code=1) from e
 
         if not dry_run and not skip_run:
@@ -1069,8 +1058,6 @@ def _execute_benchmark(
                 )
             bench_result.readiness = readiness
             if not readiness.ready:
-                if launched and not no_stop:
-                    _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=emitter)
                 if readiness.reason == "port":
                     raise BenchmarkFailed("Error: inference server did not become ready", exit_code=1)
                 if readiness.reason in {"inference", "cancelled"}:
@@ -1155,11 +1142,6 @@ def _execute_benchmark(
                 if not sched_result.success:
                     emitter.info("")
                     emitter.info("Benchmark incomplete; you can resume later")
-                    if launched and not no_stop:
-                        emitter.info("")
-                        emitter.info("Stopping inference...")
-                        _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=emitter)
-                        emitter.info("Inference stopped.")
                     raise BenchmarkFailed("Benchmark incomplete; schedule did not complete", exit_code=1)
 
                 stdout_text = json.dumps(consolidated)
@@ -1226,11 +1208,6 @@ def _execute_benchmark(
                                 emitter.warning("stderr: %s" % stderr_text[:500])
                             if exit_on_first_fail:
                                 emitter.warning("Skipping result export (--exit-on-first-fail set and benchmark failed).")
-                                if launched and not no_stop:
-                                    emitter.info("")
-                                    emitter.info("Stopping inference...")
-                                    _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=emitter)
-                                    emitter.info("Inference stopped.")
                                 raise BenchmarkFailed(
                                     "benchmark exited with code %d" % proc.returncode,
                                     exit_code=proc.returncode,
@@ -1238,8 +1215,6 @@ def _execute_benchmark(
                         else:
                             emitter.info("Benchmark completed successfully (%.0fs elapsed)." % elapsed)
                 except FileNotFoundError as exc:
-                    if launched and not no_stop:
-                        _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=emitter)
                     raise BenchmarkFailed(
                         "Error: benchmark command not found: %s" % bench_cmd[0],
                         exit_code=1,
@@ -1293,15 +1268,15 @@ def _execute_benchmark(
         )
         logger.log(_PROGRESS_LEVEL, "Benchmark complete.")
 
-    except KeyboardInterrupt:
-        emitter.info("")
-        emitter.info("Interrupted.")
-        if tasks is not None:
-            emitter.info("State preserved so that you can resume later")
-        if not no_stop and not skip_run and not cleanup_attempted:
-            emitter.info("Stopping inference (cleaning up containers)...")
-            _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=emitter)
-            emitter.info("Inference stopped.")
+    except BaseException as error:
+        # Finalization also uses cleanup(); its once-only guard covers both
+        # paths, including interrupts and secondary cleanup failures.
+        try:
+            cleanup()
+        except Exception as cleanup_error:
+            _record_cleanup_failure(error, cleanup_error)
+        if isinstance(error, KeyboardInterrupt):
+            _notify_interrupted(emitter, state_preserved=tasks is not None)
         raise
     finally:
         try:
@@ -1311,6 +1286,14 @@ def _execute_benchmark(
         lock_stack.close()
 
     return bench_result
+
+
+def _notify_interrupted(emitter: _ProgressEmitter, *, state_preserved: bool) -> None:
+    """Best-effort notification; rendering cannot replace cancellation."""
+    try:
+        emitter.info("Interrupted. State preserved so that you can resume later." if state_preserved else "Interrupted.")
+    except Exception:
+        logger.debug("Interrupted benchmark notification failed", exc_info=True)
 
 
 def _framework_results(values, framework):
@@ -1369,6 +1352,15 @@ def _finalization_errors(execution, stage):
         raise BenchmarkFinalizationFailed(str(exc), stage=stage, result=_build_result(execution)) from exc
 
 
+def _record_cleanup_failure(primary: BaseException, cleanup_error: Exception) -> None:
+    """Keep cleanup diagnostics without replacing the original failure."""
+    if isinstance(primary, BenchmarkFinalizationFailed):
+        primary.errors["cleanup"] = str(cleanup_error)
+    else:
+        primary.add_note("Inference cleanup also failed: %s" % cleanup_error)
+        logger.warning("Inference cleanup also failed: %s", cleanup_error)
+
+
 def _finalize_measurement(execution, integrations, state, cache_dir, *, dry_run=False, export=None, cleanup=None):
     """Commit validated measurements before optional export; always attempt owned cleanup."""
     execution.success = True
@@ -1401,10 +1393,8 @@ def _finalize_measurement(execution, integrations, state, cache_dir, *, dry_run=
             except Exception as exc:
                 if primary is None:
                     primary = exc
-                elif isinstance(primary, BenchmarkFinalizationFailed):
-                    primary.errors["cleanup"] = str(exc)
                 else:
-                    logger.warning("Cleanup also failed: %s", exc)
+                    _record_cleanup_failure(primary, exc)
     if primary is not None:
         raise primary
     with _integration_completion_errors(integrations):
@@ -1534,6 +1524,8 @@ def _resume_benchmark(
     sctx: "SparkrunContext | None" = None,
     emitter: _ProgressEmitter | None = None,
     integrations: dict[str, dict[str, Any]] | None = None,
+    export_files: bool = True,
+    output_file: str | None = None,
 ) -> BenchmarkResult:
     """Shared resume implementation; the emitter is a private CLI adapter."""
     from sparkrun.benchmarking.run_state import StateDirLocked, hold_state_dir
@@ -1567,6 +1559,8 @@ def _resume_benchmark(
             cache_dir=cache_dir,
             sctx=sctx,
             integration_settings=integrations,
+            export_files=export_files,
+            output_file=output_file,
         )
         result = _build_result(execution)
         return _notify_complete(result, emitter)
@@ -1580,13 +1574,17 @@ def resume_benchmark(
     progress_callback: Callable[[ProgressEvent], None] | None = None,
     decision_callback: Callable[[BenchmarkDecision], bool] | None = None,
     integrations: dict[str, dict[str, Any]] | None = None,
+    export_files: bool = True,
+    output_file: str | None = None,
 ) -> BenchmarkResult:
     """Resume measurement or retry publication, returning the same result as benchmark().
 
     Progress is silent unless a callback is supplied. Integration decisions use
     decision_callback; absent a handler, each decision uses its stated default.
     Completed measurements can retry saved integrations without live inference.
-    An ID with no pending tasks or integrations raises BenchmarkFailed(exit_code=0).
+    No pending tasks/integrations returns the saved result with already_complete=True.
+    export_files/output_file control exports after resumed measurement; completed
+    result loading and publication retries never regenerate optional exports.
     Missing state/inference raises NoResumableState. Publication failures raise
     BenchmarkIntegrationFailed with the completed result attached.
     """
@@ -1596,7 +1594,15 @@ def resume_benchmark(
         else _NullProgressEmitter(decision_callback)
     )
     try:
-        return _resume_benchmark(benchmark_id, dry_run=dry_run, sctx=sctx, emitter=emitter, integrations=integrations)
+        return _resume_benchmark(
+            benchmark_id,
+            dry_run=dry_run,
+            sctx=sctx,
+            emitter=emitter,
+            integrations=integrations,
+            export_files=export_files,
+            output_file=output_file,
+        )
     except SparkrunError:
         raise
     except Exception as exc:
@@ -1612,6 +1618,8 @@ def _resume_locked(
     cache_dir: str | None,
     sctx,
     integration_settings=None,
+    export_files: bool = True,
+    output_file: str | None = None,
 ) -> BenchmarkExecution:
     """Body of :func:`resume_benchmark`, run while holding the state-dir lock."""
     import yaml as _yaml
@@ -1662,13 +1670,14 @@ def _resume_locked(
     )
     if state.is_complete(len(state.schedule)):
         saved_names = set(state.extras.get(STATE_KEY, {})) & integrations.specs.keys()
-        if not integrations.contexts and not saved_names:
-            raise BenchmarkFailed("Benchmark %s is already complete. Nothing to resume." % benchmark_id, exit_code=0)
         result_path = state.state_dir(cache_dir) / "result.yaml"
         if not state.extras.get("measurement_complete") or not result_path.is_file():
             raise BenchmarkFailed("Completed tasks have no validated benchmark results; rerun with --fresh.", exit_code=1)
         result.results = _framework_results(_yaml.safe_load(result_path.read_text()), state.framework)
         result.success = True
+        if not integrations.contexts and not saved_names:
+            result.already_complete = True
+            return result
         with _integration_completion_errors(integrations):
             integrations.bind(result, state, resumed=True)
             integrations.complete()
@@ -1830,21 +1839,24 @@ def _resume_locked(
             integrations,
             state,
             cache_dir,
-            export=lambda: _export_measurement(
-                result,
-                config=config,
-                tp=effective_tp,
-                pp=int(overrides.get("pipeline_parallel") or meta.get("pipeline_parallel") or 1),
-                output_file=None,
-                emitter=emitter,
+            export=lambda: (
+                _export_measurement(
+                    result,
+                    config=config,
+                    tp=effective_tp,
+                    pp=int(overrides.get("pipeline_parallel") or meta.get("pipeline_parallel") or 1),
+                    output_file=output_file,
+                    emitter=emitter,
+                )
+                if export_files
+                else None
             ),
         )
 
         return result
 
     except KeyboardInterrupt:
-        emitter.info("")
-        emitter.info("Interrupted. State preserved so that you can resume later.")
+        _notify_interrupted(emitter, state_preserved=True)
         raise
 
 
@@ -1932,6 +1944,7 @@ def _build_result(execution: BenchmarkExecution) -> BenchmarkResult:
         },
         state_dir=execution.state_dir,
         resumed=execution.resumed,
+        already_complete=execution.already_complete,
         integration_results=deepcopy(execution.integration_results or {}),
         integration_errors=dict(execution.integration_errors),
     )

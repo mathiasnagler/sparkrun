@@ -9,14 +9,14 @@ CLI startup and completion measurements are recorded in
 [the performance report](APPLICATION_PROFILE_PERFORMANCE.md).
 
 The public contract is **application profile/plugin API version 1**, exposed by
-`sparkrun.core.application_profile.APPLICATION_PROFILE_API_VERSION`. The controller still
+`sparkrun.application.APPLICATION_PROFILE_API_VERSION`. The controller still
 requires Python >=3.12; inference containers have their own interpreter.
 
 ## Entry points and startup
 
 ```python
 # example_product/profile.py
-from sparkrun.core.application_profile import ApplicationProfile
+from sparkrun.application import ApplicationProfile
 
 PROFILE = ApplicationProfile(
     id="example-product",
@@ -48,7 +48,10 @@ packages maintained outside the core repository.
 
 For console-free use, call `sparkrun.application.initialize(profile=PROFILE,
 config_path=...)`. It returns a `SparkrunContext` exposing `config`, `variables`
-and `application_profile`; importing the API does not import the CLI. Ordinary console,
+and `application_profile`; importing the API does not import the CLI.
+`api.default_sctx()` delegates to this initializer. `UpdateSource` and
+`APPLICATION_PROFILE_API_VERSION` are also exported by `sparkrun.application`;
+see the [supported import map](DISTRIBUTION_API_MIGRATION.md#supported-imports). Ordinary console,
 `python -m sparkrun`, and implicit API initialization select built-in Sparkrun.
 
 One profile is active per process. Repeating that selection is idempotent;

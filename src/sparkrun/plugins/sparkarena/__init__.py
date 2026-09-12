@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.4.0"
+from sparkrun import __version__ as __version__
 
 FEATURE_FLAG = "integration.arena"
 ARENA_BENCHMARK_PROFILE = "@official/spark-arena-v2"

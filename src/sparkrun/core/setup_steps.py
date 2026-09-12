@@ -193,7 +193,11 @@ def builtin_steps() -> tuple[SetupStep, ...]:
 
 
 def all_setup_steps() -> tuple[SetupStep, ...]:
-    steps = {s.key: s for s in (*builtin_steps(), *_STEPS.values())}
+    return _order_setup_steps({s.key: s for s in (*builtin_steps(), *_STEPS.values())})
+
+
+def _order_setup_steps(steps: dict[str, SetupStep]) -> tuple[SetupStep, ...]:
+    """Validate and order a complete step graph for apply or undo."""
     ordered: list[SetupStep] = []
     visiting: set[str] = set()
     visited: set[str] = set()

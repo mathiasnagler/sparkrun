@@ -107,11 +107,11 @@ def test_dry_run_never_invokes_plugin_action():
 
 
 def test_plugin_action_dependency_and_registration_rollback(v):
-    from sparkrun.core.installed_plugins import registration_transaction
+    from sparkrun.core.registration import registry_transaction
     from sparkrun.core.setup_steps import _STEPS
 
     register_feature(FeatureFlag("setup.steps.test_action", "test", default=True))
-    with pytest.raises(RuntimeError), registration_transaction(v):
+    with pytest.raises(RuntimeError), registry_transaction(v):
         register_setup_step(SetupStep("test_action", "test", feature_flag="setup.steps.test_action"))
         raise RuntimeError("broken plugin")
     assert "test_action" not in _STEPS
@@ -315,13 +315,14 @@ def test_constraints_cannot_disable_hardware_or_enable_disabled_steps(monkeypatc
 
 
 def test_constraint_registration_validation_and_rollback(v):
-    from sparkrun.core.installed_plugins import registration_transaction, PluginConflictError
+    from sparkrun.core.installed_plugins import PluginConflictError
+    from sparkrun.core.registration import registry_transaction
     from sparkrun.core.setup_steps import register_setup_constraint, setup_constraint_reason, _CONSTRAINTS
 
     def callback(key, state, context):
         return ""
 
-    with pytest.raises(RuntimeError), registration_transaction(v):
+    with pytest.raises(RuntimeError), registry_transaction(v):
         register_setup_constraint("rollback", callback)
         raise RuntimeError("registration failed")
     assert "rollback" not in _CONSTRAINTS

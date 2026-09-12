@@ -298,9 +298,9 @@ these register before its implementations are gated. For CLI contributions,
 import `register_cli_command` from `sparkrun.core.cli_registry` and pass a lazy
 loader with an explicit name to keep API initialization console-free. Registration
 must be local and inexpensive: no dependency installation, network, registry
-clones or hardware probes. Supported registry mutations from a failed installed
-integration are rolled back; arbitrary import-time side effects are outside this
-contract. The rollback adapter targets the project's pinned SAF version.
+clones or hardware probes. Directory, bundled, and installed loaders roll back
+supported registry mutations from a failed import or registration hook. Arbitrary
+plugin I/O is outside this contract. The rollback adapter targets the project's pinned SAF version.
 
 Discovery is deterministic. Repeated registration of the same provider is
 idempotent. Distinct integration IDs/providers or concrete runtime, builder,
@@ -316,9 +316,66 @@ selected/enabled, loaded, required, selection source and failure. A profile's
 selected package still declares registries at the external trust tier; reviewed
 profile registry declarations are a separate explicit policy.
 
-API compatibility is versioned by `APPLICATION_PROFILE_API_VERSION` and
-`SPARKRUN_PLUGIN_API_VERSION`; declare supported core ranges in package
-requirements. See [the application profile guide](APPLICATION_PROFILES.md).
+The module's `SPARKRUN_PLUGIN_API_VERSION` declares its tested plugin contract
+as a literal integer, currently `1`. The host exposes the supported version as
+`sparkrun.core.registration.PLUGIN_API_VERSION`. Do not copy that constant into a
+plugin declaration dynamically: a newer host does not establish compatibility
+for an older plugin. Booleans, floats and strings are not version declarations.
+Installed plugins must declare a version; legacy directory and bundled modules
+may omit it, but any declaration is checked by the same loader.
+
+Plugin API compatibility, `APPLICATION_PROFILE_API_VERSION`, and the serialized
+controller `schema_version` are independent contracts. Also declare compatible
+core package ranges in project requirements. See
+[the application profile guide](APPLICATION_PROFILES.md).
+
+These identifiers serve different purposes:
+
+| Identifier | Example | Purpose |
+| --- | --- | --- |
+| Python distribution/package | `example-framework` | Installation and dependency versions. |
+| Installed plugin ID | `example-framework` in `sparkrun.plugins` | Selection in `ApplicationProfile.integrations` or config `integrations`. |
+| Feature gate | `integration.arena` | Enable a capability or bundled plugin; it is not an installed plugin ID. |
+| Benchmark framework | `llama-benchy` | Measurement implementation selected with `framework`. |
+| Benchmark integration | `arena` | Publication hooks selected with `BenchmarkOptions.integrations`. |
+
+### Installing a benchmark framework
+
+The package entry point targets the module that exports the framework class:
+
+```toml
+[project.entry-points."sparkrun.plugins"]
+example-framework = "example_framework"
+```
+
+For example, `example_framework/__init__.py` can adapt a command-line measurement
+tool that emits one JSON object:
+
+```python
+import json
+import shutil
+from sparkrun.benchmarking.base import BenchmarkingPlugin
+
+SPARKRUN_PLUGIN_API_VERSION = 1
+
+class ExampleFramework(BenchmarkingPlugin):
+    framework_name = "example-rate"
+
+    def check_prerequisites(self):
+        return [] if shutil.which("example-bench") else ["Install example-bench"]
+
+    def build_benchmark_command(self, target_url, model, args, result_file=None):
+        return ["example-bench", "--url", target_url, "--model", model]
+
+    def parse_results(self, stdout, stderr, result_file=None):
+        return json.loads(stdout)
+```
+
+Select the installed plugin with `integrations: {example-framework: true}`, then
+use `BenchmarkOptions(recipe="...", framework="example-rate")`. The loader scans
+the concrete class; no `register(v)` hook is needed here. `sparkrun.benchmarking`
+is the internal SAF extension point, not a Python package entry-point group.
+This minimal framework has no scheduled-task resume support.
 
 
 ### Application and controller identity
@@ -417,7 +474,8 @@ scheduled state exists. The host persists each integration's settings and data,
 including when a binding/checkpoint/completion callback fails. Rejected settings
 from `validate` are not persisted and do not overwrite the last accepted settings.
 Store only JSON-compatible values, never credentials. Ordinary caller-provided
-`BenchmarkOptions.state_extras` is also copied into newly created state.
+`BenchmarkOptions.state_extras` is also copied into newly created state; see
+[caller metadata and reserved keys](BENCHMARK_API.md#caller-metadata).
 
 A scheduled run saves validated results for completion retries; `benchmark resume
 <ID>` can retry publication after inference has stopped. An unscheduled framework
@@ -432,7 +490,7 @@ objects and a decoder returning a settings dict, or `None` when not selected.
 The host resolves options before parsing/help/completion, rejects parameter name
 and flag collisions, and forwards the decoded mapping to `BenchmarkOptions`.
 Use the same `feature_flag` on the lifecycle and option specs. Option and lifecycle
-registrations participate in installed-plugin registration rollback.
+registrations participate in rollback for every plugin loader.
 
 The in-tree [sparkarena plugin](../src/sparkrun/plugins/sparkarena/README.md) provides a
 complete example. `integration.arena` gates its commands, flags, and lifecycle.
@@ -470,7 +528,11 @@ The plan is the existing resolved recipe/cluster/placement/identity decision;
 handlers must not independently repeat placement. Core enforces execution-strategy
 compatibility and replacement semantics before dispatch. Both default and plugin
 launches preserve typed `SparkrunError` errors and translate other exceptions with
-their cause; interrupts propagate unchanged. The Kubernetes plugin uses the same
+their cause; interrupts propagate unchanged. A runtime failure may instead return
+a nonzero `RunResult.rc`; consumers must inspect that public status. A plugin need
+not create the private `launch_result` handle. Benchmarking rejects nonzero real
+launch status before endpoint waits, checkpoint hooks, or measurement.
+The Kubernetes plugin uses the same
 executor configuration chain for its target settings. `options.executor_overrides()`
 returns the caller layer for `resolve_executor()`; do not independently merge the
 recipe/cluster/default layers.
@@ -489,9 +551,9 @@ When completed state was saved, retry using `resume_benchmark(id)`.
 
 Python frontends pass `BenchmarkOptions.decision_callback` (or the same argument
 to `resume_benchmark`) for integration confirmations. Without a callback,
-`emitter.confirm(message, default=...)` uses the supplied default. The older
-`on_prompt_required` hook only decides whether to reuse incomplete benchmark
-state; it never handled integration confirmations. Recipe trust remains separate.
+`emitter.confirm(message, default=...)` uses the supplied default. The removed
+`on_prompt_required` and `on_complete_state` options are replaced by the same
+`BenchmarkDecision` callback for resume choices. Recipe trust remains separate.
 See [the benchmark API guide](BENCHMARK_API.md) for events and decision kinds.
 
 Arena's in-tree CLI adapter is versioned with core and intentionally uses private
@@ -516,7 +578,13 @@ enlist_registry_state(globals(), "_ENTRIES")
 # register_unique(_ENTRIES, name, spec, description="Example extension")
 ```
 
-Plugin loading snapshots enlisted containers and SAF registration state.
+Installed, directory, and bundled loaders share
+`core.registration.load_and_register_plugin()` for import, compatibility checks
+and registration in one transaction. Direct `load_plugin_module()` registration
+uses the same boundary. `core.registration.registry_transaction(v)` is available
+for explicit transactions over enlisted containers and SAF state. Only completed
+registration is reported as loaded. A failed hook rolls back its contributions
+before optional-plugin error handling continues to independent plugins.
 Nested mutable containers and registry imports during registration participate
 in rollback. Identical registrations are allowed; conflicting providers fail.
 Enlistment tracks the namespace entry, so deliberately replacing a container
@@ -538,5 +606,7 @@ only when the recorded change has been removed or is already absent. `warn`,
 `skip`, `fail`, exceptions, and invalid statuses leave the host's record available
 for retry. Return useful detail explaining incomplete cleanup. Successful hosts
 are cleared independently before frontend notification; other hosts and
-unselected phases remain recorded. Built-in and plugin undo run through the
+unselected phases remain recorded. Unresolved dependents block prerequisite
+undo on the same host, even through transitive or filtered dependencies.
+Built-in and plugin undo run through the
 same console-free API. See [shared setup](SETUP_STEPS.md).

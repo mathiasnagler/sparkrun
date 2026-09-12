@@ -65,7 +65,9 @@ class BenchmarkingPlugin(Plugin):
     """Abstract base for benchmarking frameworks (SAF multi-extension plugin).
 
     Mirrors :class:`~sparkrun.runtimes.base.RuntimePlugin` in structure.
-    Subclasses register via entry points under ``sparkrun.benchmarking``.
+    Installed modules declare a ``sparkrun.plugins`` entry point; its loader
+    scans their concrete subclasses. ``sparkrun.benchmarking`` is the internal
+    SAF extension point, not an installed-package entry-point group.
     """
 
     eager = False
@@ -454,6 +456,7 @@ class BenchmarkExecution:
     # from a fresh measurement in the exported artifact (issue #267).
     # ``measured_at`` is the first measurement time (a pinned fallback for legacy state).
     resumed: bool = False
+    already_complete: bool = False
     measured_at: Optional[str] = None
     measurement_completed_at: Optional[str] = None
 

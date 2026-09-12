@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any, Callable, NoReturn, TYPE_CHECKING
+from typing import Callable, NoReturn, TYPE_CHECKING
 
 import click
 
@@ -31,14 +31,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
 
 if TYPE_CHECKING:
-    from sparkrun.api._benchmark_models import ResumeMode
+    from sparkrun.api._benchmark_models import ResumeMode, BenchmarkDecision
 
 
 class _CliEmitter(_ProgressEmitter):
     """Shared terminal adapter for benchmark run, resume, and stop."""
 
-    def __init__(self, *, show_recipe=False):
-        super().__init__()
+    def __init__(self, *, show_recipe=False, decision_callback=None):
+        super().__init__(decision_callback or _cli_decision)
         self.show_recipe = show_recipe
 
     def on_recipe_resolved(self, recipe, overrides, *, local_cache_dir=None):
@@ -53,12 +53,6 @@ class _CliEmitter(_ProgressEmitter):
 
         return BenchmarkProgressUI(**kwargs)
 
-    def confirm(self, message: str, *, default: bool = False) -> bool:
-        if not sys.stdin.isatty():
-            click.echo("Not running interactively — continuing without confirmation.")
-            return True
-        return click.confirm(message, default=default)
-
     def banner(self, line: str) -> None:
         click.echo(line)
 
@@ -72,52 +66,14 @@ class _CliEmitter(_ProgressEmitter):
         click.echo("Error: %s" % msg, err=True)
 
 
-def _resolve_resume_prompt(
-    state,
-    total_tasks: int,
-    on_prompt_required: "Callable[[Any], bool] | None",
-) -> bool:
-    """Decide whether to resume incomplete state when mode is AUTO.
-
-    Resolution order:
-    1. Explicit ``on_prompt_required`` callback — caller drives the answer.
-    2. TTY: ``click.confirm`` with default=True (preserves existing CLI UX).
-    3. Non-TTY: default to True (resume) — sensible non-interactive default.
-    """
-    if on_prompt_required is not None:
-        return bool(on_prompt_required(state))
-    import sys as _sys
-
-    if _sys.stdin.isatty():
-        return click.confirm(
-            "Found existing incomplete benchmark state (%d/%d tasks done). Resume?" % (len(state.completed_indices), total_tasks),
-            default=True,
-        )
-    return True
-
-
-def _resolve_complete_prompt(
-    state,
-    on_complete_state: "Callable[[Any], bool] | None",
-) -> bool:
-    """Decide whether to delete COMPLETE prior state and re-measure (mode AUTO).
-
-    Resolution order mirrors :func:`_resolve_resume_prompt`:
-    1. Explicit ``on_complete_state`` callback — caller drives the answer.
-    2. TTY: ``click.confirm`` with default=True (re-measure).
-    3. Non-TTY: ``False`` — reuse deterministically; the API layer warns that
-       cached results are being re-emitted.
-    """
-    if on_complete_state is not None:
-        return bool(on_complete_state(state))
-    import sys as _sys
-
-    if _sys.stdin.isatty():
-        return click.confirm(
-            "Found COMPLETE benchmark state — reusing it re-emits the previous results without running anything. Delete and re-measure?",
-            default=True,
-        )
-    return False
+def _cli_decision(request: "BenchmarkDecision") -> bool:
+    """CLI-only prompting policy; the API supplies the decision and its context."""
+    if not sys.stdin.isatty():
+        if request.kind == "integration_confirmation":
+            click.echo("Not running interactively — continuing without confirmation.")
+            return True
+        return request.default
+    return click.confirm(request.message, default=True if request.kind == "remeasure_complete" else request.default)
 
 
 class _BenchmarkGroup(click.Group):
@@ -407,8 +363,8 @@ def _echo_benchmark_failure(e) -> "NoReturn":
     and ``_resume_benchmark_run``), which previously disagreed: one printed the
     message, the other exited silently.
 
-    ``exit_code`` 0 is the "already complete, nothing to do" case, so its message
-    goes to stdout as ordinary output rather than to stderr as an error.  The
+    A legacy ``exit_code=0`` is still rendered as ordinary output. Normal
+    completed resumes return a result and are rendered by the resume adapter. The
     ``"Error: "`` prefix is stripped because most raise sites already embed one
     and we add our own.
     """
@@ -436,7 +392,10 @@ def _resume_benchmark_run(ctx, benchmark_id: str, dry_run: bool, *, sctx=None, i
         sctx = _get_context(ctx)
 
     try:
-        return _resume_benchmark(benchmark_id, dry_run=dry_run, sctx=sctx, emitter=_CliEmitter(), integrations=integrations)
+        result = _resume_benchmark(benchmark_id, dry_run=dry_run, sctx=sctx, emitter=_CliEmitter(), integrations=integrations)
+        if result.already_complete:
+            click.echo("Benchmark %s is already complete. Nothing to resume." % benchmark_id)
+        return result
     except KeyboardInterrupt:
         sys.exit(130)
     except BenchmarkFailed as e:
@@ -482,8 +441,7 @@ def _run_benchmark(
     export_results_files=True,
     fresh: bool = False,
     resume_mode: "ResumeMode | None" = None,
-    on_prompt_required: "Callable[[Any], bool] | None" = None,
-    on_complete_state: "Callable[[Any], bool] | None" = None,
+    decision_callback: "Callable[[BenchmarkDecision], bool] | None" = None,
     integrations: dict[str, dict] | None = None,
     scheduler_name: str | None = None,
     host_list=None,
@@ -515,20 +473,7 @@ def _run_benchmark(
     if resume_mode is None:
         resume_mode = _ResumeMode.FRESH if fresh else _ResumeMode.AUTO
 
-    # AUTO-mode resume prompting is a CLI/console concern.  The API
-    # orchestration consults ``options.on_prompt_required`` instead of
-    # importing console code, so supply a callback that renders the
-    # interactive ``click.confirm`` prompt (or the non-TTY default) via
-    # ``_resolve_resume_prompt``.  ``state.schedule`` carries the full
-    # task count for the resumed run.
-    if on_prompt_required is None:
-        on_prompt_required = lambda state: _resolve_resume_prompt(state, len(state.schedule), None)  # noqa: E731
-
-    # Same wiring for COMPLETE prior state: reusing it re-emits recorded
-    # results without measuring, so AUTO mode asks (TTY) or reuses loudly
-    # (non-TTY) via ``_resolve_complete_prompt``.
-    if on_complete_state is None:
-        on_complete_state = lambda state: _resolve_complete_prompt(state, None)  # noqa: E731
+    decision_callback = decision_callback or _cli_decision
 
     # Parse bench_options key=value strings into a dict for BenchmarkOptions.
     # Validation (insecure api_key, malformed) happens in _execute_benchmark.
@@ -618,11 +563,10 @@ def _run_benchmark(
         sync_tuning=bool(sync_tuning),
         extra_docker_opts=tuple(executor_args) if executor_args else None,
         progress_callback=None,
-        on_prompt_required=on_prompt_required,
-        on_complete_state=on_complete_state,
+        decision_callback=decision_callback,
     )
 
-    emitter = _CliEmitter(show_recipe=True)
+    emitter = _CliEmitter(show_recipe=True, decision_callback=decision_callback)
 
     try:
         bench_result = _execute_benchmark(opts, sctx=sctx, emitter=emitter)

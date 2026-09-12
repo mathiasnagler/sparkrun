@@ -8,10 +8,18 @@ workers; this is not a concurrent registry mutation API.
 
 from __future__ import annotations
 
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, TypeVar
+from types import ModuleType
+from typing import Any, TypeVar, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from scitrera_app_framework import Variables
+    from sparkrun.core.registry_defaults import DeclarationTier
+
+# Module entry-point compatibility, independent of application profile schemas.
+PLUGIN_API_VERSION = 1
 
 K = TypeVar("K")
 V = TypeVar("V")
@@ -85,8 +93,36 @@ def registry_transaction(*extra_state):
     token = _ACTIVE.set((*_ACTIVE.get(), snapshot))
     try:
         yield
-    except Exception:
+    except BaseException:
         snapshot.restore()
         raise
     finally:
         _ACTIVE.reset(token)
+
+
+def load_and_register_plugin(
+    loader: Callable[[], ModuleType],
+    v: Variables | None,
+    *,
+    tier: DeclarationTier | None = None,
+    require_api_version: bool = False,
+) -> ModuleType:
+    """Import, validate and register one module in a single transaction.
+
+    Discovery, trust tier and optional failure reporting belong to the caller.
+    Installed entry points require a version declaration. Legacy directory and
+    bundled modules may omit it, but any declared version must be compatible.
+    Exceptions propagate after rollback; arbitrary plugin I/O is not undone.
+    """
+    with registry_transaction(v):
+        from sparkrun.core.external_plugins import _register_plugin_module
+
+        module = loader()
+        if not isinstance(module, ModuleType):
+            raise TypeError("Plugin loaders must return a module")
+        if require_api_version or hasattr(module, "SPARKRUN_PLUGIN_API_VERSION"):
+            api_version = getattr(module, "SPARKRUN_PLUGIN_API_VERSION", None)
+            if type(api_version) is not int or api_version != PLUGIN_API_VERSION:
+                raise ValueError("Plugin API %r is incompatible with supported API %s" % (api_version, PLUGIN_API_VERSION))
+        _register_plugin_module(module, v, tier=tier)
+    return module

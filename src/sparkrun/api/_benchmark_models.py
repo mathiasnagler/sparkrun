@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.recipe import Recipe
     from sparkrun.api._models import RunResult
-    from sparkrun.benchmarking.run_state import BenchmarkRunState
 
 
 # --------------------------------------------------------------------------
@@ -187,21 +186,12 @@ class BenchmarkOptions:
     """Callback invoked with :class:`ProgressEvent` instances during the run.
     The API does not render terminal progress when no callback is supplied."""
     state_extras: dict[str, Any] = field(default_factory=dict)
-    """Arbitrary extras forwarded into the benchmark state (e.g.
-    ``{"experiment": "run-abc"}``)."""
-    on_prompt_required: "Callable[[BenchmarkRunState], bool] | None" = None
-    """Legacy AUTO incomplete-state callback: True resumes, False starts fresh.
-    Receives BenchmarkRunState. Does not handle integration confirmations;
-    new callers should use ``decision_callback``."""
-    on_complete_state: "Callable[[BenchmarkRunState], bool] | None" = None
-    """Callback invoked under ``ResumeMode.AUTO`` when prior benchmark state is
-    already COMPLETE.  Return ``True`` to delete it and re-measure, ``False`` to
-    re-emit the recorded results.  When ``None``, complete state is reused —
-    with a warning, never silently."""
-
+    """Caller metadata copied into new scheduled state. Use application-owned
+    names (e.g. ``{"my_app.experiment": "run-abc"}``); core-reserved keys
+    are documented in ``docs/BENCHMARK_API.md``."""
     decision_callback: "Callable[[BenchmarkDecision], bool] | None" = None
     """Synchronous decision handler for AUTO resume choices and integration
-    confirmations. Takes precedence over the legacy resume callbacks above."""
+    confirmations. Receives a frozen decision value, never live saved state."""
 
 
 # --------------------------------------------------------------------------
@@ -260,6 +250,8 @@ class BenchmarkResult:
     """Directory where benchmark state was persisted, when applicable."""
     resumed: bool = False
     """``True`` when this run resumed from a prior checkpoint."""
+    already_complete: bool = False
+    """Resume found validated completed measurements and no available integration work."""
     integration_results: dict[str, dict[str, Any]] = field(default_factory=dict)
     """Integration-provided outcome summaries, keyed by integration name."""
     integration_errors: dict[str, str] = field(default_factory=dict)

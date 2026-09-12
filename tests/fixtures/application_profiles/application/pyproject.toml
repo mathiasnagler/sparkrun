@@ -7,7 +7,7 @@ name = "profile-test-app"
 version = "1.0.0"
 description = "Private application-profile test fixture; never publish"
 requires-python = ">=3.12"
-dependencies = ["sparkrun==0.4.0", "profile-test-plugin==0.1.0"]
+dependencies = ["sparkrun>=0.4,<0.5", "profile-test-plugin==0.1.0"]
 
 [project.scripts]
 profile-test-app = "profile_test_app.__main__:main"

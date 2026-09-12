@@ -137,6 +137,8 @@ def _make_fake_run_result(cluster_id: str = "sparkrun_0123456789abcdef_aabbccdde
     rr.serve_port = 8000
     rr.metadata = {}
     rr.launch_result = None
+    rr.rc = 0
+    rr.already_running = False
     return rr
 
 

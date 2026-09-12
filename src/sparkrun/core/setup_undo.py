@@ -8,10 +8,10 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 
 from sparkrun.core.setup_actions import SetupActionContext, SetupActionResult, validate_action_result, aggregate_action_status
-from sparkrun.core.setup_manifest import ManifestManager, SetupManifest, remove_phase_hosts
+from sparkrun.core.setup_manifest import ManifestManager, SetupManifest, remove_phase_hosts, validate_setup_manifest
 from sparkrun.core.setup_models import FAIL, OK, SKIP
 from sparkrun.core.setup_runner import SetupEvent
-from sparkrun.core.setup_steps import SetupStep, all_setup_steps
+from sparkrun.core.setup_steps import SetupStep, all_setup_steps, _order_setup_steps
 
 # Shared system configuration is deliberately retained. Post-CX7 mesh changes
 # are reversed by the ordinary ssh_mesh phase.
@@ -23,6 +23,12 @@ class SetupUndoResult:
     steps: dict[str, str]
     outcomes: dict[str, dict[str, SetupActionResult]]
     remaining: dict[str, tuple[str, ...]]
+    manifest: SetupManifest
+    """Detached state after undo; saved state when a manager is supplied.
+
+    Without a manager, callers may persist this snapshot directly. Preview
+    leaves the snapshot unchanged. The input manifest is never mutated.
+    """
 
     @property
     def complete(self) -> bool:
@@ -43,6 +49,20 @@ def available_undo_steps(manifest: SetupManifest) -> dict[str, SetupStep]:
     return steps
 
 
+def _undo_dependencies(available: Mapping[str, SetupStep]) -> dict[str, set[str]]:
+    # An explicit undo mapping may narrow execution, but cannot erase known
+    # dependencies. Include registered steps even when their undo is absent.
+    graph = {step.key: step for step in all_setup_steps()}
+    for key, step in available.items():
+        registered = graph.get(key)
+        requires = tuple(dict.fromkeys((*registered.requires, *step.requires))) if registered else step.requires
+        graph[key] = replace(step, requires=requires)
+    dependencies: dict[str, set[str]] = {}
+    for step in _order_setup_steps(graph):
+        dependencies[step.key] = set(step.requires).union(*(dependencies[key] for key in step.requires))
+    return dependencies
+
+
 def run_setup_undo(
     manifest: SetupManifest,
     action_context: SetupActionContext,
@@ -59,9 +79,12 @@ def run_setup_undo(
     A manager reloads authoritative state and records each successful target
     while holding its lock. Without one, operate on a detached manifest only.
     Caller-supplied steps replace the default built-in/loaded plugin undo set.
-    Plugin undo uses reverse dependency order, independent of feature gates.
-    Only OK confirms removal (including already absent). Preview/decline never
-    invokes undo or credentials and leaves every record unresolved.
+    Default plugin undo uses reverse dependency order, independent of feature
+    gates. Recorded dependents block prerequisite removal per host, including
+    dependents outside caller-supplied steps or filters. Only OK confirms
+    removal (including already absent). Preview/decline never invokes undo or
+    credentials and leaves every record unresolved. Both input sources are
+    validated before callbacks; the result includes the updated manifest.
     """
     statuses: dict[str, str] = {}
     outcomes: dict[str, dict[str, SetupActionResult]] = {}
@@ -76,26 +99,38 @@ def run_setup_undo(
             manifest = manifest_mgr.load(manifest.cluster, strict=True)
             if manifest is None:
                 raise ValueError("Setup undo requires an existing manifest")
-        manifest = deepcopy(manifest)
+        manifest = validate_setup_manifest(manifest)
         available = dict(steps) if steps is not None else available_undo_steps(manifest)
         if only_steps is not None and (unknown := only_steps - available.keys()):
             raise ValueError("No teardown implementation for: " + ", ".join(sorted(unknown)))
         if any(key != step.key or not callable(step.undo) for key, step in available.items()):
             raise ValueError("Undo steps must be keyed by their ID and provide an undo callback")
+        dependencies = _undo_dependencies(available)
         for key, step in available.items():
             record = manifest.phases.get(key)
             if record is None or not record.applied or key in RETAINED_SETUP_PHASES or (only_steps is not None and key not in only_steps):
                 continue
             hosts = tuple(record.hosts)
             per_host = outcomes[key] = {}
+            blockers = {
+                host: tuple(
+                    name
+                    for name, other in manifest.phases.items()
+                    if other.applied and host in other.hosts and key in dependencies.get(name, ())
+                )
+                for host in hosts
+            }
+            candidates = tuple(host for host in hosts if not blockers[host])
             emit(SetupEvent("preview" if action_context.dry_run else "selected", key, step.label, hosts))
-            accepted = not action_context.dry_run and (approve is None or approve(step, hosts))
+            accepted = bool(candidates) and not action_context.dry_run and (approve is None or approve(step, candidates))
             action = replace(
                 action_context,
                 sudo_password=(credentials() if credentials else action_context.sudo_password) if accepted and step.requires_sudo else None,
             )
             for host in hosts:
-                if not accepted:
+                if blockers[host]:
+                    outcome = SetupActionResult(host, SKIP, "required by recorded steps: " + ", ".join(blockers[host]))
+                elif not accepted:
                     outcome = SetupActionResult(host, SKIP, "would undo" if action_context.dry_run else "declined by caller")
                 else:
                     details = deepcopy(record.extra.get("host_details", {}).get(host, record.extra))
@@ -110,4 +145,9 @@ def run_setup_undo(
                 per_host[host] = outcome
                 emit(SetupEvent("result", key, step.label, (host,), outcome.status, outcome.detail))
             statuses[key] = aggregate_action_status(per_host)
-        return SetupUndoResult(statuses, outcomes, remaining_setup_changes(manifest))
+        if manifest_mgr is not None and not action_context.dry_run:
+            # Include the saved timestamps and any other authoritative fields.
+            manifest = manifest_mgr.load(manifest.cluster, strict=True)
+            if manifest is None:
+                raise ValueError("Setup manifest disappeared during undo")
+        return SetupUndoResult(statuses, outcomes, remaining_setup_changes(manifest), manifest)

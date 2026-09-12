@@ -20,9 +20,11 @@ party automation, the CLI itself) depend on.  Surfaces:
   ``resume_benchmark``.
 
 The API never writes to ``stdout`` / ``stderr`` and never calls
-``sys.exit``.  Errors are raised as :class:`SparkrunError`
-subclasses; streaming surfaces (``logs``) return iterators of
-structured records that the CLI renders to the TTY.
+``sys.exit``. Operational failures use :class:`SparkrunError` subclasses;
+pure model/plan validation may raise ValueError or TypeError. Implicit bootstrap
+failures are wrapped with their original cause; interrupts propagate. Streaming
+surfaces (``logs``) return iterators of structured records that the CLI renders
+to the TTY.
 
 Stability: the dataclass shapes and exception hierarchy are stable;
 field additions are non-breaking, field removals are breaking.

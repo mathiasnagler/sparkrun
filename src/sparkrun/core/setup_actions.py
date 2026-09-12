@@ -24,7 +24,7 @@ fi
 
 _DOCKER_GROUP_FALLBACK_SCRIPT = """\
 #!/bin/bash
-set -uo pipefail
+set -euo pipefail
 TARGET_USER="{user}"
 usermod -aG docker "$TARGET_USER"
 echo "DOCKER_GROUP=added"

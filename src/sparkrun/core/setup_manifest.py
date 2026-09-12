@@ -79,7 +79,13 @@ def validate_setup_details(value: Any, *, field: str = "extra") -> dict[str, Any
     return details
 
 
+def _validate_cluster_name(cluster_name: str) -> None:
+    if not isinstance(cluster_name, str) or not cluster_name or cluster_name in {".", ".."} or any(c in cluster_name for c in "/\\"):
+        raise ValueError("Invalid setup manifest cluster name: %r" % cluster_name)
+
+
 def _decode_manifest(data: Any, cluster_name: str, version: int) -> SetupManifest:
+    _validate_cluster_name(cluster_name)
     data = _mapping(data, "Setup manifest")
     if not data:
         raise ValueError("Setup manifest must be a nonempty mapping")
@@ -113,6 +119,13 @@ def _decode_manifest(data: Any, cluster_name: str, version: int) -> SetupManifes
     )
 
 
+def validate_setup_manifest(manifest: SetupManifest) -> SetupManifest:
+    """Return a detached, validated owned manifest without reading or writing files."""
+    if not isinstance(manifest, SetupManifest):
+        raise TypeError("Setup undo requires a SetupManifest")
+    return _decode_manifest(asdict(manifest), manifest.cluster, ManifestManager.MANIFEST_VERSION)
+
+
 class ManifestManager:
     """Manages setup manifest files alongside cluster definitions."""
 
@@ -125,8 +138,7 @@ class ManifestManager:
         self._held: set[str] = set()
 
     def _manifest_path(self, cluster_name: str) -> Path:
-        if not isinstance(cluster_name, str) or not cluster_name or cluster_name in {".", ".."} or any(c in cluster_name for c in "/\\"):
-            raise ValueError("Invalid setup manifest cluster name: %r" % cluster_name)
+        _validate_cluster_name(cluster_name)
         return self.clusters_dir / ("%s.manifest.yaml" % cluster_name)
 
     @contextmanager
@@ -209,7 +221,6 @@ class ManifestManager:
             if manifest is None or phase not in manifest.phases:
                 return
             remove_phase_hosts(manifest, phase, hosts)
-            manifest.updated = datetime.now(timezone.utc).isoformat()
             self.save(manifest)
 
     def record_phase(
@@ -293,13 +304,16 @@ def remove_phase_hosts(manifest: SetupManifest, phase: str, hosts: list[str]) ->
     record = manifest.phases.get(phase)
     if record is None:
         return
+    removed = set(hosts) & set(record.hosts)
+    if not removed:
+        return
     # Keep the original mesh key sources when some target hosts finish first.
     if phase in {"ssh_mesh", "ssh_mesh_post_cx7"}:
         record.extra["mesh_hosts"] = list(dict.fromkeys([*record.extra.get("mesh_hosts", []), *record.hosts]))
-    removed = set(hosts)
     record.hosts = [host for host in record.hosts if host not in removed]
     details = record.extra.get("host_details", {})
     for host in removed:
         details.pop(host, None)
     if not record.hosts:
         del manifest.phases[phase]
+    manifest.updated = datetime.now(timezone.utc).isoformat()

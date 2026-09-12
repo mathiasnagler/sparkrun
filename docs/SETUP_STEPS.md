@@ -229,7 +229,9 @@ this same runner; built-in scripts and mesh-key handling are console-free.
 Feature flags do not disable undoing recorded changes while their plugin is
 loaded. The supplied manifest identifies the cluster; a manager reloads its
 current validated state under the recording lock. With `manifest_mgr=None`, the
-runner uses a detached snapshot and leaves persistence to the caller.
+runner validates the supplied snapshot and leaves persistence to the caller.
+Both routes reject foreign ownership, unsupported versions, and invalid field
+shapes before callbacks. The original input object is never mutated.
 
 ```python
 from sparkrun.api.setup import run_setup_undo
@@ -246,11 +248,29 @@ if manifest is not None:
 
 `SetupUndoResult.steps` contains aggregate statuses; `outcomes` retains each
 host's status/detail; `remaining` maps unresolved phase IDs to host tuples.
+`manifest` is the detached updated snapshot, including timestamps, unresolved
+per-host details, and original mesh peers needed for retry. With a manager it
+matches the authoritative saved state at return. In preview it is unchanged.
+A caller with its own storage can persist it directly:
+
+```python
+undone = run_setup_undo(manifest, action)  # caller owns storage and locking
+external_store.save(undone.manifest)
+```
+
+The snapshot is returned on normal completion, including per-host failures.
+Use a manifest manager when successful targets must be saved incrementally
+before a later orchestration or frontend callback can raise.
 `complete` means no reversible recorded change remains. Successful hosts are
 removed from their phase records before frontend result notification. No later
 host success can clear a warning/failure on another host. Missing plugins,
 filtered phases, declined actions, and invalid results remain unresolved.
 `only_steps` restricts execution, never authorizes discarding other records.
+Unresolved recorded dependents block prerequisite undo on the same host. This
+includes transitive dependencies and dependents outside `only_steps` or an
+explicit `steps` mapping. Blocked outcomes are `skip` with the dependent IDs in
+the detail, and their records remain. Independent hosts/steps can still complete.
+Approval and credentials are requested only for hosts eligible for actual undo.
 The CLI deletes the cluster/manifest only after all reversible recorded changes
 are resolved, unless `--keep-cluster` requests retention. The runner itself
 never deletes the cluster or manifest.

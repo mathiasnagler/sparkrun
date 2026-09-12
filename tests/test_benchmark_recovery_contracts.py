@@ -230,3 +230,246 @@ def test_incomplete_resume_export_failure_preserves_results_without_stopping_uno
     assert caught.value.result.results == {"rows": [env.rows]}
     env.stop.assert_not_called()
     assert resume_benchmark(state_path.parent.name, sctx=env.sctx).results == caught.value.result.results
+
+
+@pytest.mark.parametrize("failure", ["checkpoint", "parse", "progress", "readiness"])
+@pytest.mark.parametrize("lifecycle", ["owned", "no_stop", "skip_run"])
+def test_early_benchmark_failure_honors_launch_ownership(bench_env, monkeypatch, failure, lifecycle):
+    from sparkrun.api import SparkrunError
+
+    env = bench_env
+    options = replace(env.options, no_stop=lifecycle == "no_stop", skip_run=lifecycle == "skip_run")
+    if failure == "checkpoint":
+        register_benchmark_integration(BenchmarkIntegration("early", on_checkpoint=Mock(side_effect=RuntimeError("early failure"))))
+        options = replace(options, integrations={"early": {}})
+    elif failure == "parse":
+        env.fw.parse_results.side_effect = ValueError("early failure")
+    elif failure == "progress":
+
+        def progress(event):
+            if event.kind == "info" and event.data.get("msg") == "--- benchmark output ---":
+                raise RuntimeError("early failure")
+
+        options = replace(options, progress_callback=progress)
+    else:
+        if lifecycle == "skip_run":
+            # There is no readiness wait for inference the benchmark does not own.
+            assert benchmark(options, sctx=env.sctx).success
+            env.stop.assert_not_called()
+            return
+        monkeypatch.setattr("sparkrun.core.launcher.wait_for_serve_ready", Mock(side_effect=RuntimeError("early failure")))
+    with pytest.raises(SparkrunError, match="early failure"):
+        benchmark(options, sctx=env.sctx)
+    assert env.run.call_count == int(lifecycle != "skip_run")
+    assert env.stop.call_count == int(lifecycle == "owned")
+
+
+def test_ownership_is_established_before_serve_command_notification(bench_env):
+    from sparkrun.api import SparkrunError
+
+    bench_env.run.return_value.serve_command = "serve"
+
+    def progress(event):
+        if bench_env.run.called:
+            raise RuntimeError("frontend failed immediately after launch")
+
+    with pytest.raises(SparkrunError, match="frontend failed"):
+        benchmark(replace(bench_env.options, progress_callback=progress), sctx=bench_env.sctx)
+    bench_env.stop.assert_called_once()
+
+
+@pytest.mark.parametrize("launched", [True, False])
+def test_interrupt_survives_broken_notifications_and_secondary_cleanup(bench_env, launched):
+    primary = KeyboardInterrupt()
+    if launched:
+        bench_env.fw.build_benchmark_command.side_effect = primary
+    else:
+        bench_env.run.side_effect = primary
+    bench_env.stop.side_effect = OSError("cleanup failed")
+
+    def progress(event):
+        if event.kind == "info" and event.data.get("msg", "").startswith("Interrupted"):
+            raise RuntimeError("notification failed")
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        benchmark(replace(bench_env.options, progress_callback=progress), sctx=bench_env.sctx)
+    assert caught.value is primary
+    assert bench_env.stop.call_count == int(launched)
+    if launched:
+        assert "cleanup failed" in " ".join(primary.__notes__)
+
+
+def test_early_failure_preserves_cause_when_cleanup_fails(bench_env):
+    from sparkrun.api import SparkrunError
+
+    primary = ValueError("parse failed")
+    bench_env.fw.parse_results.side_effect = primary
+    bench_env.stop.side_effect = OSError("cleanup failed")
+    with pytest.raises(SparkrunError, match="parse failed") as caught:
+        benchmark(bench_env.options, sctx=bench_env.sctx)
+    assert caught.value.__cause__ is primary
+    assert "cleanup failed" in " ".join(primary.__notes__)
+    bench_env.stop.assert_called_once()
+
+
+def test_existing_deployment_returned_by_run_is_not_owned(bench_env):
+    bench_env.run.return_value.already_running = True
+    assert benchmark(bench_env.options, sctx=bench_env.sctx).success
+    bench_env.stop.assert_not_called()
+
+
+@pytest.mark.parametrize("missing_plugin", [False, True])
+def test_completed_resume_without_available_integrations_returns_saved_result(scheduled_env, monkeypatch, capsys, missing_plugin):
+    from sparkrun.api import BenchmarkResult
+
+    env = scheduled_env
+    initial = benchmark(replace(env.options, export_files=False), sctx=env.sctx)
+    state = BenchmarkRunState.load(initial.benchmark_id, str(env.sctx.config.cache_dir))
+    if missing_plugin:
+        state.extras[STATE_KEY] = {"missing": {"settings": {}, "data": {"retained": True}}}
+        state.save(str(env.sctx.config.cache_dir))
+    state_path = state.state_dir(str(env.sctx.config.cache_dir)) / "state.yaml"
+    before = state_path.read_bytes()
+    monkeypatch.setattr("sparkrun.core.resolve.load_recipe", Mock(side_effect=AssertionError("must not reload")))
+    export = Mock(side_effect=AssertionError("must not export"))
+    monkeypatch.setattr("sparkrun.api._benchmark._export_measurement", export)
+    events = []
+    capsys.readouterr()
+    result = resume_benchmark(initial.benchmark_id, sctx=env.sctx, progress_callback=events.append)
+    assert capsys.readouterr().out == ""
+    assert isinstance(result, BenchmarkResult) and result.success and result.already_complete and result.resumed
+    assert result.results == initial.results and result.run_result is None
+    assert state_path.read_bytes() == before
+    assert [event.kind for event in events] == ["run_complete"]
+    env.run.assert_called_once()
+    env.fw.parse_results.assert_called_once()
+    export.assert_not_called()
+
+
+@pytest.mark.parametrize("export_files", [True, False])
+def test_resumed_measurement_respects_output_controls(scheduled_env, monkeypatch, tmp_path, export_files):
+    from sparkrun.api import BenchmarkFailed
+
+    env = scheduled_env
+    original = env.fw.build_benchmark_command.side_effect
+    import sys
+
+    env.fw.build_benchmark_command.side_effect = lambda *a, **kw: [sys.executable, "-c", "raise SystemExit(1)"]
+    with pytest.raises(BenchmarkFailed):
+        benchmark(replace(env.options, export_files=False), sctx=env.sctx)
+    path = next(env.sctx.config.cache_dir.glob("benchmarks/bench_*/state.yaml"))
+    env.fw.build_benchmark_command.side_effect = original
+    output = tmp_path / "resumed.yaml"
+    result = resume_benchmark(path.parent.name, sctx=env.sctx, export_files=export_files, output_file=str(output))
+    assert result.success and not result.already_complete
+    assert output.exists() is export_files
+    assert result.outputs == ({"yaml": str(output)} if export_files else {})
+    state = BenchmarkRunState.load(result.benchmark_id, str(env.sctx.config.cache_dir))
+    assert state.extras["measurement_complete"]
+    env.stop.assert_called_once()  # failed initial measurement only; resume owns no launch
+
+
+def test_cli_reports_completed_resume_without_failure_exception(scheduled_env, monkeypatch):
+    from click.testing import CliRunner
+    from sparkrun.cli._benchmark import benchmark_resume
+
+    initial = benchmark(replace(scheduled_env.options, export_files=False), sctx=scheduled_env.sctx)
+    monkeypatch.setattr("sparkrun.cli._benchmark._get_context", lambda _: scheduled_env.sctx)
+    result = CliRunner().invoke(benchmark_resume, [initial.benchmark_id])
+    assert result.exit_code == 0, result.output + repr(result.exception)
+    assert "already complete. Nothing to resume." in result.output
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize("private_rc", [None, 0, 23])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_public_launch_failure_precedes_benchmark_work(bench_env, private_rc, dry_run):
+    from sparkrun.api import RunResult, BenchmarkFailed
+
+    env = bench_env
+    env.launch.rc = private_rc or 0
+    env.run.return_value = RunResult(
+        cluster_id="test-job",
+        host_list=("localhost",),
+        placement=None,
+        scheduler="test",
+        runtime=env.recipe.runtime,
+        executor="test-plugin",
+        started_at=0,
+        dry_run=dry_run,
+        is_solo=True,
+        rc=23,
+        serve_port=8000,
+        container_image=env.recipe.container,
+        launch_result=env.launch if private_rc is not None else None,
+    )
+    checkpoint, complete = Mock(), Mock()
+    register_benchmark_integration(BenchmarkIntegration("status", on_checkpoint=checkpoint, on_complete=complete))
+    options = replace(env.options, dry_run=dry_run, export_files=False, integrations={"status": {}})
+    if dry_run:
+        assert benchmark(options, sctx=env.sctx).success
+    else:
+        with pytest.raises(BenchmarkFailed, match="exit code 23") as caught:
+            benchmark(options, sctx=env.sctx)
+        assert caught.value.exit_code == 23
+        for callback in (checkpoint, complete, env.fw.build_benchmark_command, env.fw.parse_results, env.endpoint, env.probe):
+            callback.assert_not_called()
+    env.stop.assert_not_called()
+
+
+def test_successful_handle_free_launch_still_benchmarks(bench_env):
+    from sparkrun.api import RunResult
+
+    env = bench_env
+    env.run.return_value = RunResult(
+        cluster_id="test-job",
+        host_list=("localhost",),
+        placement=None,
+        scheduler="test",
+        runtime=env.recipe.runtime,
+        executor="test-plugin",
+        started_at=0,
+        dry_run=False,
+        is_solo=True,
+        serve_port=8000,
+        container_image=env.recipe.container,
+    )
+    assert benchmark(replace(env.options, export_files=False), sctx=env.sctx).success
+    env.endpoint.assert_called_once()
+    env.fw.parse_results.assert_called_once()
+    env.stop.assert_called_once()
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_cancellation_survives_notification_failure_and_releases_state(scheduled_env, monkeypatch, resume):
+    import sys
+    from sparkrun.api import BenchmarkFailed
+    from sparkrun.benchmarking.run_state import hold_state_dir
+
+    env = scheduled_env
+    if resume:
+        env.fw.build_benchmark_command.side_effect = lambda *a, **kw: [sys.executable, "-c", "raise SystemExit(1)"]
+        with pytest.raises(BenchmarkFailed):
+            benchmark(replace(env.options, export_files=False), sctx=env.sctx)
+        env.stop.reset_mock()
+    primary = KeyboardInterrupt("cancel measurement")
+    monkeypatch.setattr("sparkrun.benchmarking.scheduler.run_schedule", Mock(side_effect=primary))
+    notices = []
+
+    def progress(event):
+        if event.kind == "info" and event.data.get("msg", "").startswith("Interrupted"):
+            notices.append(event)
+            raise RuntimeError("frontend disconnected")
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        if resume:
+            state_path = next(env.sctx.config.cache_dir.glob("benchmarks/bench_*/state.yaml"))
+            resume_benchmark(state_path.parent.name, sctx=env.sctx, progress_callback=progress)
+        else:
+            benchmark(replace(env.options, progress_callback=progress, export_files=False), sctx=env.sctx)
+    assert caught.value is primary and len(notices) == 1
+    assert env.stop.call_count == int(not resume)
+    state_path = next(env.sctx.config.cache_dir.glob("benchmarks/bench_*/state.yaml"))
+    assert BenchmarkRunState.load(state_path.parent.name, str(env.sctx.config.cache_dir)) is not None
+    with hold_state_dir(state_path.parent.name, str(env.sctx.config.cache_dir)):
+        pass

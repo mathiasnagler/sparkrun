@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from sparkrun.core.features import FeatureFlag
 
-__version__ = "0.4.0"
+from sparkrun import __version__ as __version__
+
 FEATURE_FLAG = "integration.k8s"
 
 # The loader registers these only after the application enables this plugin.

@@ -37,9 +37,10 @@ developer's real config (see ``_DISABLE_ENV`` below).
 
 from __future__ import annotations
 
-from sparkrun.core.registration import enlist_registry_state
+from sparkrun.core.registration import enlist_registry_state, load_and_register_plugin
 
 import importlib
+from functools import partial
 import inspect
 import logging
 import os
@@ -166,12 +167,17 @@ def _scan_module_for_plugins(module, base: type) -> list[type]:
     return list(found.values())
 
 
-def load_plugin_module(module, v: "Variables", *, tier: "DeclarationTier | None" = None, strict: bool = False) -> None:
+def load_plugin_module(module, v: "Variables", *, tier: "DeclarationTier | None" = None, strict: bool = False) -> bool:
     """Register everything *module* contributes: SAF subclasses, then ``register(v)``.
 
     Shared with :mod:`sparkrun.core.in_tree_plugins` — in-tree and out-of-tree
     plugins differ only in where their modules come from, so they must not
     differ in what counts as a registration.
+
+    Returns True only after complete registration. Ordinary failures return
+    False after rollback unless strict=True; conflicts and interrupts propagate.
+    Source loaders use core.registration.load_and_register_plugin to include
+    import-time contributions in the same transaction.
 
     Args:
         module: The imported plugin module or package.
@@ -184,45 +190,39 @@ def load_plugin_module(module, v: "Variables", *, tier: "DeclarationTier | None"
             plugin makes the registration call, not us.  Defaults to
             ``OUT_OF_TREE``: least privilege.
     """
+    from sparkrun.core.installed_plugins import PluginConflictError
+
+    try:
+        load_and_register_plugin(lambda: module, v, tier=tier)
+    except Exception as exc:
+        if strict or isinstance(exc, PluginConflictError):
+            raise
+        logger.exception("Plugin registration failed for %r", module.__name__)
+        return False
+    return True
+
+
+def _register_plugin_module(module, v, *, tier=None) -> None:
     from sparkrun.core.registry_defaults import DeclarationTier, declaring_tier
+    from sparkrun.core.features import register_feature
+    from sparkrun.core.installed_plugins import claim_implementation
 
     if _LOADED_PLUGIN_MODULES.get(module.__name__) is module and (id(v), module.__name__) in _REGISTERED_MODULES:
         return
-    from sparkrun.core.features import register_feature
-    from sparkrun.core.installed_plugins import claim_implementation, PluginConflictError
-
-    # Definitions precede extension gating; this runs only for selected modules.
     for definition in getattr(module, "FEATURE_DEFINITIONS", ()):
         register_feature(definition)
 
     with declaring_tier(tier or DeclarationTier.OUT_OF_TREE):
-        # 1) Register SAF-scanned plugin subclasses (runtimes/executors/transports/…).
         for base in _plugin_base_types():
             for cls in _scan_module_for_plugins(module, base):
                 if not _is_registerable(cls):
                     continue
                 claim_implementation(cls, v)
-                try:
-                    register_plugin(cls, v=v)
-                    logger.debug("Registered external plugin %s from %s", cls.__name__, module.__name__)
-                except (ValueError, TypeError) as e:
-                    if strict:
-                        raise
-                    logger.debug("Skipping external plugin %s: %s", cls.__name__, e)
-
-        # 2) Optional explicit hook — the home for in-process registrations
-        #    (register_platform, collective backends, register_default_registry)
-        #    and any bespoke wiring.
+                register_plugin(cls, v=v)
+                logger.debug("Registered plugin %s from %s", cls.__name__, module.__name__)
         hook = getattr(module, "register", None)
         if callable(hook):
-            try:
-                hook(v)
-                logger.debug("Ran register(v) hook for external plugin module %s", module.__name__)
-            except Exception as exc:  # a bad optional hook is reported without marking it loaded
-                if strict or isinstance(exc, PluginConflictError):
-                    raise
-                logger.exception("register(v) hook failed for external plugin module %s", module.__name__)
-                return
+            hook(v)
     _LOADED_PLUGIN_MODULES[module.__name__] = module
     _REGISTERED_MODULES.add((id(v), module.__name__))
 
@@ -276,11 +276,10 @@ def load_external_plugins(v: "Variables", paths: "list[Path] | None" = None) -> 
             sys.path.insert(0, path_str)
         for name in iter_plugin_module_names(path):
             try:
-                module = importlib.import_module(name)
-            except Exception:  # noqa: BLE001 - one broken plugin shouldn't kill the CLI
-                logger.exception("Failed to import external plugin module %r from %s", name, path)
+                load_and_register_plugin(partial(importlib.import_module, name), v)
+            except Exception:  # one broken plugin must not prevent independent loading
+                logger.exception("Failed to load external plugin module %r from %s", name, path)
                 continue
-            load_plugin_module(module, v)
             loaded.append(name)
 
     if loaded:

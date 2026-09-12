@@ -23,8 +23,8 @@ other way to get them is to schedule separately and pass the winners in as
 over which hosts ``run`` may still consider.  ``run(options, plan=plan)``
 lets the decision be made exactly once.
 
-Both functions raise :class:`~sparkrun.api.SparkrunError` (or a subclass)
-for any failure.
+Operational failures use :class:`~sparkrun.api.SparkrunError` (or a subclass).
+Invalid programmatic inputs may raise ValueError/TypeError; interrupts propagate.
 """
 
 from __future__ import annotations

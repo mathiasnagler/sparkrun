@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from sparkrun.api._benchmark_models import ResumeMode
+import pytest
+
+from sparkrun.api._benchmark_models import ResumeMode, BenchmarkDecision
 
 
 # ---------------------------------------------------------------------------
@@ -105,81 +107,9 @@ def test_api_auto_mode_threaded_through():
     assert received[0].resume == ResumeMode.AUTO
 
 
-def test_api_on_prompt_required_threaded_through():
-    received = []
-
-    def cb(state):
-        return True
-
-    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_stub_execute_benchmark(received)):
-        from sparkrun.api import benchmark
-        from sparkrun.api._benchmark_models import BenchmarkOptions
-
-        benchmark(BenchmarkOptions(recipe="my-recipe", on_prompt_required=cb))
-    assert received[0].on_prompt_required is cb
-
-
 # ---------------------------------------------------------------------------
-# _resolve_resume_prompt unit tests
+# Decision callback contract
 # ---------------------------------------------------------------------------
-
-
-def test_resolve_resume_prompt_uses_callback_when_provided():
-    from sparkrun.cli._benchmark import _resolve_resume_prompt
-
-    state = MagicMock(completed_indices=[0, 1])
-    called_with = {}
-
-    def cb(s):
-        called_with["state"] = s
-        return False
-
-    result = _resolve_resume_prompt(state, total_tasks=5, on_prompt_required=cb)
-    assert result is False
-    assert called_with["state"] is state
-
-
-def test_resolve_resume_prompt_callback_true():
-    from sparkrun.cli._benchmark import _resolve_resume_prompt
-
-    state = MagicMock(completed_indices=[0, 1])
-    assert _resolve_resume_prompt(state, total_tasks=5, on_prompt_required=lambda s: True) is True
-
-
-def test_resolve_resume_prompt_non_tty_defaults_to_resume(monkeypatch):
-    from sparkrun.cli._benchmark import _resolve_resume_prompt
-
-    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-    state = MagicMock(completed_indices=[0, 1])
-    assert _resolve_resume_prompt(state, total_tasks=5, on_prompt_required=None) is True
-
-
-def test_resolve_resume_prompt_tty_uses_click_confirm(monkeypatch):
-    from sparkrun.cli._benchmark import _resolve_resume_prompt
-
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    called = {}
-
-    def fake_confirm(msg, default):
-        called["msg"] = msg
-        called["default"] = default
-        return False
-
-    monkeypatch.setattr("click.confirm", fake_confirm)
-    state = MagicMock(completed_indices=[0, 1])
-    result = _resolve_resume_prompt(state, total_tasks=5, on_prompt_required=None)
-    assert result is False
-    assert "Resume?" in called["msg"]
-    assert called["default"] is True
-
-
-def test_resolve_resume_prompt_tty_confirm_true(monkeypatch):
-    from sparkrun.cli._benchmark import _resolve_resume_prompt
-
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    monkeypatch.setattr("click.confirm", lambda msg, default: True)
-    state = MagicMock(completed_indices=[0])
-    assert _resolve_resume_prompt(state, total_tasks=3, on_prompt_required=None) is True
 
 
 # ---------------------------------------------------------------------------
@@ -245,8 +175,7 @@ def test_cli_fresh_flag_sets_fresh_mode():
 
 
 # ---------------------------------------------------------------------------
-# on_complete_state / _resolve_complete_prompt (complete prior state must
-# never be reused silently)
+# Completed prior state must never be reused silently
 # ---------------------------------------------------------------------------
 
 
@@ -262,7 +191,8 @@ def test_should_remeasure_auto_honours_callback():
         return True
 
     assert _should_remeasure_complete_state(ResumeMode.AUTO, cb, state) is True
-    assert seen == [state]
+    assert len(seen) == 1 and isinstance(seen[0], BenchmarkDecision)
+    assert seen[0].kind == "remeasure_complete" and seen[0].benchmark_id == state.benchmark_id
     assert _should_remeasure_complete_state(ResumeMode.AUTO, lambda s: False, state) is False
 
 
@@ -289,69 +219,39 @@ def test_should_remeasure_explicit_resume_modes_never_prompt():
     assert called == []
 
 
-def test_api_on_complete_state_threaded_through():
+@pytest.mark.parametrize(
+    "kind,default,tty_default",
+    [
+        ("resume_incomplete", True, True),
+        ("remeasure_complete", False, True),
+        ("integration_confirmation", False, False),
+    ],
+)
+@pytest.mark.parametrize("tty", [True, False])
+def test_cli_decision_policy(monkeypatch, kind, default, tty_default, tty):
+    from sparkrun.cli._benchmark import _cli_decision
+
+    request = BenchmarkDecision(kind, "Decision?", default, "bench_test")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: tty)
+    with patch("click.confirm", return_value=False) as confirm:
+        answer = _cli_decision(request)
+    if tty:
+        confirm.assert_called_once_with("Decision?", default=tty_default)
+        assert answer is False
+    else:
+        confirm.assert_not_called()
+        assert answer is (True if kind == "integration_confirmation" else default)
+
+
+def test_api_decision_callback_is_the_only_resume_callback():
+    from dataclasses import fields
+    from sparkrun.api import BenchmarkOptions, benchmark
+
+    def callback(request):
+        return request.default
+
     received = []
-
-    def cb(state):
-        return True
-
     with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_stub_execute_benchmark(received)):
-        from sparkrun.api import benchmark
-        from sparkrun.api._benchmark_models import BenchmarkOptions
-
-        benchmark(BenchmarkOptions(recipe="my-recipe", on_complete_state=cb))
-    assert received[0].on_complete_state is cb
-
-
-def test_resolve_complete_prompt_uses_callback_when_provided():
-    from sparkrun.cli._benchmark import _resolve_complete_prompt
-
-    state = MagicMock()
-    called_with = {}
-
-    def cb(s):
-        called_with["state"] = s
-        return False
-
-    result = _resolve_complete_prompt(state, on_complete_state=cb)
-    assert result is False
-    assert called_with["state"] is state
-
-
-def test_resolve_complete_prompt_callback_true():
-    from sparkrun.cli._benchmark import _resolve_complete_prompt
-
-    state = MagicMock()
-    assert _resolve_complete_prompt(state, on_complete_state=lambda s: True) is True
-
-
-def test_resolve_complete_prompt_non_tty_reuses():
-    """Non-TTY: deterministic reuse (False) — the API layer warns loudly."""
-    from unittest.mock import patch as _patch
-
-    from sparkrun.cli._benchmark import _resolve_complete_prompt
-
-    state = MagicMock()
-    with _patch("sys.stdin.isatty", lambda: False):
-        assert _resolve_complete_prompt(state, on_complete_state=None) is False
-
-
-def test_resolve_complete_prompt_tty_uses_click_confirm():
-    """TTY: click.confirm with default=True (re-measure)."""
-    from unittest.mock import patch as _patch
-
-    from sparkrun.cli._benchmark import _resolve_complete_prompt
-
-    state = MagicMock()
-    called = {}
-
-    def fake_confirm(msg, default):
-        called["msg"] = msg
-        called["default"] = default
-        return True
-
-    with _patch("sys.stdin.isatty", lambda: True), _patch("click.confirm", fake_confirm):
-        result = _resolve_complete_prompt(state, on_complete_state=None)
-    assert result is True
-    assert "re-measure" in called["msg"].lower()
-    assert called["default"] is True
+        benchmark(BenchmarkOptions(recipe="my-recipe", decision_callback=callback))
+    assert received[0].decision_callback is callback
+    assert {"on_prompt_required", "on_complete_state"}.isdisjoint(field.name for field in fields(BenchmarkOptions))

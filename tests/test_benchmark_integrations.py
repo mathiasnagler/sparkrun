@@ -12,7 +12,8 @@ import pytest
 from sparkrun.cli.ext import ExtensibleCommand
 from sparkrun.core.benchmark_integrations import BenchmarkIntegration, register_benchmark_integration
 from sparkrun.core.cli_registry import CliOptionSpec, register_cli_options, registered_cli_options
-from sparkrun.core.installed_plugins import PluginConflictError, registration_transaction
+from sparkrun.core.installed_plugins import PluginConflictError
+from sparkrun.core.registration import registry_transaction
 
 
 def test_failed_plugin_registration_rolls_back_options_and_hooks():
@@ -20,7 +21,7 @@ def test_failed_plugin_registration_rolls_back_options_and_hooks():
     from sparkrun.core.benchmark_integrations import registered_benchmark_integrations
 
     with pytest.raises(RuntimeError):
-        with registration_transaction(Variables()):
+        with registry_transaction(Variables()):
             register_cli_options(CliOptionSpec("failing", "test.target", lambda: [], lambda v: v))
             register_benchmark_integration(BenchmarkIntegration("failing"))
             raise RuntimeError("plugin failed")

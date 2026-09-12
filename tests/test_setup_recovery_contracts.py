@@ -257,3 +257,170 @@ def test_mesh_retry_uses_keys_from_already_cleaned_peers(tmp_path, monkeypatch):
     remove.assert_called_once()
     assert remove.call_args.args[0] == "h2"
     assert "AAAA" in remove.call_args.args[1] and "BBBB" in remove.call_args.args[1]
+
+
+@pytest.mark.parametrize("mode", ["failure", "decline", "filter", "mapping"])
+def test_undo_keeps_transitive_prerequisites_per_host(tmp_path, mode):
+    manager = ManifestManager(tmp_path)
+    callbacks = {}
+    for key, requires in (("base", ()), ("middle", ("base",)), ("leaf", ("middle",))):
+        register_feature(FeatureFlag("setup.steps." + key, key, default=True))
+
+        def undo(host, details, action, key=key):
+            status = FAIL if key == "leaf" and host == "h1" and mode == "failure" else OK
+            return SetupActionResult(host, status, "done")
+
+        callbacks[key] = Mock(side_effect=undo)
+        register_setup_step(
+            SetupStep(key, key, requires=requires, undo=callbacks[key], requires_sudo=False, feature_flag="setup.steps." + key)
+        )
+    # No middle record: the dependency guard must still see leaf -> middle -> base.
+    for key in ("base", "leaf"):
+        manager.record_phase("lab", "tester", ["h1", "h2"], key)
+    result = run_setup_undo(
+        manager.load("lab"),
+        SetupActionContext("tester"),
+        manifest_mgr=manager,
+        only_steps={"base"} if mode == "filter" else None,
+        steps={"base": SetupStep("base", "base", undo=callbacks["base"], requires_sudo=False)} if mode == "mapping" else None,
+        approve=(lambda step, hosts: step.key != "leaf") if mode == "decline" else None,
+    )
+    assert result.remaining["base"] == (("h1",) if mode == "failure" else ("h1", "h2"))
+    assert result.outcomes["base"]["h1"].status == SKIP
+    assert "leaf" in result.outcomes["base"]["h1"].detail
+    if mode == "failure":
+        callbacks["base"].assert_called_once()
+        assert callbacks["base"].call_args.args[0] == "h2"
+        callbacks["leaf"].side_effect = lambda host, *_: SetupActionResult(host, OK, "removed")
+        retry = run_setup_undo(manager.load("lab"), SetupActionContext("tester"), manifest_mgr=manager)
+        assert retry.complete
+        assert callbacks["base"].call_args.args[0] == "h1"
+    else:
+        callbacks["base"].assert_not_called()
+
+
+@pytest.mark.parametrize("returncode", [0, 23])
+def test_docker_group_command_status_controls_recording(tmp_path, monkeypatch, returncode):
+    import os
+    import subprocess
+    from sparkrun.orchestration.ssh import RemoteResult
+
+    stub = tmp_path / "usermod"
+    stub.write_text(f"#!/bin/sh\necho stub-result >&2\nexit {returncode}\n")
+    stub.chmod(0o700)
+
+    def dispatch(host, script, password, **kwargs):
+        result = subprocess.run(["/bin/bash"], input=script, text=True, capture_output=True, env={**os.environ, "PATH": str(tmp_path)})
+        return RemoteResult(host=host, returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
+
+    state, context = state_context(CHECK_DOCKER_GROUP="0", CHECK_DOCKER_USABLE="0")
+    manager = ManifestManager(tmp_path / "manifests")
+    monkeypatch.setattr("sparkrun.core.setup_probe.probe_setup_hosts", lambda *a, **kw: ({state.host: state}, context))
+    result = run_setup_steps(
+        {state.host: state}, context, SetupActionContext("tester", dispatch=dispatch), manifest_mgr=manager, only_steps={"docker_group"}
+    )
+    outcome = result.outcomes["docker_group"][state.host]
+    assert outcome.status == (OK if returncode == 0 else FAIL)
+    assert outcome.changed is (returncode == 0)
+    manifest = manager.load("lab")
+    assert bool(manifest and "docker_group" in manifest.phases) is (returncode == 0)
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("invalid", ["foreign_application", "version", "details", "hosts", "applied", "cluster"])
+def test_detached_undo_validates_before_callbacks(invalid, dry_run):
+    from copy import deepcopy
+    from sparkrun.api.setup import SetupManifest, PhaseRecord
+
+    manifest = SetupManifest(1, "lab", "", "", "tester", ["h1"], {"review": PhaseRecord(True, "", ["h1"])})
+    if invalid == "foreign_application":
+        manifest.distribution = "other-application"
+    elif invalid == "version":
+        manifest.version = 999
+    elif invalid == "details":
+        manifest.phases["review"].extra = {"files": "not-a-list"}
+    elif invalid == "hosts":
+        manifest.phases["review"].hosts = "h1"
+    elif invalid == "applied":
+        manifest.phases["review"].applied = "true"
+    else:
+        manifest.cluster = "../lab"
+    before = deepcopy(manifest)
+    undo, approve, credentials, progress = Mock(), Mock(), Mock(), Mock()
+    with pytest.raises(SetupFailed):
+        run_setup_undo(
+            manifest,
+            SetupActionContext("tester", dry_run=dry_run),
+            steps={"review": SetupStep("review", "review", undo=undo)},
+            approve=approve,
+            credentials=credentials,
+            progress_callback=progress,
+        )
+    for callback in (undo, approve, credentials, progress):
+        callback.assert_not_called()
+    assert manifest == before
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_undo_result_carries_persistable_partial_manifest(tmp_path, monkeypatch, recorded):
+    from copy import deepcopy
+    from sparkrun.orchestration.ssh import RemoteResult
+
+    manager = ManifestManager(tmp_path)
+    manager.record_phase(
+        "lab",
+        "tester",
+        ["h1", "h2"],
+        "ssh_mesh",
+        host_details={"h1": {"plugin_value": [1]}, "h2": {"plugin_value": [2]}},
+    )
+    manager.record_phase("lab", "tester", ["other"], "unavailable_plugin")
+    original = manager.load("lab", strict=True)
+    original.updated = "2000-01-01T00:00:00+00:00"
+    manager.save(original)
+    before = deepcopy(original)
+    collect = Mock(return_value=[RemoteResult("h1", 0, "ssh-ed25519 AAAA", ""), RemoteResult("h2", 0, "ssh-ed25519 BBBB", "")])
+    remove = Mock(side_effect=lambda host, *_a, **_kw: RemoteResult(host, 0 if host == "h1" else 1, "", "failed"))
+    monkeypatch.setattr("sparkrun.orchestration.ssh.run_remote_scripts_parallel", collect)
+    monkeypatch.setattr("sparkrun.orchestration.ssh.run_remote_script", remove)
+    result = run_setup_undo(original, SetupActionContext("tester"), manifest_mgr=manager if recorded else None)
+    assert original == before
+    assert result.manifest.updated != before.updated
+    assert result.manifest.phases["ssh_mesh"].hosts == ["h2"]
+    assert result.manifest.phases["ssh_mesh"].extra == {
+        "host_details": {"h2": {"plugin_value": [2]}},
+        "mesh_hosts": ["h1", "h2"],
+    }
+    assert result.remaining == {"ssh_mesh": ("h2",), "unavailable_plugin": ("other",)}
+    if recorded:
+        assert result.manifest == manager.load("lab", strict=True)
+    else:
+        assert manager.load("lab", strict=True) == before
+        # External persistence needs no replay of per-host result transformations.
+        manager.save(result.manifest)
+    remove.reset_mock()
+    remove.side_effect = lambda host, *_a, **_kw: RemoteResult(host, 0, "removed", "")
+    retry = run_setup_undo(manager.load("lab", strict=True), SetupActionContext("tester"), manifest_mgr=manager if recorded else None)
+    assert collect.call_args.args[0] == ("h1", "h2")
+    remove.assert_called_once()
+    assert remove.call_args.args[0] == "h2"
+    assert "AAAA" in remove.call_args.args[1] and "BBBB" in remove.call_args.args[1]
+    assert retry.remaining == {"unavailable_plugin": ("other",)}
+    assert set(retry.manifest.phases) == {"unavailable_plugin"}
+    assert result.manifest.phases["ssh_mesh"].hosts == ["h2"]  # prior snapshot remains detached
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_undo_preview_returns_unchanged_manifest(tmp_path, recorded):
+    manager = ManifestManager(tmp_path)
+    manager.record_phase("lab", "tester", ["h1"], "earlyoom")
+    original = manager.load("lab", strict=True)
+    action = Mock()
+    result = run_setup_undo(
+        original, SetupActionContext("tester", dry_run=True, dispatch=action), manifest_mgr=manager if recorded else None
+    )
+    assert result.manifest == original == manager.load("lab", strict=True)
+    assert result.manifest is not original
+    result.manifest.phases.clear()
+    assert "earlyoom" in original.phases and "earlyoom" in manager.load("lab", strict=True).phases
+    action.assert_not_called()

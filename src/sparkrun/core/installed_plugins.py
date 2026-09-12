@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from sparkrun.core.registration import enlist_registry_state
+from sparkrun.core.registration import enlist_registry_state, load_and_register_plugin
 
 import logging
 import os
-from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib.metadata import entry_points
-from types import ModuleType
 
-from sparkrun.core.application_profile import APPLICATION_PROFILE_API_VERSION, get_application_profile
+from sparkrun.core.application_profile import get_application_profile
 
 logger = logging.getLogger(__name__)
 ENTRY_POINT_GROUP = "sparkrun.plugins"
@@ -49,15 +47,6 @@ _claims: dict[tuple[int, str, str], type] = {}
 enlist_registry_state(globals(), "_claims")
 _attempted: set[int] = set()
 _conflicts: list[str] = []
-
-
-@contextmanager
-def registration_transaction(v):
-    """Restore enlisted registries and SAF state after failed registration."""
-    from sparkrun.core.registration import registry_transaction
-
-    with registry_transaction(v):
-        yield
 
 
 def reset_installed_plugins() -> None:
@@ -161,20 +150,12 @@ def load_installed_plugins(v, *, config=None) -> None:
         return
     _inventory[:] = discover_installed_plugins(config)
     _attempted.add(id(v))
-    from sparkrun.core.external_plugins import load_plugin_module
 
     for row in _inventory:
         if row.failure or not row.selected:
             continue
         try:
-            with registration_transaction(v):
-                module = row.entry_point.load()
-                if not isinstance(module, ModuleType):
-                    raise TypeError("sparkrun.plugins entry points must target a module")
-                api_version = getattr(module, "SPARKRUN_PLUGIN_API_VERSION", None)
-                if api_version != APPLICATION_PROFILE_API_VERSION:
-                    raise ValueError("Plugin API %r is incompatible with supported API %s" % (api_version, APPLICATION_PROFILE_API_VERSION))
-                load_plugin_module(module, v, strict=True)
+            load_and_register_plugin(row.entry_point.load, v, require_api_version=True)
             row.loaded = True
         except Exception as exc:
             row.failure = "%s: %s" % (type(exc).__name__, exc)

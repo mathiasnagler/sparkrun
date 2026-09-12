@@ -7,10 +7,9 @@ fresh session bundling the SAF :class:`Variables` and a
 in sequence can construct an :class:`SparkrunContext` once and pass
 it in to share state (config, registry manager, cluster manager).
 
-This module is the *only* place where the api layer constructs
-default session state — the rest of the api forwards an explicit
-``sctx`` everywhere, so there are no implicit globals leaking through
-the call graph.
+Default context construction delegates to ``sparkrun.application.initialize``.
+Contexts share the process's application/config binding and plugin registry.
+Bootstrap failures are translated to SparkrunError; interrupts pass through.
 """
 
 from __future__ import annotations
@@ -26,18 +25,18 @@ def default_sctx() -> "SparkrunContext":
 
     Initialises the SAF plugin registry (idempotent — uses the module
     singleton if already bootstrapped) and instantiates a
-    :class:`SparkrunConfig` from the default config path.
+    :class:`SparkrunConfig` for the existing application binding, or the
+    selected application's default config path on first initialization.
     """
-    from sparkrun.core.bootstrap import init_sparkrun
-    from sparkrun.core.config import SparkrunConfig
-    from sparkrun.core.context import SparkrunContext
+    from sparkrun.application import initialize
+    from sparkrun.api._errors import SparkrunError
 
-    return SparkrunContext(
-        variables=init_sparkrun(),
-        config=SparkrunConfig(),
-        verbose=False,
-        progress=None,
-    )
+    try:
+        return initialize()
+    except SparkrunError:
+        raise
+    except Exception as exc:
+        raise SparkrunError("Application initialization failed: %s" % exc) from exc
 
 
 def resolve_sctx(sctx: "SparkrunContext | None") -> "SparkrunContext":

@@ -61,10 +61,10 @@ handlers. Returning from a progress callback does not make a decision.
 | `integration_confirmation` | Continue the integration | Decline | The integration's explicit default |
 
 The first two apply only to `ResumeMode.AUTO`; other resume modes express the
-choice directly. `decision_callback` takes precedence over legacy
-`on_prompt_required` and `on_complete_state`. The former only controls incomplete
-state reuse, and the latter only controls complete-state reuse. Neither handles
-integration advice. Recipe trust remains a separate `trust` option.
+choice directly. `decision_callback` is the single decision interface in 0.4.0;
+`on_prompt_required` and `on_complete_state` have been removed. It receives a
+frozen value, never mutable benchmark state. Recipe trust remains a separate
+`trust` option.
 
 ```python
 def decide(request):
@@ -88,7 +88,7 @@ own handler. The CLI retains its existing interactive/noninteractive policy.
 
 Both `benchmark(options)` and `resume_benchmark(id, ...)` return the public
 `BenchmarkResult`: measurement `results`, `outputs`, benchmark/framework/profile
-identity, host/image information, `resumed`, and integration outcomes.
+identity, host/image information, `resumed`, `already_complete`, and integration outcomes.
 `run_result` is present only when this invocation launched inference. Result
 metadata comes from the recorded measurement, including `profile=None` and empty
 benchmark arguments; publication retry defaults cannot relabel it. Success and
@@ -123,8 +123,16 @@ failures. A cleanup failure does not replace an earlier export/state failure.
 Interrupts propagate unchanged.
 
 Validated scheduled results are saved before optional YAML/CSV/JSON export.
-If export fails, inference launched by this invocation is still stopped unless
-`no_stop` is set. `skip_run` and resume-by-ID do not stop someone else's inference.
+Inference owned by this invocation is stopped on every exit after launch unless
+`no_stop` is set, including checkpoint, readiness, parser and progress callback
+failures before finalization. Cleanup does not depend on successful rendering.
+Launch success uses the public `RunResult.rc`, including plugin implementations
+without a private launch handle. A nonzero real launch status fails before
+checkpoint hooks, readiness waits, or measurement. Both run and resume preserve
+the original interruption even if cancellation notification fails.
+`skip_run`, already-running deployments, and resume-by-ID do not stop someone
+else's inference. Early failures keep their original cause; a secondary cleanup
+failure is logged and attached as an exception note. Interrupts are preserved.
 A failed export prevents publication in that invocation; retrying saved
 integrations does not repeat measurement or repair the failed optional exports.
 Storage failures may require retaining the error's attached result through your
@@ -164,7 +172,27 @@ running or reloading the recipe. Incomplete measurement resumes still require a
 resolvable recipe and running inference. Unschedulable/single-call frameworks do
 not persist resumable task state, though their publication errors still carry
 completed measurements. An already-complete ID with no available integrations
-raises `BenchmarkFailed(exit_code=0)` because there is no work to resume.
+returns its validated saved result with `already_complete=True`. It does not
+rewrite saved state, reload the recipe, regenerate exports, or contact inference.
+The CLI renders the no-op message; API callers receive a normal successful result.
+Saved data for unavailable integrations remains intact.
+
+`resume_benchmark(id, export_files=False)` disables optional exports after resumed
+measurement. `output_file="/path/to/result.yaml"` chooses the export base path.
+These options do not turn completed result loading or publication retry into an
+export-repair operation. The default `export_files=True` matches initial execution.
+A corrupt/missing validated result file still raises `BenchmarkFailed`.
+
+## Caller metadata
+
+`BenchmarkOptions.state_extras` is copied into newly created scheduled state.
+Use application-owned names (for example, `my_app.experiment`) for caller metadata.
+Core reserves `framework_version`, `benchmark_integrations`, `benchmark_category`,
+`benchmark_outputs`, `measurement_complete`, `measurement_started_at`,
+`measurement_completed_at`, `container_image`, `container_image_sha`,
+`container_image_longterm_ref`, and `container_image_longterm_pinned`.
+Do not seed or overwrite these keys. Integration-specific persistence belongs
+in `context.data`; older Arena metadata is read only for migration compatibility.
 
 See [plugin lifecycle contracts](PLUGINS.md#benchmark-integrations) and
 [migration notes](DISTRIBUTION_API_MIGRATION.md) for plugin and caller changes.

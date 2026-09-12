@@ -1,13 +1,11 @@
 """Typed exception hierarchy for the sparkrun library API.
 
-Callers of :mod:`sparkrun.api` see exactly this hierarchy.  Internal
-errors from :mod:`sparkrun.core.scheduler` (``InfeasibleScheduleError``,
-``LayoutConflictError``, etc.) are translated into these user-facing
-exceptions by the API implementation layer.
+Operational failures use this hierarchy; scheduler and executor errors are
+translated at API operation boundaries. Pure model/plan validation may raise
+ValueError or TypeError. Explicit application initialization exposes bootstrap
+errors directly; implicit API initialization wraps them in SparkrunError.
+KeyboardInterrupt and SystemExit propagate unchanged.
 
-All errors derive from :class:`SparkrunError` so callers can ``except
-SparkrunError`` for a generic failure handler without having to know
-the specific subclass.
 """
 
 from __future__ import annotations
@@ -19,7 +17,7 @@ if TYPE_CHECKING:
 
 
 class SparkrunError(Exception):
-    """Base class for all errors raised by the sparkrun library API.
+    """Base class for operational failures reported by the sparkrun library API.
 
     Callers can catch this for a generic failure path; in most cases
     callers will want to discriminate on a more specific subclass.

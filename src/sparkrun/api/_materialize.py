@@ -40,6 +40,9 @@ def materialize(
     references.
     Integrations that need immutable process identity should require recipe
     images in ``name@sha256:...`` form.
+
+    Invalid/unsupported plans, layouts, or image overrides raise ValueError.
+    Operational failures from planning use SparkrunError; interrupts propagate.
     """
 
     if sctx is None:
@@ -330,18 +333,13 @@ def _resolved_executor_mounts(options: RunOptions, *, plan: RunPlan, runtime, sc
     from sparkrun.orchestration.executor import resolve_executor
     from sparkrun.utils.shell import assert_safe_mount_source
 
-    cli_overrides: dict[str, object] = {}
-    if options.executor:
-        cli_overrides["executor"] = options.executor
-    if options.executor_config:
-        cli_overrides.update(options.executor_config)
     hosts = list(plan.host_list)
     executor = resolve_executor(
         recipe=plan.recipe,
         cluster=plan.cluster,
         runtime=runtime,
         config=sctx.config,
-        cli_overrides=cli_overrides,
+        cli_overrides=options.executor_overrides(),
         rootless=False,
         auto_user=False,
         host_hardware=plan.cluster.hardware_for(hosts[0]),

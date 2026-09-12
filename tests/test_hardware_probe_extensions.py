@@ -9,7 +9,8 @@ from sparkrun.core import hardware_probe_extensions as extensions
 from sparkrun.core.fingerprint import build_host_hardware, generate_fingerprint_script
 from sparkrun.core.hardware import AcceleratorSpec
 from sparkrun.core.hardware_probe import _ACCEL_END, generate_combined_probe_script
-from sparkrun.core.installed_plugins import PluginConflictError, registration_transaction
+from sparkrun.core.installed_plugins import PluginConflictError
+from sparkrun.core.registration import registry_transaction
 
 
 @pytest.fixture(autouse=True)
@@ -61,7 +62,7 @@ def test_failed_registration_rolls_back_probe():
     from scitrera_app_framework import Variables
 
     with pytest.raises(RuntimeError, match="broken"):
-        with registration_transaction(Variables()):
+        with registry_transaction(Variables()):
             extensions.register_hardware_probe("example", script="true", enrich=unchanged)
             raise RuntimeError("broken")
     assert extensions.hardware_probe_script() == ""

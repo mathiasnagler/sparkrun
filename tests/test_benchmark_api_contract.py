@@ -111,9 +111,8 @@ def test_typed_decision_controls_auto_resume(scheduled_env, complete):
         decisions.append(request)
         return complete  # remeasure complete; discard incomplete
 
-    legacy = Mock(side_effect=AssertionError("typed callback takes precedence"))
     result = benchmark(
-        replace(env.options, resume=ResumeMode.AUTO, decision_callback=decide, on_prompt_required=legacy, on_complete_state=legacy),
+        replace(env.options, resume=ResumeMode.AUTO, decision_callback=decide),
         sctx=env.sctx,
     )
     assert result.success and not result.resumed
@@ -121,7 +120,6 @@ def test_typed_decision_controls_auto_resume(scheduled_env, complete):
     assert decisions[0].kind == ("remeasure_complete" if complete else "resume_incomplete")
     assert decisions[0].benchmark_id == first.benchmark_id
     assert decisions[0].default is (not complete)
-    legacy.assert_not_called()
 
 
 def test_cli_keeps_terminal_task_rendering(scheduled_env, monkeypatch, tmp_path):

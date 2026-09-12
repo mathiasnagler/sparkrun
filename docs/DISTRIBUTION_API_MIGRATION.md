@@ -1,142 +1,200 @@
-# Distribution API migration to 0.4.0
+# API migration to 0.4.0
 
-This refactor changes Python imports and data-model fields. Update downstream
-callers together with their pinned core version; the removed paths and fields do
-not have deprecation shims. Existing recipe and configuration YAML keys remain
-shared unless noted below.
+`0.4.0` is a breaking Python API release. Update downstream callers and pin
+compatible core/integration versions together. Removed imports and model fields
+have no deprecation shims. Existing recipe and configuration YAML keys remain
+shared unless noted below. The tables also cover pre-release plugin contracts.
 
-| Before | After |
+## Supported imports
+
+| Consumer | Supported surface |
 | --- | --- |
-| `BenchmarkOptions(..., arena=True)` | `BenchmarkOptions(..., integrations={"arena": {}})` |
-| `BenchmarkOptions(..., arena=False)` | Omit `integrations` or pass `{}`. |
-| `resume_benchmark(id)` returning a raw dict | Returns `api.BenchmarkResult`; use `.results` for measurements and `.integration_results` for publication outcomes. |
-| `resume_benchmark(id, emitter=...)` | Use `progress_callback=...` and `decision_callback=...`; emitters are private CLI adapters. |
-| `BenchmarkIntegration(on_ready=...)` | `BenchmarkIntegration(on_bind=...)`; this hook runs before launch, not at endpoint readiness. |
-| Mutable `context.state: BenchmarkRunState` | Detached `BenchmarkStateInfo` snapshot; persist plugin values through `context.data`. |
-| Generic upload `BenchmarkFailed` | `BenchmarkIntegrationFailed` remains catchable as `BenchmarkFailed` and carries the completed public `.result`. |
-| `BenchmarkResult.submission_id` | `result.integration_results.get("arena", {}).get("submission_id")` |
-| `sparkrun.arena` imports | `sparkrun.plugins.sparkarena` and its corresponding modules |
-| `sparkrun.api.k8s` | `sparkrun.plugins.k8s.api` |
-| `sparkrun.orchestration.k8s` | `sparkrun.plugins.k8s.orchestration` |
-| `sparkrun.orchestration.executors.k8s` | `sparkrun.plugins.k8s.executor` |
-| Kubernetes accessors on `SparkrunConfig` | `K8sSettings(config)` from `sparkrun.plugins.k8s.config` |
-| Kubernetes fields on generic executor config | `K8sExecutorConfig` from `sparkrun.plugins.k8s.executor`; normal executor resolution selects it automatically. |
-| Settings validation in `BenchmarkIntegration.prepare` | Move to `validate(context)`. It sees merged saved/explicit settings on every invocation. `prepare` applies measurement defaults only. |
-| `context.result: BenchmarkExecution` | Read-only `BenchmarkMeasurement`, with `recipe_yaml` and `provenance` instead of live recipe/launch/framework objects. |
-| Writing `context.result.integration_results[name]` | Write your integration's `context.outcome` mapping. Persist retry data in `context.data`. |
-| Run-handler callback with individual resolved keyword arguments | `(options, sctx, *, plan: RunPlan, started_at: float) -> RunResult`. |
+| Application authors | `sparkrun.application`: `initialize`, `run_cli`, `ApplicationProfile`, `UpdateSource`, `APPLICATION_PROFILE_API_VERSION`, and application/controller identity helpers. |
+| Workload and benchmark callers | `sparkrun.api`: operation functions, options, results, decisions/events, and operational errors. |
+| Setup callers | `sparkrun.api.setup`: checks/models, probe/plan helpers, apply/undo runners, manifest manager, statuses, and `SetupFailed`. |
+| Benchmark integration authors | `sparkrun.core.benchmark_integrations`: registration, `BenchmarkIntegration`, `BenchmarkDefaults`, context and immutable measurement/state snapshots. |
+| Setup extension authors | `sparkrun.core.setup_steps`: step/constraint registration; caller-facing types are also exported by `api.setup`. |
+| Other extension authors | Documented registries such as `core.cli_registry`, `core.run_handlers`, `core.hardware_probe_extensions`, and `core.features`; shared transactions and `PLUGIN_API_VERSION` in `core.registration`. |
+| Kubernetes callers | `sparkrun.plugins.k8s.api`, `plugins.k8s.config`, and `plugins.k8s.executor`. |
 
-Arena benchmark arguments and result data belong to the optional integration.
-Enable `integration.arena` to register its CLI and benchmark hooks; Sparkrun
-enables it by default. Application profiles can change that policy. The existing
-`--arena` CLI workflow is provided by the plugin. Saved Arena benchmark runs are
-handled by its resume adapter; this does not restore removed Python model fields.
+Documented core extension modules remain supported imports. Private API/CLI
+modules are implementation details; installed plugins should not depend on the
+bundled Arena adapter's private command helpers.
 
-Kubernetes now has a parent loading gate, `integration.k8s`. On stable and beta,
-an old child override such as `executor.k8s: true` alone is insufficient: enable
-the parent too. On alpha the parent defaults on, and its children
-`executor.k8s`, `cli.setup.k8s`, and `api.run.k8s` default on. Disable individual
-children to retain selected capabilities, or disable the parent to omit the
-integration. Explicit application/user policy takes precedence. See the
-[Kubernetes plugin guide](../src/sparkrun/plugins/k8s/README.md) for details.
+## Application initialization and identity
 
-Embedding applications must select their profile and config before plugin
-initialization. Use `sparkrun.application.initialize(profile, config_path=...)`;
-implicit initialization also binds the process to its first canonical config.
-A later attempt to change it raises an error. Start another process for a
-different application or configuration. Plugins needing ownership information
-can use the [application/controller identity API](APPLICATION_PROFILES.md#plugin-identity-and-shared-services).
+```python
+from sparkrun.application import initialize, ApplicationProfile, UpdateSource
 
-The framework adapter currently depends on `scitrera-app-framework==0.0.69`,
-including private state-root and registry rollback internals. Updating that pin
-requires re-running application path, plugin rollback, and installed-wheel tests.
+profile = ApplicationProfile(
+    id="example-app", display_name="Example App", command="example-app",
+    package="example-app", profile_ref="example_app.profile:PROFILE",
+    update_sources={"stable": UpdateSource("example-app")},
+)
+context = initialize(profile, config_path="/path/to/example-app/config.yaml")
+```
 
+An application can be a CLI, daemon, desktop app, or another Python frontend.
+Select the profile/config before reading settings or initializing plugins. One
+process binds to one application/profile and canonical config file. Repeated
+initialization reuses its plugin registry; switching the binding raises an error.
+`api.default_sctx()` delegates to `initialize()` and creates a fresh context view
+of that same binding. Pass an existing context to share its cached managers.
 
-Benchmark callers can pass preloaded `Recipe` objects without a name lookup.
-Run and resume are silent unless a callback is supplied; the CLI retains its
-terminal progress adapter. `decision_callback` separates choices from progress
-notifications and takes precedence over legacy resume callbacks. Integration
-confirmations with no handler now use their specified default (Arena's quality
-confirmation defaults to declining). Headless callers that intentionally accept
-quality advice should explicitly handle `integration_confirmation`. See
-[BENCHMARK_API.md](BENCHMARK_API.md) for examples.
+`initialize(variables=...)` supports injection on the first call only. Later calls
+may omit it or pass the same instance. A fatal bootstrap error poisons the
+initialization; repair the cause and restart the process. Optional plugin failures
+are contained and reported in inventory. Required integration failures prevent
+launch and raise `api.IntegrationUnavailable`.
 
-If plugin bootstrap raises, fix the cause and restart the embedding process.
-Repeated initialization in that process raises a clear error chained to the
-original failure; it cannot return a partially registered context as success.
+One controller identity represents an application using a canonical config
+**directory**. A private seed and the directory derive its opaque ID. Files in
+that directory share it; copying/moving to another directory changes it; restoring
+the seed at the original path preserves it. There is no configurable controller
+selector. Child processes inherit the selected profile/config. Shared services
+can use `(application.id, controller_id, resource_id)` for reconciliation without
+switching the core process's profile. Existing executor ownership enforcement is
+application-scoped; emitting a controller envelope does not expand that policy.
+See [application profiles](APPLICATION_PROFILES.md).
 
+Cluster SSH overrides are operation-local. `SparkrunContext.for_cluster()` and
+`SparkrunConfig.for_cluster()` preserve the original configured fallback user;
+inspect the resolved cluster/operation context rather than expecting a previous
+operation to mutate `sctx.config.ssh_user`.
 
-The controller seed file is now bound to the canonical config directory when
-deriving the opaque ownership ID. A copied/moved directory becomes a different
-controller automatically; a restore to the original path keeps its identity.
-This changes the opaque IDs emitted by earlier, unmerged versions of this branch.
-Consumers testing those versions should refresh their stored controller envelopes;
-the final format does not expose the seed or local path and adds no configurable
-identity setting.
+## Optional integration moves and selection
 
-`initialize(variables=...)` permits injection only on the first initialization.
-Subsequent calls reuse that instance and reject a different one. Missing or failed
-required integrations now raise exported `api.IntegrationUnavailable`, a
-`SparkrunError`, before launch planning.
+| Previous surface | 0.4.0 surface |
+| --- | --- |
+| `sparkrun.arena` | `sparkrun.plugins.sparkarena` and corresponding auth/upload modules. |
+| `sparkrun.api.k8s` | `sparkrun.plugins.k8s.api`. |
+| `sparkrun.orchestration.k8s` | `sparkrun.plugins.k8s.orchestration`. |
+| `sparkrun.orchestration.executors.k8s` | `sparkrun.plugins.k8s.executor`. |
+| Kubernetes accessors on `SparkrunConfig` | `K8sSettings(config)` from `plugins.k8s.config`. |
+| Kubernetes fields on generic executor config | `K8sExecutorConfig`; normal executor resolution selects it. |
+| Run-handler callback with individual resolved arguments | `(options, sctx, *, plan: RunPlan, started_at: float) -> RunResult`. Inspect public `rc`; the private launch handle is optional. |
+| `core.installed_plugins.registration_transaction(v)` | `core.registration.registry_transaction(v)`. All loaders use one shared import/registration boundary. |
 
-A shared `api.setup.run_setup_steps` is available for console-free setup
-sequencing, change recording, and prerequisite reprobes. See
-[setup runner contracts](SETUP_STEPS.md#running-setup-from-another-frontend).
+Arena's `integration.arena` gate registers its CLI and benchmark hooks; Sparkrun
+enables it by default. Kubernetes requires the parent `integration.k8s` gate.
+On stable/beta, enabling only `executor.k8s` is insufficient. On alpha, the parent
+and its `executor.k8s`, `cli.setup.k8s`, and `api.run.k8s` children default on.
+Explicit profile/user policy overrides defaults. See the
+[Kubernetes guide](../src/sparkrun/plugins/k8s/README.md).
 
+Installed integrations are selected by stable ID; installation alone does not
+load them. All plugin sources use registration rollback, including import-time
+contributions to enlisted registries. Failed plugins are not reported as loaded
+and independent plugins may continue. Provider conflicts remain launch blockers.
+Arbitrary plugin I/O is outside rollback. The SAF adapter depends on
+`scitrera-app-framework==0.0.69`, including private state-root/registry internals;
+changing that pin requires profile, rollback, and installed-wheel checks.
+Plugin modules declare literal integer `SPARKRUN_PLUGIN_API_VERSION = 1`, checked
+against `core.registration.PLUGIN_API_VERSION`, independently of the application
+profile API version. Installed modules require it; other sources validate it when
+present. See [framework registration and identifier terminology](PLUGINS.md#installing-a-benchmark-framework).
 
-## Final API consistency changes
+Run handlers reuse the supplied plan and standard executor resolver.
+`RunOptions.executor_overrides()` supplies the caller layer. Do not independently
+merge recipe/cluster/default layers or repeat placement in a handler.
 
-- Benchmark integration `prepare()` now receives and returns `BenchmarkDefaults`
-  from `core.benchmark_integrations`. It exposes only `category`, `framework`,
-  `profile`, and read-only `bench_args`. Existing `dataclasses.replace` callbacks
-  selecting those fields can keep that pattern. Returning `BenchmarkOptions`
-  is an error. Lifecycle/target/callback/integration changes are not preparation.
-- Framework results normalize date/datetime values to ISO strings, pathlib paths
-  to strings, and tuples to lists, regardless of integration selection. Other
-  arbitrary Python objects are rejected at the framework result boundary.
-- `BenchmarkIntegrationFailed` also preserves completed measurements when snapshot
-  conversion, outcome finalization, or completion-state persistence fails.
-  Shared persistence errors use the reserved `integration="<state>"` marker.
-  Resume needs saved state; storage failures may require retaining `.result`
-  directly in the embedding frontend.
-- Setup summaries now use the same `ok`, `warn`, `fail`, `skip` vocabulary as
-  action results, with deterministic severity aggregation and explicit no-ops.
-  `SetupRunResult.outcomes[step][host]` retains per-host details. Replace checks
-  for the old summary strings `failed`/`skipped` with `fail`/`skip`.
-- Setup recording requires a consistent cluster name; it is inferred from the
-  cluster/context unless explicitly supplied. Omit `manifest_mgr` to explicitly
-  disable recording. Orchestration errors use `api.setup.SetupFailed`.
-- Cluster SSH overrides no longer mutate a shared context. Inspect the resolved
-  cluster or the operation's context instead of expecting `sctx.config.ssh_user`
-  to retain a prior cluster's user. `SparkrunContext.for_cluster()` and
-  `SparkrunConfig.for_cluster()` create operation views sharing the same
-  application/config binding and configured fallback account.
-- Run handlers use the default launch path's `SparkrunError` translation.
-  `RunOptions.executor_overrides()` supplies the caller layer to the existing
-  executor resolver; Kubernetes now honors recipe and cluster target settings.
+## Benchmark callers
 
+| Previous surface | 0.4.0 surface |
+| --- | --- |
+| `BenchmarkOptions(arena=True)` | `BenchmarkOptions(integrations={"arena": {}})`. Omit or use `{}` to disable explicit selection. |
+| `resume_benchmark(id)` returning a raw dict | `BenchmarkResult`; measurements in `.results`, publication outcomes in `.integration_results`. |
+| `resume_benchmark(id, emitter=...)` | `progress_callback=...` and `decision_callback=...`. Emitters are private frontend adapters. |
+| `BenchmarkOptions(on_prompt_required=..., on_complete_state=...)` | One `decision_callback(BenchmarkDecision) -> bool`. The old fields are removed. |
+| `BenchmarkResult.submission_id` | `result.integration_results.get("arena", {}).get("submission_id")`. |
+| `BenchmarkFailed(exit_code=0)` for completed resume | Successful saved `BenchmarkResult` with `already_complete=True`. |
 
-## Review pass 5: finalization and undo recovery
+Preloaded `Recipe` and `ClusterDefinition` objects retain their in-memory edits;
+recipe resolution may mutate the supplied recipe. Use a separate instance when
+you need to preserve a template. Benchmark run/resume are silent unless a
+callback is supplied. `BenchmarkDecision` distinguishes `resume_incomplete`,
+`remeasure_complete`, and `integration_confirmation`; callbacks see a frozen
+value, not mutable persistence state. Missing callbacks use each decision's
+default. Arena quality confirmation defaults to declining in headless use. Recipe
+trust remains a separate option.
 
-- Catch `api.BenchmarkFinalizationFailed` for all errors after validated
-  measurement, including export, cleanup and completion notification. It carries
-  `result`, `stage`, `errors`, and the original cause. Existing
-  `BenchmarkIntegrationFailed` catches still handle plugin and `<state>` failures.
-- Scheduled measurements commit before optional exports. Failed export still
-  honors owned-inference cleanup and does not invoke publication. Publication
-  retry loads saved results; it does not retry optional file exports.
-- Measurement snapshots add `completed_at`; `measured_at` now uses a persisted
-  interval instead of the latest state write. Legacy states pin a one-time
-  timestamp fallback. Publication retries do not move either bound.
-- `api.setup` now exports caller-facing models, probe/plan helpers and
-  `run_setup_undo`/`SetupUndoResult`. Existing core imports remain valid.
-- Undo uses the same status validation as apply. Only `ok` clears a host's
-  record; “already absent” is `ok`, whereas “not undone” is `skip`/`warn`/`fail`.
-  Partial and filtered uninstall retain unresolved records automatically.
-- Strict setup recording rejects invalid field types and unsupported manifest
-  versions before actions. Supported version-1 legacy defaults remain accepted.
-- Low-level built-in teardown implementation moved from the private CLI module
-  to `core.setup_undo_actions`; use the public undo runner in new frontends.
+`resume_benchmark(id, export_files=False)` suppresses optional file exports after
+resumed measurement; `output_file=...` selects their base path. Complete result
+loading/publication retry never remeasures or regenerates exports. A completed ID
+with no available integration work returns its saved result without changing its
+state. The CLI renders its own “nothing to resume” message.
 
-See [benchmark behavior](BENCHMARK_API.md) and the
-[headless setup example](SETUP_STEPS.md#complete-headless-example).
+Validated scheduled measurements commit before optional exports. Failures after
+validation raise `BenchmarkFinalizationFailed` with `.result`, `.stage`, `.errors`,
+and original cause. `BenchmarkIntegrationFailed` remains its subtype for plugin
+and shared-state errors; shared persistence uses `integration="<state>"`.
+Successful partial output paths remain attached. Publication retry requires saved
+measurements; storage failures may require retaining `.result` directly.
+
+Owned inference cleanup runs on all exits after launch, including early plugin,
+framework and frontend callback errors. `no_stop`, `skip_run`, and resume-by-ID
+retain their ownership policies. Secondary cleanup errors preserve the original
+failure. Publication retry does not repair failed optional exports.
+
+## Benchmark integration authors
+
+| Previous contract | 0.4.0 contract |
+| --- | --- |
+| `BenchmarkIntegration(on_ready=...)` | `on_bind`, before launch; endpoint readiness is a different event. |
+| Settings validation in `prepare()` | `validate(context)` sees merged saved/explicit settings on every invocation. |
+| `prepare()` returning `BenchmarkOptions` | Return `BenchmarkDefaults`: category, framework, profile, read-only bench args only. |
+| Live `context.result: BenchmarkExecution` | Read-only `BenchmarkMeasurement`, including recipe YAML and redacted provenance. |
+| Mutable `context.state: BenchmarkRunState` | Detached `BenchmarkStateInfo`; persist private JSON values in `context.data`. |
+| Writing other integrations' result mappings | Write your own `context.outcome`; core produces detached public results. |
+
+Normalization converts dates/datetimes to ISO strings, pathlib paths to strings,
+and tuples to lists, and rejects other arbitrary framework result objects.
+Measurement snapshots are recursively read-only. `measured_at` and `completed_at`
+use a persisted interval; publication retries do not advance it. Legacy states
+pin a one-time timestamp fallback. Publication-only hooks may lack recipe YAML
+and provenance and should use data saved by their earlier hooks.
+
+See [benchmark API behavior and reserved state keys](BENCHMARK_API.md) and
+[plugin contracts](PLUGINS.md).
+
+## Setup recording and undo
+
+`api.setup` exports caller-facing types, statuses, probe/plan helpers,
+`run_setup_steps`, and `run_setup_undo`. Existing documented core imports remain
+valid. Built-in reversals live in core; new frontends should use the public runner
+rather than private CLI teardown helpers.
+
+Use `ok`, `warn`, `fail`, and `skip` consistently. Per-host outcomes retain details;
+step summaries aggregate severity. Recording needs one consistent cluster name
+and a `ManifestManager`; omitting the manager explicitly disables recording.
+Strict manifest validation rejects invalid shapes/unsupported versions before
+changes, while accepting supported version-1 legacy defaults. Detached undo
+inputs receive the same ownership/schema checks even without a manager.
+`SetupUndoResult.manifest` now returns the detached updated state for caller-owned
+persistence; with a manager it matches saved state. The input remains unchanged.
+
+Only confirmed `ok` undo clears a host's record. Failed, skipped, declined,
+filtered, and unknown plugin changes remain recorded. A prerequisite cannot be
+removed while a recorded dependent remains on the same host, including transitive
+dependents outside the selected filter. Successful independent hosts continue.
+The CLI deletes cluster state only after complete reversible teardown, subject to
+`--keep-cluster`; the runner itself never deletes cluster definitions.
+
+Hard prerequisites use `FAIL` checks; `WARN` is advisory. Reprobes, rather than an
+action's success flag alone, determine whether dependent apply actions are ready.
+See [the complete headless example](SETUP_STEPS.md#complete-headless-example).
+
+## Errors and release ownership
+
+Operational API failures use `SparkrunError` subtypes. Implicit API initialization
+wraps bootstrap failures with their original cause; explicit `initialize()` exposes
+bootstrap errors directly. Pure model/plan validation, including unsupported
+`materialize()` layouts, may raise `ValueError` or `TypeError`. Setup runner
+orchestration errors use `SetupFailed`; per-host action failures are returned
+outcomes. Benchmark result-bearing failures are described above. Interrupts and
+`SystemExit` propagate unchanged.
+
+Core and bundled K8s/Arena declarations share the owning `sparkrun` distribution
+version. Independently released plugins, including vendored SparkRoute, retain
+their own versions. Downstream applications should declare a compatible core
+range or exact pin rather than infer compatibility from their own version.

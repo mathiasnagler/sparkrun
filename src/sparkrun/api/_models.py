@@ -355,7 +355,11 @@ class ResolvedLaunchSpec:
 
 @dataclass(frozen=True)
 class RunResult:
-    """Outputs of a successful :func:`sparkrun.api.run`."""
+    """Launch outcome from :func:`sparkrun.api.run`; inspect rc for success.
+
+    Runtime failure may return a nonzero rc; operational errors raise
+    SparkrunError. Plugin handlers need not supply the private launch_result.
+    """
 
     cluster_id: str
     host_list: tuple[str, ...]

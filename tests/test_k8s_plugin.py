@@ -102,7 +102,9 @@ def _assert_policy(data, *, enabled):
     assert data["setup_exit"] == (0 if enabled else 2)
     if enabled:
         assert data["error"] is None
-        assert data["plugin"]["version"] == "0.4.0"
+        from sparkrun import __version__
+
+        assert data["plugin"]["version"] == __version__
     else:
         assert "integration.k8s" in data["error"]
         assert data["plugin"]["version"] is None
@@ -145,12 +147,13 @@ def test_enabled_plugin_keeps_individual_features_switchable(tmp_path):
 def test_run_handler_registration_rolls_back_with_failed_plugin(monkeypatch):
     from scitrera_app_framework import Variables
     from sparkrun.core import run_handlers
-    from sparkrun.core.installed_plugins import registration_transaction, PluginConflictError
+    from sparkrun.core.installed_plugins import PluginConflictError
+    from sparkrun.core.registration import registry_transaction
 
     monkeypatch.setattr(run_handlers, "_RUN_HANDLERS", {})
     handler = run_handlers.RunHandler("test", lambda *args: None)
     with pytest.raises(RuntimeError):
-        with registration_transaction(Variables()):
+        with registry_transaction(Variables()):
             run_handlers.register_run_handler(handler)
             raise RuntimeError("plugin failure")
     assert not run_handlers._RUN_HANDLERS
