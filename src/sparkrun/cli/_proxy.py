@@ -306,10 +306,10 @@ def sync_cmd(output_json):
     """Reconcile the proxy's model list with the workloads actually running."""
     from sparkrun import api
 
-    sctx = _get_context(click.get_current_context())
+    sctx = click.get_current_context().ensure_object(dict).get("sparkrun_ctx")
     try:
         result = api.proxy.sync(require_running=True, sctx=sctx)
-    except api.proxy.ProxyUpdateFailed as exc:
+    except api.SparkrunError as exc:
         raise click.ClickException(str(exc)) from exc
 
     payload = {
@@ -424,15 +424,17 @@ def alias_add(alias_name, target_model):
     """
     from sparkrun import api
 
-    sctx = _get_context(click.get_current_context())
+    sctx = click.get_current_context().ensure_object(dict).get("sparkrun_ctx")
 
     try:
         result = api.proxy.add_alias(alias_name, target_model, sctx=sctx)
-    except api.proxy.ProxyUpdateFailed as exc:
+    except (api.proxy.ProxyUpdateFailed, api.proxy.GatewayUnavailable) as exc:
         # The alias is saved; only the running proxy failed to pick it up.
         click.echo("Alias added: %s -> %s" % (alias_name, target_model))
         click.echo("Error: %s" % exc, err=True)
         sys.exit(1)
+    except api.SparkrunError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     click.echo("Alias added: %s -> %s" % (alias_name, target_model))
 
@@ -457,15 +459,17 @@ def alias_remove(alias_name):
     """
     from sparkrun import api
 
-    sctx = _get_context(click.get_current_context())
+    sctx = click.get_current_context().ensure_object(dict).get("sparkrun_ctx")
 
     try:
         result = api.proxy.remove_alias(alias_name, sctx=sctx)
-    except api.proxy.ProxyUpdateFailed as exc:
+    except (api.proxy.ProxyUpdateFailed, api.proxy.GatewayUnavailable) as exc:
         # The alias is already removed from proxy.yaml at this point.
         click.echo("Alias removed: %s" % alias_name)
         click.echo("Error: %s" % exc, err=True)
         sys.exit(1)
+    except api.SparkrunError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     if not result.saved:
         click.echo("Alias '%s' not found." % alias_name)
@@ -666,7 +670,7 @@ def load_cmd(
                         cluster=run_plan.cluster.name or None,
                         sctx=sctx,
                     )
-                except api.proxy.ProxyUpdateFailed as exc:
+                except api.SparkrunError as exc:
                     click.echo("Error: %s" % exc, err=True)
                     sys.exit(1)
                 if synced.added:
@@ -763,7 +767,7 @@ def unload_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run):
         click.echo("Removing proxy registration and syncing models...")
         try:
             synced = api.proxy.unregister_loaded_model(recipe_name, sctx=sctx)
-        except api.proxy.ProxyUpdateFailed as exc:
+        except api.SparkrunError as exc:
             click.echo("Error: %s" % exc, err=True)
             sys.exit(1)
         if synced.removed:

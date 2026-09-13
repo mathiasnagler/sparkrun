@@ -605,3 +605,16 @@ Declared `GatewayOperationError` failures during construction, preparation,
 shutdown, or process start are exposed as `ProxyStartFailed` with their original
 cause. Gateway availability errors retain their separate API type. Providers
 should not rely on callers catching their private configuration exception classes.
+
+Gateway updates (including alias changes) now translate declared operational
+failures consistently to `ProxyUpdateFailed`. The pinned SparkRoute provider's
+transport/authentication failures are adapted at registry resolution, without
+modifying the vendor snapshot. Preserve the cause when reporting these errors;
+callers should catch public API types rather than import provider exceptions.
+
+Recovery-only supervisors refuse model/alias updates with `GatewayUnavailable`
+before discovery. Alias changes still persist before attempting to update a
+running gateway, so this error can mean the local edit succeeded. CLI alias
+commands report that distinction. Stopped `sync(require_running=True)` and
+registration operations retain their no-op behavior; process status/stop remain
+available after plugin loss or declared provider-construction failure.

@@ -5,20 +5,21 @@ CLI's and the desktop sidecar's single path to the gateway: which gateway is
 used, how it starts and stops, and how its served model list is reconciled.
 
 Layering: ``cli -> api.proxy -> sparkrun.proxy -> {core, orchestration}``.
-Imports of :mod:`sparkrun.proxy` are deferred into the functions —
+Gateway implementation imports are deferred into the functions —
 ``sparkrun.proxy.discovery`` imports :mod:`sparkrun.api`, so a module-level
 import would be circular.
 
 **Gate placement.** Bringing a gateway *up* (:func:`start`) is gated by the
 gateway's feature flag; ``stop`` / ``status`` / ``models`` / ``sync`` /
 ``alias_*`` are not.  A proxy started while the flag was on must stay
-manageable — and stoppable — if the flag is later turned off, and the
-auto-discover daemon keeps driving the engine it was started with.
+stoppable if the flag is later turned off. Provider-dependent management still
+requires a loaded implementation; process recovery cannot reconcile models.
 """
 
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -35,6 +36,7 @@ from sparkrun.proxy.contracts import (
 )
 
 from ._errors import GatewayUnavailable, ProxyAlreadyRunning, ProxyStartFailed, ProxyUnsupported, ProxyUpdateFailed, ProxyQueryFailed
+from ._recovery import require_implementation
 
 if TYPE_CHECKING:
     from sparkrun.core.context import SparkrunContext
@@ -272,7 +274,8 @@ def _running_engine(sctx: "SparkrunContext | None" = None) -> GatewaySupervisor:
     Missing plugins or failed bootstrap retain process-level status and stop.
     """
     from sparkrun.core.application_profile import initialize_child_application_profile
-    from sparkrun.proxy._supervisor import GatewayState, GatewaySupervisor
+    from sparkrun.proxy._supervisor import GatewayState
+    from ._recovery import ProcessRecoverySupervisor
     from sparkrun.proxy.gateway import DEFAULT_GATEWAY
 
     try:
@@ -300,9 +303,12 @@ def _running_engine(sctx: "SparkrunContext | None" = None) -> GatewaySupervisor:
                 gateway,
             )
         else:
-            return engine_cls(**_gateway_context_kwargs(engine_cls, sctx))
+            try:
+                return engine_cls(**_gateway_context_kwargs(engine_cls, sctx))
+            except GatewayOperationError as exc:
+                logger.warning("Gateway %r could not initialize: %s; only process-level management is available.", gateway, exc)
 
-    orphan = GatewaySupervisor(state_dir=probe.state_dir)
+    orphan = ProcessRecoverySupervisor(state_dir=probe.state_dir)
     orphan.gateway_name = gateway
     orphan.host = str(state.get("host") or "")
     orphan.port = int(state.get("port") or 0)
@@ -488,16 +494,17 @@ def stop(*, dry_run: bool = False, sctx: "SparkrunContext | None" = None) -> Pro
     """Stop the running proxy and its auto-discover daemon.
 
     Ungated on purpose: teardown must work even after the gateway's feature
-    flag has been turned off.
+    flag has been turned off. Declared stop failures raise ProxyUpdateFailed.
     """
-    engine = _running_engine(sctx)
-    pid = engine.current_pid()
+    with _gateway_update_errors():
+        engine = _running_engine(sctx)
+        pid = engine.current_pid()
 
-    if not engine.is_running():
-        return ProxyStopResult(stopped=False, was_running=False, pid=pid, dry_run=dry_run)
+        if not engine.is_running():
+            return ProxyStopResult(stopped=False, was_running=False, pid=pid, dry_run=dry_run)
 
-    stopped = engine.stop(dry_run=dry_run)
-    return ProxyStopResult(stopped=bool(stopped), was_running=True, pid=pid, dry_run=dry_run)
+        stopped = engine.stop(dry_run=dry_run)
+        return ProxyStopResult(stopped=bool(stopped), was_running=True, pid=pid, dry_run=dry_run)
 
 
 def status(*, sctx: "SparkrunContext | None" = None) -> ProxyStatus:
@@ -543,6 +550,15 @@ def models(*, sctx: "SparkrunContext | None" = None) -> tuple[ProxyModel, ...]:
     return status(sctx=sctx).require_models()
 
 
+@contextmanager
+def _gateway_update_errors():
+    """Translate declared update failures, retaining causes and programming errors."""
+    try:
+        yield
+    except GatewayOperationError as exc:
+        raise ProxyUpdateFailed(str(exc)) from exc
+
+
 def sync(
     *,
     endpoints: "list[DiscoveredEndpoint] | None" = None,
@@ -568,26 +584,24 @@ def sync(
 
     Raises:
         ProxyUpdateFailed: the running gateway could not adopt the change.
+        GatewayUnavailable: only process recovery is available. Refused before
+            discovery; require_running=True remains a no-op when stopped.
     """
-    engine = _running_engine(sctx)
-    running = engine.is_running()
+    with _gateway_update_errors():
+        engine = _running_engine(sctx)
+        running = engine.is_running()
 
-    if require_running and not running:
-        return ProxySyncResult(proxy_running=False)
+        if require_running and not running:
+            return ProxySyncResult(proxy_running=False)
 
-    if endpoints is None:
-        discovered = _discover(host_filter=host_filter, sctx=sctx)
-        endpoints = [ep for ep in discovered if ep.healthy]
+        require_implementation(engine)
+        if endpoints is None:
+            discovered = _discover(host_filter=host_filter, sctx=sctx)
+            endpoints = [ep for ep in discovered if ep.healthy]
 
-    try:
         added, removed = engine.sync_models(endpoints, aliases)
-    except GatewayOperationError as exc:
-        # Deliberately not a bare ``RuntimeError``: every gateway's management
-        # failures derive from GatewayOperationError, so widening further would
-        # report an unrelated engine bug as a routine update failure.
-        raise ProxyUpdateFailed(str(exc)) from exc
 
-    return ProxySyncResult(added=added, removed=removed, proxy_running=running)
+        return ProxySyncResult(added=added, removed=removed, proxy_running=running)
 
 
 def register_loaded_model(
@@ -602,19 +616,19 @@ def register_loaded_model(
     A discovery-driven gateway (the engine returns ``None``) simply rescans
     live endpoints, which is byte-identical to calling :func:`sync` directly.
     A catalog-driven gateway persists an activatable binding instead, so the
-    same workload can be brought back after it goes cold.
+    same workload can be brought back after it goes cold. A running gateway
+    without a loaded implementation raises GatewayUnavailable before discovery.
     """
-    engine = _running_engine(sctx)
-    if not engine.is_running():
-        return ProxySyncResult(proxy_running=False)
-    try:
+    with _gateway_update_errors():
+        engine = _running_engine(sctx)
+        if not engine.is_running():
+            return ProxySyncResult(proxy_running=False)
+        require_implementation(engine)
         result = engine.register_loaded_model(recipe, overrides, cluster)
-    except GatewayOperationError as exc:
-        raise ProxyUpdateFailed(str(exc)) from exc
-    if result is None:
-        return sync(require_running=True, sctx=sctx)
-    added, removed = result
-    return ProxySyncResult(added=added, removed=removed, proxy_running=True)
+        if result is None:
+            return sync(require_running=True, sctx=sctx)
+        added, removed = result
+        return ProxySyncResult(added=added, removed=removed, proxy_running=True)
 
 
 def unregister_loaded_model(
@@ -625,19 +639,18 @@ def unregister_loaded_model(
     """Remove a recipe after ``proxy unload`` stopped its workload.
 
     ``None`` from the engine has the same discovery-driven meaning as in
-    :func:`register_loaded_model`.
+    :func:`register_loaded_model`, including GatewayUnavailable during recovery.
     """
-    engine = _running_engine(sctx)
-    if not engine.is_running():
-        return ProxySyncResult(proxy_running=False)
-    try:
+    with _gateway_update_errors():
+        engine = _running_engine(sctx)
+        if not engine.is_running():
+            return ProxySyncResult(proxy_running=False)
+        require_implementation(engine)
         result = engine.unregister_loaded_model(recipe)
-    except GatewayOperationError as exc:
-        raise ProxyUpdateFailed(str(exc)) from exc
-    if result is None:
-        return sync(require_running=True, sctx=sctx)
-    added, removed = result
-    return ProxySyncResult(added=added, removed=removed, proxy_running=True)
+        if result is None:
+            return sync(require_running=True, sctx=sctx)
+        added, removed = result
+        return ProxySyncResult(added=added, removed=removed, proxy_running=True)
 
 
 # --------------------------------------------------------------------------
@@ -656,6 +669,8 @@ def add_alias(alias: str, target: str, *, sctx: "SparkrunContext | None" = None)
     Raises:
         ProxyUpdateFailed: the alias was saved but the running proxy could
             not be updated.
+        GatewayUnavailable: the alias was saved, but the running provider is
+            unavailable; restore it before synchronizing the saved settings.
     """
     sctx = resolve_sctx(sctx)
     proxy_cfg = sctx.proxy_config
@@ -677,7 +692,9 @@ def add_alias(alias: str, target: str, *, sctx: "SparkrunContext | None" = None)
 def remove_alias(alias: str, *, sctx: "SparkrunContext | None" = None) -> ProxyAliasResult:
     """Remove an alias and drop it from a running proxy.
 
-    ``saved=False`` in the result means the alias did not exist.
+    ``saved=False`` in the result means the alias did not exist. As with
+    add_alias, ProxyUpdateFailed/GatewayUnavailable means the edit was saved
+    but could not be applied to the running provider.
     """
     sctx = resolve_sctx(sctx)
     proxy_cfg = sctx.proxy_config
@@ -699,17 +716,14 @@ def remove_alias(alias: str, *, sctx: "SparkrunContext | None" = None) -> ProxyA
 
 def _apply_aliases(aliases: dict[str, str], sctx: "SparkrunContext") -> tuple[int, int, bool]:
     """Push *aliases* to the running proxy. Returns (added, removed, running)."""
-    from sparkrun.proxy.engine import ProxyRestartError
+    with _gateway_update_errors():
+        engine = _running_engine(sctx)
+        if not engine.is_running():
+            return 0, 0, False
 
-    engine = _running_engine(sctx)
-    if not engine.is_running():
-        return 0, 0, False
-
-    try:
+        require_implementation(engine)
         added, removed = engine.sync_aliases(aliases)
-    except ProxyRestartError as exc:
-        raise ProxyUpdateFailed(str(exc)) from exc
-    return added, removed, True
+        return added, removed, True
 
 
 # --------------------------------------------------------------------------
@@ -901,10 +915,10 @@ def ui(*, issue_token: bool = False, sctx: "SparkrunContext | None" = None) -> P
     Raises:
         ProxyUnsupported: the running gateway serves no admin console.
     """
-    engine = _running_engine(sctx)
-    if not isinstance(engine, GatewayConsole):
-        raise ProxyUnsupported("The %s gateway does not serve an admin console." % engine.gateway_name)
-    try:
+    with _gateway_update_errors():
+        engine = _running_engine(sctx)
+        if not isinstance(engine, GatewayConsole):
+            raise ProxyUnsupported("The %s gateway does not serve an admin console." % engine.gateway_name)
         url = engine.ui_url
         if not url:
             raise ProxyUnsupported("The %s gateway does not serve an admin console." % engine.gateway_name)
@@ -921,8 +935,6 @@ def ui(*, issue_token: bool = False, sctx: "SparkrunContext | None" = None) -> P
             exposed=engine.admin_exposed,
             auth_required=engine.admin_auth_required,
         )
-    except GatewayOperationError as exc:
-        raise ProxyUpdateFailed(str(exc)) from exc
 
 
 def admin_token(*, rotate: bool = False, clear: bool = False, sctx: "SparkrunContext | None" = None) -> str | None:
@@ -934,10 +946,8 @@ def admin_token(*, rotate: bool = False, clear: bool = False, sctx: "SparkrunCon
     """
     if rotate and clear:
         raise ValueError("rotate and clear are mutually exclusive")
-    engine = _running_engine(sctx)
-    if not isinstance(engine, GatewayAdminToken):
-        raise ProxyUnsupported("The %s gateway has no managed admin token." % getattr(engine, "gateway_name", "configured"))
-    try:
+    with _gateway_update_errors():
+        engine = _running_engine(sctx)
+        if not isinstance(engine, GatewayAdminToken):
+            raise ProxyUnsupported("The %s gateway has no managed admin token." % getattr(engine, "gateway_name", "configured"))
         return engine.admin_token(rotate=rotate, clear=clear)
-    except GatewayOperationError as exc:
-        raise ProxyUpdateFailed(str(exc)) from exc

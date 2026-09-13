@@ -278,13 +278,26 @@ provide configuration, model reconciliation and management capabilities such as
 Start checks availability even for a dry run. Existing processes remain
 manageable after a feature is disabled; when an implementation is unavailable,
 the base supervisor can still inspect state and stop the recorded process.
-This fallback also covers plugin initialization failures: the failure is logged,
+This fallback also covers plugin initialization failures and declared operational
+failures while constructing the provider: the failure is logged,
 status reports model enumeration as unavailable, and process stop remains usable.
 The CLI's `proxy status`, `proxy stop`, and `proxy models` reach this same recovery
 path without requiring successful plugin bootstrap; models fail explicitly when
 enumeration is unavailable.
 An invalid application profile still raises instead of accessing another
 application's state.
+
+Process recovery cannot change the live model configuration. `sync`,
+`models --refresh`, and registration updates raise `GatewayUnavailable` before
+endpoint discovery if the provider is unavailable. `sync(require_running=True)`
+and registration updates still return a no-op when the process is stopped.
+Alias add/remove save local settings first; if the live provider is unavailable,
+they then raise `GatewayUnavailable` and the CLI reports both the saved edit and
+the failed application. Restore the plugin/configuration and sync to retry.
+The same saved-edit policy applies to `ProxyUpdateFailed`. Initialization failures
+occur before alias persistence and do not produce a saved-edit message.
+Console and token operations retain `ProxyUnsupported` when the resolved supervisor lacks those
+optional capabilities.
 
 Start previews configuration before stopping an existing process and writes
 generated configuration or discovery snapshots only after shutdown succeeds.
@@ -343,8 +356,16 @@ raise `GatewayOperationError` for expected failures; the API translates manageme
 failures to `ProxyUpdateFailed`. Model enumeration raises its subtype
 `GatewayQueryError`, which becomes `ProxyQueryFailed` for model-list callers.
 Diagnostics must not include secrets. Other exceptions, including a bare
-`RuntimeError`, propagate as provider bugs. The pinned SparkRoute adapter already
-uses this operational error family; its legacy `_supervisor` import remains an
-alias for the same class. Passing both `rotate=True` and
+`RuntimeError` or provider-thrown `NotImplementedError`, propagate as provider
+bugs. Stop hooks also use `GatewayOperationError` and become `ProxyUpdateFailed`.
+
+The host adapts the pinned SparkRoute 0.1.1 class when resolving it through the
+gateway registry. Its transport/authentication/retry errors gain the shared
+operational contract while retaining their upstream error metadata and causes.
+The snapshot itself is unchanged, and its startup and model-query behavior is
+preserved. Direct imports of the vendored class retain its upstream behavior;
+applications should use `api.proxy`, and provider resolution should use the
+registry. The legacy `_supervisor` imports remain aliases for the shared classes.
+Passing both `rotate=True` and
 `clear=True` is invalid and raises `ValueError` before dispatch. Admin-token
 operations do not rotate the inference API key.

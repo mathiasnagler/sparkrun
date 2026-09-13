@@ -61,7 +61,7 @@ class ProxyStartFailed(SparkrunError):
 
 
 class ProxyUpdateFailed(SparkrunError):
-    """The running gateway could not adopt a requested model/config change.
+    """The gateway refused a model/config change, credential operation, or stop.
 
     Wraps :class:`~sparkrun.proxy._supervisor.GatewayOperationError` (of which
     ``ProxyRestartError`` is the LiteLLM member).  The requested desired state

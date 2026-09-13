@@ -651,7 +651,7 @@ assert 'click' not in sys.modules and 'sparkrun.cli' not in sys.modules
 
 
 @pytest.mark.parametrize("application", ["sparkrun", "profile-test-app"])
-@pytest.mark.parametrize("command", ["status", "stop", "models"])
+@pytest.mark.parametrize("command", ["status", "stop", "models", "sync", "refresh"])
 def test_installed_cli_gateway_recovery_after_bootstrap_failure(wheels, tmp_path, application, command):
     config = tmp_path / "custom-config" / "config.yaml"
     config.parent.mkdir()
@@ -666,9 +666,17 @@ state.write_text(json.dumps({'gateway': 'removed-provider', 'pid': os.getpid(), 
 before = state.read_bytes()
 # The parent supplies a live PID. Stop is always a dry run; no signal is sent.
 flags = ['--dry-run'] if command == 'stop' else ['--json']
-result = subprocess.run([str(Path(sys.executable).with_name(application)), 'proxy', command, *flags], capture_output=True, text=True, timeout=20)
+subcommand = command
+if command == 'refresh':
+    subcommand = 'models'
+    flags.append('--refresh')
+result = subprocess.run([str(Path(sys.executable).with_name(application)), 'proxy', subcommand, *flags], capture_output=True, text=True, timeout=20)
 assert 'integrations' in result.stderr, result.stderr
-if command == 'models':
+if command in {'sync', 'refresh'}:
+    assert result.returncode == 1, result.stderr
+    assert 'Error:' in result.stderr and 'Restore its plugin' in result.stderr
+    assert 'removed-provider' in result.stderr and not result.stdout
+elif command == 'models':
     assert result.returncode == 1, result.stderr
     assert 'Model list unavailable' in result.stderr and not result.stdout
 else:
@@ -690,6 +698,47 @@ assert state.read_bytes() == before
         code,
         application,
         command,
+        env_extra={"SPARKRUN_APPLICATION_PROFILE": profile_ref, "SPARKRUN_APPLICATION_CONFIG": str(config)},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("application", ["sparkrun", "profile-test-app"])
+def test_installed_sparkroute_operational_adapter(wheels, tmp_path, application):
+    config = tmp_path / "custom-config" / "config.yaml"
+    config.parent.mkdir()
+    config.write_text("features:\n  gateway.sparkroute: true\n")
+    code = """
+import json, os, sys
+from pathlib import Path
+from unittest.mock import patch
+from urllib.error import URLError
+from sparkrun import api
+from sparkrun.proxy.contracts import GatewayOperationError
+from sparkrun.plugins.sparkroute.admin import AdminError
+context = api.default_sctx()
+state = Path.home() / '.cache' / sys.argv[1] / 'proxy' / 'state.yaml'
+state.parent.mkdir(parents=True)
+state.write_text(json.dumps({'gateway': 'sparkroute', 'pid': os.getpid(), 'distribution': sys.argv[1]}))
+with patch('urllib.request.urlopen', side_effect=URLError('fixture failure')):
+    try:
+        api.proxy.sync(endpoints=[], require_running=True, sctx=context)
+    except api.proxy.ProxyUpdateFailed as error:
+        assert isinstance(error.__cause__, GatewayOperationError)
+        assert isinstance(error.__cause__.__cause__, AdminError)
+    else:
+        raise AssertionError('provider failure was not translated')
+    assert api.proxy.status(sctx=context).model_query_error
+assert 'click' not in sys.modules and 'sparkrun.cli' not in sys.modules
+"""
+    profile_ref = "sparkrun.core.application_profile:SPARKRUN" if application == "sparkrun" else "profile_test_app.profile:PROFILE_TEST_APP"
+    result = invoke(
+        wheels,
+        tmp_path,
+        "python",
+        "-c",
+        code,
+        application,
         env_extra={"SPARKRUN_APPLICATION_PROFILE": profile_ref, "SPARKRUN_APPLICATION_CONFIG": str(config)},
     )
     assert result.returncode == 0, result.stdout + result.stderr

@@ -87,8 +87,9 @@ def test_unload_dry_run_never_stops_or_mutates_proxy(unload_env):
     unload_env.unregister.assert_not_called()
 
 
-def test_unload_reports_proxy_update_failure(unload_env):
-    unload_env.unregister.side_effect = api.proxy.ProxyUpdateFailed("dependent virtual model")
+@pytest.mark.parametrize("error_type", [api.proxy.ProxyUpdateFailed, api.proxy.GatewayUnavailable])
+def test_unload_reports_proxy_update_failure(unload_env, error_type):
+    unload_env.unregister.side_effect = error_type("dependent virtual model")
     result = invoke(unload_env)
     assert result.exit_code == 1
     assert "Error: dependent virtual model" in result.output

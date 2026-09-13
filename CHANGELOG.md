@@ -70,6 +70,12 @@ system, gateway registry, and execution-strategy extension points shipped in
 
 ### Fixed
 
+- Gateway updates and stop hooks consistently translate declared provider errors,
+  including alias reconciliation. A host adapter translates the pinned SparkRoute
+  provider's transport/authentication failures without changing the vendor snapshot.
+- Process-only gateway recovery refuses model mutations before discovery with
+  `GatewayUnavailable`. Alias commands report persisted edits separately from
+  failed live application; stopped follow/sync operations retain their no-op behavior.
 - Gateway management initializes application plugins before resolving the running
   implementation, while preserving process status/stop if bootstrap fails or a
   plugin is unavailable. Recorded gateway identity takes precedence over a saved

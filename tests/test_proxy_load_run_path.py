@@ -179,3 +179,13 @@ def test_proxy_load_uses_the_shared_post_launch_lifecycle(load_env, monkeypatch)
     assert result.exit_code == 0, result.output
     lifecycle.assert_called_once()
     assert load_env.order == ["launch", "post_launch", "ready", "register"]
+
+
+@pytest.mark.parametrize("error_type", [api.proxy.ProxyUpdateFailed, api.proxy.GatewayUnavailable])
+def test_proxy_load_reports_registration_failure_after_loading(load_env, error_type):
+    load_env.registration.side_effect = error_type("provider unavailable")
+    result = CliRunner().invoke(main, ["proxy", "load", str(load_env.recipe)])
+    assert result.exit_code == 1 and isinstance(result.exception, SystemExit)
+    assert "Model loaded:" in result.stdout
+    assert "Error: provider unavailable" in result.stderr
+    load_env.registration.assert_called_once()
