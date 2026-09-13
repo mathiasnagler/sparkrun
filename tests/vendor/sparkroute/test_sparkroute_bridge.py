@@ -328,6 +328,7 @@ def test_ensure_ready_uses_shared_plan_run_and_readiness():
     )
     endpoint = {"cluster_id": "new", "host": "127.0.0.1", "port": 8001, operations._OWNED_KEY: True}
     with (
+        mock.patch.object(operations.api, "list_jobs", return_value=[]),
         mock.patch.object(operations, "_resolve_binding", return_value=(recipe, "abc123abc123")),
         mock.patch.object(operations.api, "default_sctx", return_value=SimpleNamespace(config=object())),
         mock.patch.object(operations, "_discover", side_effect=[[], [endpoint]]) as discover,

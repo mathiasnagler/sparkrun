@@ -1185,8 +1185,8 @@ class TestEngineModelQueryAPI:
     changes go through the config file instead.
     """
 
-    def test_list_models_via_api(self, state_dir: Path):
-        """list_models_via_api parses response."""
+    def test_query_models(self, state_dir: Path):
+        """query_models returns typed records from the management response."""
         from sparkrun.proxy.engine import ProxyEngine
 
         engine = ProxyEngine(state_dir=state_dir)
@@ -1203,21 +1203,22 @@ class TestEngineModelQueryAPI:
         mock_response.__exit__ = MagicMock(return_value=False)
 
         with patch("urllib.request.urlopen", return_value=mock_response):
-            models = engine.list_models_via_api()
+            models = engine.query_models()
 
         assert len(models) == 2
-        assert models[0]["model_name"] == "model-a"
+        assert models[0].model_name == "model-a"
 
     def test_list_models_api_failure(self, state_dir: Path):
-        """list_models_via_api returns empty list on failure."""
+        """An unreachable management API raises the shared query error."""
         from sparkrun.proxy.engine import ProxyEngine
 
         engine = ProxyEngine(state_dir=state_dir)
 
-        with patch("urllib.request.urlopen", side_effect=Exception("connection refused")):
-            models = engine.list_models_via_api()
+        from sparkrun.proxy.contracts import GatewayQueryError
 
-        assert models == []
+        with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
+            with pytest.raises(GatewayQueryError, match="unreachable"):
+                engine.query_models()
 
     def test_mutation_endpoints_are_gone(self, state_dir: Path):
         """The DB-dependent mutators must not come back as silent no-ops.

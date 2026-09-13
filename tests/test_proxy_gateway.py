@@ -261,6 +261,8 @@ class TestApiFacade:
         # Degrading is not the same as staying quiet about it.
         assert "ghost" in caplog.text
 
-        with pytest.raises(NotImplementedError) as exc:
-            engine.list_models_via_api()
+        from sparkrun.proxy.contracts import GatewayQueryError
+
+        with pytest.raises(GatewayQueryError) as exc:
+            engine.query_models()
         assert "ghost" in str(exc.value)

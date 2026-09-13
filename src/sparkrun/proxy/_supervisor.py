@@ -34,7 +34,7 @@ from typing import Any
 
 import yaml
 
-from sparkrun.proxy.contracts import ProxyModel, GatewayOperationError
+from sparkrun.proxy.contracts import ProxyModel, GatewayOperationError, GatewayQueryError
 from sparkrun.utils.fs import open_private_write, atomic_private_write
 from sparkrun.core.application_profile import get_application_profile
 from sparkrun.utils.process import process_exists
@@ -244,13 +244,6 @@ class GatewaySupervisor(GatewayState):
     #: deployment it was not explicitly told about.
     wants_proxy_config = False
 
-    #: Why the last :meth:`list_models_via_api` could not answer, or "".
-    #:
-    #: Empty means the query succeeded, *including* a legitimately empty model
-    #: list — collapsing the two would report an authenticated management
-    #: failure as "no models registered".  Non-secret; it reaches the CLI.
-    model_query_error = ""
-
     def __init__(self, state_dir: Path | None = None) -> None:
         super().__init__(state_dir)
         self._autodiscover_config_path = self.state_dir / "autodiscover.yaml"
@@ -374,19 +367,8 @@ class GatewaySupervisor(GatewayState):
         raise NotImplementedError("gateway %r cannot synchronize aliases" % self.gateway_name)
 
     def query_models(self) -> tuple[ProxyModel, ...]:
-        """Return typed model rows, or raise ``contracts.GatewayQueryError``.
-
-        New gateways override this method and translate their own wire format.
-        The default adapts legacy ``list_models_via_api`` implementations.
-        Providers that implement the typed contract bypass that fallback.
-        """
-        from ._legacy_models import query_models
-
-        return query_models(self)
-
-    def list_models_via_api(self) -> list[dict[str, Any]]:
-        """Legacy dictionary hook; new plugins implement ``query_models``."""
-        raise NotImplementedError("gateway %r cannot report its served models" % self.gateway_name)
+        """Return typed model rows, or raise GatewayQueryError if unavailable."""
+        raise GatewayQueryError("gateway %r cannot report its served models" % self.gateway_name)
 
     def register_loaded_model(
         self,

@@ -34,7 +34,7 @@ def test_failed_query_is_diagnostic_for_status_and_error_for_models(gateway, mon
         raise OSError("management connection failed")
 
     if failure == "unsupported":
-        monkeypatch.setattr(gateway, "list_models_via_api", lambda: GatewaySupervisor.list_models_via_api(gateway))
+        monkeypatch.setattr(gateway, "query_models", lambda: GatewaySupervisor.query_models(gateway))
     else:
         monkeypatch.setattr(gateway, "_api_request", request)
 
@@ -57,7 +57,8 @@ def test_failed_query_is_diagnostic_for_status_and_error_for_models(gateway, mon
 
 @pytest.mark.parametrize("populated", [False, True])
 def test_healthy_query_and_recovery_preserve_success_shape(gateway, monkeypatch, populated):
-    gateway.model_query_error = "previous failure"
+    monkeypatch.setattr(gateway, "_api_request", lambda *args: (_ for _ in ()).throw(OSError("previous failure")))
+    assert api.proxy.status().model_query_error
     rows = [{"model_name": "example", "litellm_params": {"api_base": "http://worker/v1"}}] if populated else []
     monkeypatch.setattr(gateway, "_api_request", lambda *a, **kw: {"data": rows})
     models = api.proxy.models()

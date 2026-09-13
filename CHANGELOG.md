@@ -70,6 +70,14 @@ system, gateway registry, and execution-strategy extension points shipped in
 
 ### Fixed
 
+- Embedded CLI invocations validate configuration binding independently of cached
+  plugin discovery. Conflicting paths fail before dispatch or writes.
+- Job APIs and metadata helpers honor the configured cache with omitted contexts,
+  sharing one lookup policy without requiring plugin bootstrap for passive reads.
+- LiteLLM uses typed gateway model queries directly. Removed the legacy provider
+  dictionary hook and mutable query-error side channel; external gateways use
+  `query_models()` and `GatewayQueryError`. Public status diagnostics remain.
+
 - Gateway updates and stop hooks consistently translate declared provider errors,
   including alias reconciliation. The updated upstream SparkRoute plugin implements
   the shared error and typed model-query contracts directly, without a host adapter.

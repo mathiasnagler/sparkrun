@@ -54,11 +54,9 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING", *, pro
     if config is not None and config.profile != active:
         raise RuntimeError("Configuration belongs to another distribution")
     config_path = (config.config_path if config is not None else config_module.resolve_config_path(v)).expanduser().resolve()
-    if _variables is not None and config_module._application_config_path != config_path:
-        raise RuntimeError("Application is already initialized with another configuration path")
-    # Pin implicit initialization too: plugin discovery and every later context
-    # must read the same config, including calls through the embedding API.
-    config_module._application_config_path = config_path
+    # CLI dispatch can pin the path before plugin discovery. Implicit API
+    # initialization shares that same binding and cannot replace it.
+    config_module._bind_config_path(config_path)
 
     if _variables is not None:
         if v is not None and v is not _variables:

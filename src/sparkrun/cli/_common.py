@@ -53,8 +53,28 @@ def print_json(data: Any) -> None:
     click.echo(dumps_json(data))
 
 
+def _bind_application_config(ctx=None, config_path=None) -> None:
+    """Validate each explicit CLI binding independently of plugin discovery."""
+    from pathlib import Path
+    from sparkrun.core.config import _bind_config_path, _ConfigBindingError
+
+    obj = ctx.ensure_object(dict) if ctx is not None else {}
+    requested = config_path if config_path is not None else obj.get("config_path")
+    if requested is None:
+        return
+    path = Path(requested).expanduser().resolve()
+    cached = obj.get("sparkrun_ctx")
+    try:
+        if cached is not None and path != Path(cached.config.config_path).expanduser().resolve():
+            raise _ConfigBindingError("CLI context belongs to another configuration path")
+        _bind_config_path(path)
+    except _ConfigBindingError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+
 def _initialize_application(ctx=None, config_path=None) -> "SparkrunContext":
     """Bind CLI configuration before plugin discovery, without presentation setup."""
+    _bind_application_config(ctx, config_path)
     obj = ctx.ensure_object(dict) if ctx is not None else {}
     cached = obj.get("sparkrun_ctx")
     if cached is not None:
@@ -75,6 +95,7 @@ def _get_context(ctx, config_path=None) -> "SparkrunContext":
     ``fixed_logger`` parameter means ``init_framework_desktop`` skips
     its own logging setup entirely.
     """
+    _bind_application_config(ctx, config_path)
     obj = ctx.ensure_object(dict)
     sctx = obj.get("sparkrun_ctx", None)
     if sctx is not None:

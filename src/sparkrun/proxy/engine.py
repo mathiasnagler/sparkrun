@@ -40,6 +40,7 @@ from sparkrun.proxy._supervisor import (
     _restrict_file_permissions,
     _wait_for_exit,  # noqa: F401 — re-exported; imported from here historically
 )
+from sparkrun.proxy.contracts import GatewayQueryError, ProxyModel
 from sparkrun.proxy.discovery import DiscoveredEndpoint
 from sparkrun.proxy.gateway import require_gateway_enabled
 from sparkrun.utils.fs import open_private_write
@@ -251,6 +252,30 @@ def write_config(config_dict: dict[str, Any], config_path: Path | None = None) -
     return config_path
 
 
+def _model_from_info(row: object) -> ProxyModel:
+    """Translate one LiteLLM /model/info entry into the shared model record."""
+    if not isinstance(row, dict):
+        raise GatewayQueryError("LiteLLM returned an invalid model entry")
+    name = row.get("model_name")
+    info = row.get("model_info")
+    info = {} if info is None else info
+    if not isinstance(info, dict):
+        raise GatewayQueryError("LiteLLM returned invalid model metadata")
+    params = row.get("litellm_params")
+    if params is None:
+        params = info.get("litellm_params")
+    params = {} if params is None else params
+    if not isinstance(params, dict):
+        raise GatewayQueryError("LiteLLM returned invalid model parameters")
+    base = params.get("api_base", "")
+    if not isinstance(name, str) or not name or not isinstance(base, str):
+        raise GatewayQueryError("LiteLLM returned an invalid model name or endpoint")
+    length = next((info[key] for key in ("max_input_tokens", "max_tokens", "max_model_len") if info.get(key) is not None), None)
+    if length is not None and (type(length) is not int or length < 0):
+        raise GatewayQueryError("LiteLLM returned an invalid model context length")
+    return ProxyModel(name, base, length)
+
+
 class ProxyEngine(GatewaySupervisor):
     """Manages the litellm proxy subprocess and its management API.
 
@@ -450,25 +475,23 @@ class ProxyEngine(GatewaySupervisor):
 
     # -- Management API client --
 
-    def list_models_via_api(self) -> list[dict[str, Any]]:
-        """Query registered models via GET /model/info.
+    def query_models(self) -> tuple[ProxyModel, ...]:
+        """Query /model/info and translate LiteLLM's wire format at the provider.
 
-        Records the reason in :attr:`model_query_error` rather than raising, so
-        ``proxy status`` can still describe the *process* when only the
-        management query failed — and can say so instead of rendering the
-        failure as an empty (i.e. "nothing registered") model list.
-
-        Returns:
-            List of model info dicts from litellm; empty on failure.
+        Empty success returns (). Operational failures raise GatewayQueryError;
+        programming exceptions and interrupts propagate unchanged.
         """
         try:
             data = self._api_request("GET", "/model/info")
-        except Exception as exc:
-            logger.debug("Failed to list models via management API", exc_info=True)
-            self.model_query_error = "%s: %s" % (type(exc).__name__, exc)
-            return []
-        self.model_query_error = ""
-        return data.get("data", [])
+        except urllib.error.HTTPError as exc:
+            raise GatewayQueryError("LiteLLM model query failed (HTTP %d)" % exc.code) from exc
+        except OSError as exc:
+            raise GatewayQueryError("LiteLLM management API is unreachable") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise GatewayQueryError("LiteLLM management API returned malformed JSON") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+            raise GatewayQueryError("LiteLLM returned an invalid model list")
+        return tuple(_model_from_info(row) for row in data["data"])
 
     def apply_desired_state(
         self,

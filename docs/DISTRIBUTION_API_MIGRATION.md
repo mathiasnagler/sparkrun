@@ -628,5 +628,26 @@ returns `tuple[ProxyModel, ...]` and raises `GatewayQueryError` for an unavailab
 or malformed status response; it no longer exposes provider rows through
 `list_models_via_api()`. Callers should use `api.proxy.models()` or the supported
 typed gateway method. Gateway registration returns the upstream class directly;
-the host has no SparkRoute-specific adaptation. Other legacy gateways retain the
-shared model-query fallback while they migrate.
+the host has no SparkRoute-specific adaptation. LiteLLM now implements the same
+typed method directly. The legacy `list_models_via_api()` hook and supervisor
+`model_query_error` attribute are removed; external providers must migrate to
+`query_models()` and `GatewayQueryError`. `ProxyStatus.model_query_error` remains
+available to API callers as an immutable observation diagnostic.
+
+## Configuration binding and metadata storage
+
+Each CLI invocation validates its explicit configuration path even when command
+extensions are already loaded or a context is cached. A conflicting binding is a
+CLI usage error before dispatch. Plugin discovery failure still permits process
+recovery under the same configuration; it cannot redirect that operation to a
+different config path. Applications continue to bind one profile/configuration
+per process.
+
+Job listing, stop, logs, and low-level metadata I/O now share configured-cache
+precedence: an explicit `cache_dir`, then the supplied context's configuration or
+the current application's configuration, whose missing setting uses profile/env
+defaults. Omitting `sctx` no longer ignores a `cache_dir` setting in `config.yaml`.
+Passive metadata reads do not initialize plugins, including after a failed plugin
+bootstrap. Invalid configuration or config-property errors propagate instead of
+silently selecting a different cache. An explicit cache permits metadata recovery
+without reading a broken config file.

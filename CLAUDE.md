@@ -1798,7 +1798,6 @@ keeps `gateway_class` the only place a name resolves to an implementation:
 | `supports_autodiscover` | `True` | A gateway owning its own desired state would fight sparkrun's daemon. `start()` warns and disables rather than silently dropping a configured setting. |
 | `wants_proxy_config` | `False` | Management paths resolve their engine from the *state file*. A config-driven gateway without `proxy.yaml` computes an **empty** desired state, so `proxy alias add` would delete every deployment it wasn't told about. |
 | `data_plane_authenticated` | `False` | The safe assumption. A gateway that authenticates says so, rather than every gateway being trusted to have opted out of the warning by accident. |
-| `model_query_error` | `""` | Empty means the query succeeded, *including* an empty model list — collapsing the two reports an authenticated management failure as "no models registered". |
 
 `prepare_config(endpoints, aliases, write=)` puts config generation on the
 engine: what a gateway's config *is* — a rendering of discovered endpoints, or
@@ -1808,11 +1807,12 @@ answering that from the same code that renders the real config is what keeps
 the preview honest.
 
 The model-management surface (`sync_models`, `sync_aliases`,
-`list_models_via_api`, `register_loaded_model`, `unregister_loaded_model`)
+`query_models`, `register_loaded_model`, `unregister_loaded_model`)
 lives on the base **because `api.proxy` resolves an engine from the state
 file** — a LiteLLM-only method reached against another running gateway was an
-`AttributeError` far from its cause. The first three raise
-`NotImplementedError` naming the gateway; the last two return `None`, meaning
+`AttributeError` far from its cause. Unsupported sync hooks raise
+`NotImplementedError`; unavailable model queries raise `GatewayQueryError`.
+The registration hooks return `None`, meaning
 "discovery-driven, do the ordinary endpoint sync", which makes them a true
 no-op seam for LiteLLM while giving `proxy load` / `unload` somewhere to hook.
 

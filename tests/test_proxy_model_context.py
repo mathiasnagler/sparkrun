@@ -197,19 +197,21 @@ def test_models_via_api_reads_model_info():
     from sparkrun.proxy.engine import ProxyEngine
 
     engine = ProxyEngine()
-    engine.list_models_via_api = MagicMock(
-        return_value=[
-            {
-                "model_name": "m",
-                "litellm_params": {"api_base": "http://10.0.0.1:8000/v1"},
-                "model_info": {"max_input_tokens": 524288},
-            },
-            {
-                "model_name": "n",
-                "litellm_params": {"api_base": "http://10.0.0.2:8000/v1"},
-                "model_info": {"max_input_tokens": None},
-            },
-        ]
+    engine._api_request = MagicMock(
+        return_value={
+            "data": [
+                {
+                    "model_name": "m",
+                    "litellm_params": {"api_base": "http://10.0.0.1:8000/v1"},
+                    "model_info": {"max_input_tokens": 524288},
+                },
+                {
+                    "model_name": "n",
+                    "litellm_params": {"api_base": "http://10.0.0.2:8000/v1"},
+                    "model_info": {"max_input_tokens": None},
+                },
+            ]
+        }
     )
 
     models = engine.query_models()

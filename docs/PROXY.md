@@ -334,12 +334,13 @@ observation. It raises `GatewayQueryError` when enumeration is unavailable.
 `status()` preserves that diagnostic alongside process state; `models()` exposes
 it as `ProxyQueryFailed`. Provider wire dictionaries stay below the API boundary.
 
-The supervisor retains a compatibility adapter for `list_models_via_api()` plus
-`model_query_error`. It supports LiteLLM's legacy `litellm_params`/`model_info`
-rows and flat legacy rows, including their `api_base`. New plugins implement the
-typed method directly. The bundled SparkRoute plugin implements `query_models()`
-and the shared operational errors in its upstream source. Removing the legacy
-hook still requires migrating LiteLLM and coordinating other legacy providers.
+Both bundled gateways implement this typed contract directly. LiteLLM translates
+its `/model/info` response inside its provider; SparkRoute translates `/v1/status`
+in its upstream plugin. `list_models_via_api()` and the supervisor's mutable
+`model_query_error` side channel are removed in 0.4. Providers must implement
+`query_models()`; the default supervisor raises `GatewayQueryError` when it cannot
+enumerate models. `api.proxy.status().model_query_error` remains the public
+snapshot diagnostic, populated from that exception.
 
 Optional capabilities are independent structural protocols:
 

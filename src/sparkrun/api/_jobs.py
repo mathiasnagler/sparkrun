@@ -31,8 +31,8 @@ def list_jobs(
     Args:
         cache_dir: Override for the sparkrun cache root.  Takes
             precedence when set.  Otherwise falls back to
-            ``sctx.config.cache_dir`` (when *sctx* is provided), then
-            to :data:`sparkrun.core.config.resolve_sparkrun_cache_dir()`.
+            the supplied or current application's configured cache root.
+            Reading configuration does not initialize plugins.
         limit: Return at most this many of the most recent jobs, and —
             crucially — only parse that many files.  See below.
         sctx: Optional shared :class:`SparkrunContext`.
@@ -58,15 +58,9 @@ def list_jobs(
     written before ``started_at`` existed ranks identically either way.
     Callers that need exactness omit ``limit``.
     """
-    if cache_dir is None and sctx is not None:
-        try:
-            cache_dir = sctx.config.cache_dir
-        except Exception:
-            cache_dir = None
-    if cache_dir is None:
-        from sparkrun.core.config import resolve_sparkrun_cache_dir
+    from sparkrun.core.config import resolve_configured_cache_dir
 
-        cache_dir = resolve_sparkrun_cache_dir()
+    cache_dir = resolve_configured_cache_dir(cache_dir, config=sctx.config if sctx is not None else None)
 
     jobs_dir = Path(cache_dir) / "jobs"
     if not jobs_dir.is_dir():

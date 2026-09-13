@@ -87,6 +87,7 @@ def test_recovery_waits_for_existing_job_without_relaunching():
     placement = {"cluster_id": "job", "cluster": "lab", "hosts": ["host"], "port": 8001, "solo": True}
     snapshot = SimpleNamespace(errors={}, hosts=[SimpleNamespace(workloads=[SimpleNamespace(cluster_id="job")])])
     with (
+        mock.patch.object(operations.api, "list_jobs", return_value=[]),
         mock.patch.object(api, "status", return_value=snapshot),
         mock.patch.object(api, "run") as run,
         mock.patch("sparkrun.api._resolve.resolve_runtime", return_value=object()),

@@ -92,6 +92,76 @@ def test_standalone_option_discovery_uses_the_same_config_binding(config_path, m
 
 def test_cli_context_rejects_a_different_configuration_binding(config_path, tmp_path):
     first = _get_context(click.Context(click.Command("first"), obj={"config_path": config_path}))
-    with pytest.raises(RuntimeError, match="another configuration path"):
+    with pytest.raises(click.UsageError, match="another configuration path"):
         _get_context(click.Context(click.Command("second"), obj={"config_path": tmp_path / "other.yaml"}))
     assert first.config.config_path == config_path
+
+
+@pytest.mark.parametrize("extensions_loaded", [False, True])
+@pytest.mark.parametrize("cached", [False, True])
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["proxy", "alias", "add", "friendly", "model"],
+        ["proxy", "alias", "remove", "friendly"],
+        ["proxy", "sync"],
+        ["proxy", "stop"],
+        ["proxy", "status"],
+    ],
+)
+def test_every_cli_invocation_rejects_conflicting_config(config_path, tmp_path, monkeypatch, extensions_loaded, cached, args):
+    from sparkrun.cli import main
+
+    context = initialize(config_path=config_path)
+    other = tmp_path / "other" / "config.yaml"
+    obj = {"config_path": other}
+    if cached:
+        obj["sparkrun_ctx"] = context
+    monkeypatch.setattr(main, "_cli_ext_loaded", extensions_loaded, raising=False)
+    result = CliRunner().invoke(main, args, obj=obj)
+    assert result.exit_code == 2, result.output
+    assert "another configuration path" in result.stderr
+    assert not (config_path.parent / "proxy.yaml").exists()
+    assert not other.parent.exists()
+
+
+@pytest.mark.parametrize("extensions_loaded", [False, True])
+def test_public_launcher_rejects_rebinding(config_path, tmp_path, monkeypatch, extensions_loaded):
+    from sparkrun.application import run_cli
+    from sparkrun.cli import main
+
+    initialize(config_path=config_path)
+    monkeypatch.setattr(main, "_cli_ext_loaded", extensions_loaded, raising=False)
+    with pytest.raises(click.UsageError, match="another configuration path"):
+        run_cli(args=["proxy", "alias", "add", "friendly", "model"], obj={"config_path": tmp_path / "other.yaml"}, standalone_mode=False)
+    assert not (config_path.parent / "proxy.yaml").exists()
+
+
+@pytest.mark.parametrize("initialized", [False, True])
+def test_reused_command_tree_honors_explicit_first_and_same_bindings(config_path, monkeypatch, initialized):
+    from sparkrun.cli import main
+    from sparkrun.proxy.supervisor import GatewaySupervisor
+    import yaml
+
+    if initialized:
+        initialize(config_path=config_path)
+    monkeypatch.setattr(main, "_cli_ext_loaded", True, raising=False)
+    monkeypatch.setattr(GatewaySupervisor, "is_running", lambda self: False)
+    result = CliRunner().invoke(main, ["proxy", "alias", "add", "friendly", "model"], obj={"config_path": config_path})
+    assert result.exit_code == 0, result.output
+    assert yaml.safe_load((config_path.parent / "proxy.yaml").read_text())["aliases"] == {"friendly": "model"}
+
+
+def test_explicit_binding_survives_plugin_failure_and_allows_process_recovery(config_path, tmp_path, monkeypatch):
+    from sparkrun.cli import main
+    from sparkrun.proxy.supervisor import GatewaySupervisor
+
+    monkeypatch.setattr(main, "_cli_ext_loaded", False, raising=False)
+    monkeypatch.setattr(bootstrap, "_register_plugins", Mock(side_effect=RuntimeError("plugin failed")))
+    monkeypatch.setattr(GatewaySupervisor, "is_running", lambda self: False)
+    result = CliRunner().invoke(main, ["proxy", "status"], obj={"config_path": config_path})
+    assert result.exit_code == 0, result.output
+    assert bootstrap._initialization_error is not None
+    again = CliRunner().invoke(main, ["proxy", "status"], obj={"config_path": tmp_path / "other.yaml"})
+    assert again.exit_code == 2
+    assert "another configuration path" in again.stderr

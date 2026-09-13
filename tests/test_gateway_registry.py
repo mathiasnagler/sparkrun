@@ -246,11 +246,14 @@ def test_unimplemented_model_management_names_the_gateway(fake_gateway):
     for call in (
         lambda: engine.sync_models([], {}),
         lambda: engine.sync_aliases({}),
-        engine.list_models_via_api,
     ):
         with pytest.raises(NotImplementedError) as exc:
             call()
         assert FAKE_GATEWAY in str(exc.value)
+    from sparkrun.proxy.contracts import GatewayQueryError
+
+    with pytest.raises(GatewayQueryError, match=FAKE_GATEWAY):
+        engine.query_models()
 
 
 def test_discovery_driven_hooks_default_to_none(fake_gateway):

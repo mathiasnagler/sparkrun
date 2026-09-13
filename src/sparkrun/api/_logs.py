@@ -71,7 +71,7 @@ def logs(
         tail: Start this many lines from the end of each source; ``None``
             reads the whole log.
         cache_dir: Override for the sparkrun cache root.  Defaults to
-            ``sctx.config.cache_dir`` when *sctx* is provided.
+            the supplied or current application configuration, without plugin bootstrap.
         sctx: Optional shared :class:`SparkrunContext`.
 
     Raises:
@@ -96,11 +96,9 @@ def logs(
     if scope not in (SCOPE_HEAD, SCOPE_ALL):
         raise SparkrunError("Invalid log scope %r: expected %r or %r" % (scope, SCOPE_HEAD, SCOPE_ALL))
 
-    if cache_dir is None and sctx is not None:
-        try:
-            cache_dir = str(sctx.config.cache_dir)
-        except Exception:
-            cache_dir = None
+    from sparkrun.core.config import resolve_configured_cache_dir
+
+    cache_dir = str(resolve_configured_cache_dir(cache_dir, config=sctx.config if sctx is not None else None))
 
     resolved_recipe = None
     if not cluster_id:

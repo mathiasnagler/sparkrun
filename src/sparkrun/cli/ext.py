@@ -128,6 +128,11 @@ class PluggableGroup(click.Group):
     """
 
     def _ensure_cli_extensions_loaded(self, ctx: click.Context) -> None:
+        from sparkrun.cli._common import _bind_application_config
+
+        # A command tree can be reused by embedded callers. Its discovery cache
+        # must not bypass validation or binding of this invocation's config.
+        _bind_application_config(ctx)
         if getattr(self, "_cli_ext_loaded", False):
             return
         # Set before running so the attach pass (which touches .commands, not

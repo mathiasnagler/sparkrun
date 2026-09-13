@@ -46,6 +46,8 @@ def stop(
     When both are provided, ``cluster_id`` wins.
 
     Args:
+        cache_dir: Explicit metadata root, otherwise the supplied or current
+            application's configured cache. Resolved before job lookup.
         sctx: Optional shared :class:`SparkrunContext` for chained
             api calls (registry/cluster manager + config sharing).
     """
@@ -63,6 +65,10 @@ def stop(
         remove_job_metadata,
     )
 
+    from sparkrun.core.config import resolve_configured_cache_dir
+
+    cache_dir = str(resolve_configured_cache_dir(cache_dir, config=sctx.config if sctx is not None else None))
+
     # Derive cluster_id from recipe+hosts when not given explicitly.
     if not cluster_id:
         if recipe is None:
@@ -73,12 +79,6 @@ def stop(
 
         cluster_def, _ = resolve_operation_target(recipe=resolved_recipe, cluster=cluster_def, sctx=sctx)
         intent_id = generate_intent_id(resolved_recipe, overrides=overrides)
-        # Default cache_dir from sctx.config when not explicitly passed.
-        if cache_dir is None and sctx is not None:
-            try:
-                cache_dir = str(sctx.config.cache_dir)
-            except Exception:
-                cache_dir = None
         target_hosts = list(cluster_def.hosts)
 
         # Status-driven discovery: ask the executor what's running on
@@ -104,11 +104,6 @@ def stop(
             cluster_def = resolve_cluster_for_job(cluster, target_hosts, meta=meta, sctx=sctx)
     else:
         # cluster_id given — load metadata to recover hosts/executor.
-        if cache_dir is None and sctx is not None:
-            try:
-                cache_dir = str(sctx.config.cache_dir)
-            except Exception:
-                cache_dir = None
         meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
         if meta is None and not hosts and cluster is None:
             raise JobNotFound("No job metadata found for cluster_id %r and no hosts provided" % cluster_id)

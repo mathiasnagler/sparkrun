@@ -103,6 +103,34 @@ def resolve_config_path(v=None) -> Path:
     return _application_config_path or child_config_path() or get_config_root(v) / "config.yaml"
 
 
+class _ConfigBindingError(RuntimeError):
+    """An invocation requested a different process configuration binding."""
+
+
+def _bind_config_path(config_path: str | Path) -> Path:
+    """Pin the canonical path before plugin loading, including recovery calls."""
+    global _application_config_path
+    path = Path(config_path).expanduser().resolve()
+    if _application_config_path is not None and _application_config_path != path:
+        raise _ConfigBindingError("Application is already initialized with another configuration path")
+    _application_config_path = path
+    return path
+
+
+def resolve_configured_cache_dir(cache_dir: str | Path | None = None, *, config: SparkrunConfig | None = None) -> Path:
+    """Resolve application storage without initializing plugins or creating files.
+
+    An explicit root wins, followed by the supplied or current configuration's
+    cache setting. SparkrunConfig supplies profile/environment defaults when
+    the setting is absent. Configuration errors propagate rather than silently
+    selecting unrelated storage; an explicit root allows recovery without
+    reading a broken configuration file.
+    """
+    if cache_dir is not None:
+        return Path(cache_dir)
+    return (config if config is not None else SparkrunConfig()).cache_dir
+
+
 def merge_defaults(baseline: dict, overrides: dict) -> dict:
     """Merge mappings by key; explicit empty mappings and all lists replace."""
     result = thaw(baseline)

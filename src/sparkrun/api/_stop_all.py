@@ -77,8 +77,9 @@ def stop_all(
     explicit_ssh = ssh_kwargs
     cluster_def = resolve_cluster(cluster, host_list, sctx=sctx)
     sctx, ssh_kwargs = scope_operation(cluster_def, sctx=sctx, ssh_kwargs=ssh_kwargs, prepare=False)
-    if cache_dir is None:
-        cache_dir = str(sctx.config.cache_dir)
+    from sparkrun.core.config import resolve_configured_cache_dir
+
+    cache_dir = str(resolve_configured_cache_dir(cache_dir, config=sctx.config))
     result = discovered
     if result is None:
         result = status_report(host_list, cluster=cluster, ssh_kwargs=explicit_ssh, cache_dir=cache_dir, sctx=sctx)

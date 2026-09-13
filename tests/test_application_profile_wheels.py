@@ -743,3 +743,63 @@ assert 'click' not in sys.modules and 'sparkrun.cli' not in sys.modules
         env_extra={"SPARKRUN_APPLICATION_PROFILE": profile_ref, "SPARKRUN_APPLICATION_CONFIG": str(config)},
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("application", ["sparkrun", "profile-test-app"])
+def test_installed_configuration_binding_and_metadata_cache(wheels, tmp_path, application):
+    config = tmp_path / "custom-config" / "config.yaml"
+    cache = tmp_path / "configured-job-cache"
+    config.parent.mkdir()
+    config.write_text("cache_dir: %s\n" % cache)
+    code = """
+import sys
+from pathlib import Path
+from unittest.mock import patch
+import yaml
+from sparkrun import api
+from sparkrun.application import initialize, run_cli
+from sparkrun.core import bootstrap
+from sparkrun.core.application_profile import get_application_profile
+root = Path(sys.argv[1])
+cluster_id = get_application_profile().resource_namespace + '_fixture'
+metadata = root / 'jobs' / 'fixture.yaml'
+metadata.parent.mkdir(parents=True)
+metadata.write_text(yaml.safe_dump({'cluster_id': cluster_id, 'hosts': ['worker'], 'distribution': get_application_profile().id}))
+assert bootstrap._variables is None
+assert [j.cluster_id for j in api.list_jobs()] == [cluster_id]
+assert bootstrap._variables is None
+assert 'click' not in sys.modules and 'sparkrun.cli' not in sys.modules
+context = initialize()
+assert api.list_jobs() == api.list_jobs(sctx=context)
+for operation in (api.stop, api.logs):
+    with patch('sparkrun.api._resolve.resolve_cluster_for_job', side_effect=RuntimeError('metadata resolved')) as resolve:
+        try:
+            operation(cluster_id=cluster_id)
+        except RuntimeError as error:
+            assert str(error) == 'metadata resolved'
+        else:
+            raise AssertionError('metadata was not selected')
+        assert resolve.call_args.kwargs['meta']['cluster_id'] == cluster_id
+import click
+from sparkrun.cli import main
+main._cli_ext_loaded = True
+try:
+    run_cli(args=['proxy', 'alias', 'add', 'friendly', 'model'], obj={'config_path': root / 'wrong.yaml'}, standalone_mode=False)
+except click.UsageError as error:
+    assert 'another configuration path' in str(error)
+else:
+    raise AssertionError('CLI silently ignored the requested config')
+assert not (root / 'proxy.yaml').exists()
+assert not (context.config.config_path.parent / 'proxy.yaml').exists()
+"""
+    profile_ref = "sparkrun.core.application_profile:SPARKRUN" if application == "sparkrun" else "profile_test_app.profile:PROFILE_TEST_APP"
+    result = invoke(
+        wheels,
+        tmp_path,
+        "python",
+        "-c",
+        code,
+        str(cache),
+        env_extra={"SPARKRUN_APPLICATION_PROFILE": profile_ref, "SPARKRUN_APPLICATION_CONFIG": str(config)},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -141,14 +141,6 @@ def test_admin_failure_uses_public_error(tmp_path, monkeypatch):
         api.proxy.ui(issue_token=True)
 
 
-@pytest.mark.parametrize("rows", [[None], {"data": []}, [{"model_info": [1]}], [{"model_name": 1}]])
-def test_invalid_legacy_rows_are_query_failures(tmp_path, monkeypatch, rows):
-    engine = GatewaySupervisor(state_dir=tmp_path)
-    monkeypatch.setattr(engine, "list_models_via_api", lambda: rows)
-    with pytest.raises(GatewayQueryError, match="invalid"):
-        engine.query_models()
-
-
 def test_vendored_sparkroute_implements_typed_models_and_capabilities(tmp_path, monkeypatch):
     from sparkrun.plugins.sparkroute.engine import SparkrouteEngine
 

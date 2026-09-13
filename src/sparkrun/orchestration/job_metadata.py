@@ -756,8 +756,7 @@ def remove_job_metadata(
     """Delete the cached job metadata file for a cluster_id.
 
     No-op if the file does not exist.  When *cache_dir* is unset, the
-    cache root is resolved from ``sctx.config.cache_dir`` (when *sctx*
-    is provided) and falls back to :data:`resolve_sparkrun_cache_dir()`.
+    cache root is resolved from the supplied or current application configuration without initializing plugins.
     """
     cache_dir = _resolve_cache_dir(cache_dir, sctx)
     digest = _filename_digest(cluster_id)
@@ -935,8 +934,7 @@ def load_job_metadata(
     """Load job metadata for a cluster_id.  Returns ``None`` if not found.
 
     When *cache_dir* is unset, the cache root is resolved from
-    ``sctx.config.cache_dir`` (when *sctx* is provided) and falls back
-    to :data:`resolve_sparkrun_cache_dir()`.
+    the supplied or current application configuration without initializing plugins.
 
     Metadata schema may evolve across sparkrun versions; readers can
     inspect ``data["sparkrun_version"]`` to detect potential drift and
@@ -972,19 +970,7 @@ def _filename_digest(cluster_id: str) -> str:
 
 
 def _resolve_cache_dir(cache_dir: str | None, sctx: "SparkrunContext | None") -> str:
-    """Resolve the effective cache root for job-metadata I/O.
+    """Use the shared configured-cache policy without bootstrapping plugins."""
+    from sparkrun.core.config import resolve_configured_cache_dir
 
-    Priority: explicit *cache_dir* > ``sctx.config.cache_dir`` > module
-    default :data:`resolve_sparkrun_cache_dir()`.  Used by every public function in
-    this module so the resolution chain stays consistent.
-    """
-    if cache_dir is not None:
-        return cache_dir
-    if sctx is not None:
-        try:
-            return str(sctx.config.cache_dir)
-        except Exception:
-            logger.debug("sctx.config.cache_dir unavailable; using default", exc_info=True)
-    from sparkrun.core.config import resolve_sparkrun_cache_dir
-
-    return str(resolve_sparkrun_cache_dir())
+    return str(resolve_configured_cache_dir(cache_dir, config=sctx.config if sctx is not None else None))

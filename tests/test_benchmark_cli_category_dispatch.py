@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -210,10 +211,9 @@ def test_framework_category_mismatch_raises():
     init_sparkrun()
     from sparkrun.cli._benchmark import _run_benchmark
 
-    ctx = MagicMock()
-    ctx.obj = {"sparkrun_ctx": MagicMock()}
-    ctx.obj["sparkrun_ctx"].variables = None
-    ctx.obj["sparkrun_ctx"].config = None
+    from sparkrun.application import initialize
+
+    ctx = click.Context(click.Command("benchmark"), obj={"sparkrun_ctx": initialize()})
 
     with pytest.raises(SystemExit) as exc_info:
         _run_benchmark(
@@ -275,10 +275,9 @@ def test_framework_category_match_does_not_raise():
     from sparkrun.cli._benchmark import _run_benchmark
     from sparkrun.api._errors import FrameworkCategoryMismatch
 
-    ctx = MagicMock()
-    ctx.obj = {"sparkrun_ctx": MagicMock()}
-    ctx.obj["sparkrun_ctx"].variables = None
-    ctx.obj["sparkrun_ctx"].config = None
+    from sparkrun.application import initialize
+
+    ctx = click.Context(click.Command("benchmark"), obj={"sparkrun_ctx": initialize()})
 
     # llama-benchy is in "performance" — should NOT raise FrameworkCategoryMismatch.
     # It will fail later (no real recipe), but not with the mismatch error.

@@ -130,8 +130,9 @@ def status_report(
     sctx = resolve_sctx(sctx)
     snapshot = status(hosts, executor=executor, cluster=cluster, ssh_kwargs=ssh_kwargs, sctx=sctx)
 
-    if cache_dir is None:
-        cache_dir = str(sctx.config.cache_dir)
+    from sparkrun.core.config import resolve_configured_cache_dir
+
+    cache_dir = str(resolve_configured_cache_dir(cache_dir, config=sctx.config))
 
     return classify_cluster_status(snapshot, cache_dir=cache_dir, host_list=list(hosts))
 
