@@ -554,3 +554,70 @@ def test_empty_status_shape_matches_query_status_default():
     assert isinstance(s, ClusterStatus)
     assert len(s.hosts) == 2
     assert s.executor == "docker"
+
+
+@pytest.mark.parametrize("alternate", [False, True])
+@pytest.mark.parametrize("explicit_context", [False, True])
+@pytest.mark.parametrize("override_cache", [False, True])
+def test_status_report_uses_bound_cache_for_pending_and_metadata(tmp_path, monkeypatch, alternate, explicit_context, override_cache):
+    from sparkrun.application import ApplicationProfile, initialize
+    from sparkrun.core.application_profile import resource_name
+    from sparkrun.core.cluster_status import ContainerDetail, HostOccupancy, RunningWorkload
+    from sparkrun.core.pending_ops import create_pending_op
+
+    cache = tmp_path / "configured-cache"
+    config_path = tmp_path / "isolated-config.yaml"
+    config_path.write_text(yaml.safe_dump({"cache_dir": str(cache)}))
+    profile = (
+        ApplicationProfile(id="status-test", display_name="Status test", command="status-test", package="status-test")
+        if alternate
+        else None
+    )
+    context = initialize(profile, config_path=config_path)
+    selected_cache = tmp_path / "override-cache" if override_cache else cache
+    cid = resource_name("_aaaaaaaaaaaa")
+    for directory, label in ((cache, "configured"), (tmp_path / "override-cache", "override")):
+        create_pending_op(resource_name("_pending"), label, hosts=["h1"], cache_dir=str(directory))
+        _write_job_meta(directory / "jobs", "aaaaaaaaaaaa", cluster_id=cid, recipe=label, distribution=context.application_profile.id)
+
+    snapshot = ClusterStatus(
+        hosts=(
+            HostOccupancy(host="h1"),
+            HostOccupancy(
+                host="h2",
+                workloads=(
+                    RunningWorkload(
+                        cluster_id=cid,
+                        containers=(ContainerDetail(cid + "_solo", "solo", "Up", "img"),),
+                    ),
+                ),
+            ),
+        ),
+        executor="docker",
+    )
+    queries = []
+
+    def query(*args, **kwargs):
+        queries.append(dict(kwargs, cluster=args[0]))
+        return snapshot
+
+    monkeypatch.setattr("sparkrun.orchestration.executor.query_status_for_cluster", query)
+    cluster = ClusterDefinition(name="selected", hosts=["h1", "h2"])
+    report = api.status_report(
+        ["h1", "h2"],
+        cluster=cluster,
+        executor="docker",
+        ssh_kwargs={"ssh_user": "alice"},
+        cache_dir=str(selected_cache) if override_cache else None,
+        sctx=context if explicit_context else None,
+    )
+    label = "override" if override_cache else "configured"
+    assert report.preparing_hosts == ["h1"]
+    assert report.idle_hosts == []
+    assert report.pending_ops[0]["operation"] == label
+    assert report.solo_entries[0].meta["recipe"] == label
+    assert len(queries) == 1
+    assert queries[0]["config"].cache_dir == cache
+    assert queries[0]["cluster"] == cluster
+    assert queries[0]["executor"] == "docker"
+    assert queries[0]["ssh_kwargs"]["ssh_user"] == "alice"

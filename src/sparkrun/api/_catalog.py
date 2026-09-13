@@ -61,7 +61,7 @@ def _atomic(path: Path, value: dict) -> None:
 def _reference(path: Path, registry: str | None, sctx: SparkrunContext, *, imported: bool = False) -> str:
     value = {"path": str(path.resolve()), "registry": registry, "imported": imported}
     if registry:
-        value["registry_url"] = sctx.registry_manager.get_registry(registry).url
+        value["registry_url"] = sctx.registry_manager.get_registry(registry, allow_discovery=False).url
     identity = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()[:32]
     record = _root(sctx) / "references" / (identity + ".json")
     if not record.exists():
@@ -117,7 +117,7 @@ def list_registries(*, sctx: SparkrunContext | None = None) -> list[CatalogRegis
             "trusted": getattr(entry, "trusted", False),
             "cached": manager._cache_dir(entry.name).is_dir(),
         }
-        for entry in manager.list_registries()
+        for entry in manager.list_registries(allow_discovery=False)
     ]
 
 

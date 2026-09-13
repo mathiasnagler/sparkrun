@@ -6252,11 +6252,12 @@ class TestRunEnsureFlag:
         mock_launch.assert_not_called()
 
     def test_run_ensure_matches_job_placed_on_other_hosts(self, runner, reset_bootstrap):
-        """A deployment on hosts this launch wouldn't pick still counts.
+        """A deployment elsewhere within the requested cluster still counts.
 
         The old cluster_id-based lookup hashed the host list, so a job placed
-        anywhere else — which is the normal case under an occupancy-aware
-        scheduler — was invisible and ``--ensure`` launched a duplicate.
+        on a different subset of the requested hosts was invisible and
+        ``--ensure`` launched a duplicate. The query includes that placement;
+        a snapshot outside the requested cluster must not suppress a launch.
         """
         with (
             self._running_intent_patch(hosts=("10.0.0.9",)),
@@ -6264,12 +6265,25 @@ class TestRunEnsureFlag:
         ):
             result = runner.invoke(
                 main,
-                ["run", _TEST_RECIPE_NAME, "--hosts", "localhost", "--ensure", "--solo"],
+                ["run", _TEST_RECIPE_NAME, "--hosts", "localhost,10.0.0.9", "--ensure", "--solo"],
             )
         assert result.exit_code == 0, result.output
         assert "already running" in result.output
         assert "10.0.0.9" in result.output
         mock_launch.assert_not_called()
+
+    def test_run_ensure_ignores_deployment_outside_requested_hosts(self, runner, reset_bootstrap):
+        with (
+            self._running_intent_patch(hosts=("10.0.0.9",)),
+            mock.patch.object(SglangRuntime, "run", return_value=0),
+        ):
+            result = runner.invoke(
+                main,
+                ["run", _TEST_RECIPE_NAME, "--hosts", "localhost", "--ensure", "--solo", "--dry-run"],
+            )
+        assert result.exit_code == 0, result.output
+        assert "Runtime:" in result.output
+        assert "already running" not in result.output
 
     def test_run_ensure_not_running(self, runner, reset_bootstrap):
         """--ensure with no running job proceeds to launch.

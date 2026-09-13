@@ -119,24 +119,19 @@ def status_report(
 
     Args mirror :func:`status`, plus:
         cache_dir: Cache directory for job metadata + pending ops.  Falls back
-            to ``sctx.config.cache_dir`` then the default cache dir.
+            to the resolved context's configured cache directory.
 
     Returns:
         A :class:`ClusterStatusResult`.
     """
+    from sparkrun.api._context import resolve_sctx
     from sparkrun.core.cluster_manager import classify_cluster_status
 
+    sctx = resolve_sctx(sctx)
     snapshot = status(hosts, executor=executor, cluster=cluster, ssh_kwargs=ssh_kwargs, sctx=sctx)
 
-    if cache_dir is None and sctx is not None:
-        try:
-            cache_dir = str(sctx.config.cache_dir)
-        except Exception:
-            cache_dir = None
     if cache_dir is None:
-        from sparkrun.core.config import resolve_sparkrun_cache_dir
-
-        cache_dir = str(resolve_sparkrun_cache_dir())
+        cache_dir = str(sctx.config.cache_dir)
 
     return classify_cluster_status(snapshot, cache_dir=cache_dir, host_list=list(hosts))
 

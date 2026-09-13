@@ -125,3 +125,32 @@ def test_workload_matches_intent_predicate(workload, expected):
     to launch something placement had already decided to replace.
     """
     assert workload_matches_intent(workload, _INTENT) is expected
+
+
+@pytest.mark.parametrize("prefetched", [False, True])
+def test_match_respects_requested_hosts_and_order(monkeypatch, prefetched):
+    inside = _workload("sparkrun_%s_bbbb22223333" % _INTENT, intent_id=_INTENT)
+    outside = _workload("sparkrun_%s_aaaa11112222" % _INTENT, intent_id=_INTENT)
+    # Outside deployment is wider globally, but has only one in-scope host.
+    snap = _status(("h2", (inside, outside)), ("other1", (outside,)), ("h1", (inside,)), ("other2", (outside,)))
+    monkeypatch.setattr(api, "status", lambda *a, **kw: snap)
+    match = api.find_running_intent(_INTENT, ["h1", "missing", "h2", "h1"], status=snap if prefetched else None)
+    assert match is not None
+    assert match.cluster_id == inside.cluster_id
+    assert match.hosts == ("h1", "h2")
+    assert match.other_cluster_ids == (outside.cluster_id,)
+
+
+@pytest.mark.parametrize("prefetched", [False, True])
+def test_match_outside_requested_hosts_is_ignored(monkeypatch, prefetched):
+    snap = _status(("h1", ()), ("h2", (_workload("sparkrun_%s_aaaa11112222" % _INTENT, intent_id=_INTENT),)))
+    monkeypatch.setattr(api, "status", lambda *a, **kw: snap)
+    assert api.find_running_intent(_INTENT, ["h1"], status=snap if prefetched else None) is None
+
+
+def test_partial_snapshot_retains_positive_match_in_requested_order():
+    workload = _workload("sparkrun_%s_aaaa11112222" % _INTENT, intent_id=_INTENT)
+    snap = ClusterStatus(hosts=(HostOccupancy(host="h2", workloads=(workload,)),), executor="docker", errors={"h1": "offline"})
+    match = api.find_running_intent(_INTENT, ["h1", "h2"], status=snap)
+    assert match is not None
+    assert match.hosts == ("h2",)

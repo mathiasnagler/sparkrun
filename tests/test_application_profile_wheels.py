@@ -596,3 +596,10 @@ print(context.application_profile.id)
     result = invoke(wheels, tmp_path, "python", "-c", code, env_extra=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == ("profile-test-app" if alternate else "sparkrun")
+
+
+def test_installed_catalog_consumer_types(wheels, tmp_path):
+    from _api_typecheck import check_api_consumer
+
+    _root, _environment, python = wheels
+    check_api_consumer(tmp_path, python=python)

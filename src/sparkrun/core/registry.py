@@ -59,6 +59,8 @@ def resolve_registry_filter(
     query: str | None,
     registry: str | None,
     registry_manager: "RegistryManager",
+    *,
+    allow_discovery: bool = True,
 ) -> tuple[str | None, str | None]:
     """Resolve the registry filter for a recipe listing or search.
 
@@ -76,6 +78,7 @@ def resolve_registry_filter(
         query: Free-text query, optionally carrying an ``@registry`` scope.
         registry: Explicit registry filter (may be None).
         registry_manager: Manager used to validate the resulting name.
+        allow_discovery: Allow first-run manifest discovery over the network.
 
     Returns:
         ``(registry, query)`` with any scope stripped off the query. A scope
@@ -99,7 +102,7 @@ def resolve_registry_filter(
     if registry is None:
         return registry, query
 
-    entries = registry_manager.list_registries()
+    entries = registry_manager.list_registries(allow_discovery=allow_discovery)
     available = tuple(sorted(e.name for e in entries))
     match = next((e for e in entries if e.name == registry), None)
     if match is None:
@@ -1008,6 +1011,7 @@ class RegistryManager:
         *,
         include_hidden: bool = False,
         only: str | None = None,
+        allow_discovery: bool = True,
     ) -> Iterator[RegistryEntry]:
         """Yield eligible registries, applying the standard filters once.
 
@@ -1015,11 +1019,12 @@ class RegistryManager:
             include_hidden: Yield invisible registries too.  Callers that do
                 not filter on visibility at all pass True.
             only: Restrict to this registry name.
+            allow_discovery: Allow first-run manifest discovery over the network.
 
         Yields:
             Enabled registry entries passing the filters, in config order.
         """
-        for entry in self._load_registries():
+        for entry in self._load_registries(allow_discovery=allow_discovery):
             if not entry.enabled:
                 continue
             if only is not None and entry.name != only:
@@ -1203,7 +1208,7 @@ class RegistryManager:
             existing.add(name)
         return merged
 
-    def _default_registries(self) -> list[RegistryEntry]:
+    def _default_registries(self, *, allow_discovery: bool = True) -> list[RegistryEntry]:
         """Return the default registry list.
 
         On first run (no ``registries.yaml``), attempts manifest-based
@@ -1217,10 +1222,11 @@ class RegistryManager:
         to ``registries.yaml`` so subsequent loads read from file.
 
         Manifest discovery is attempted at most once per ``RegistryManager``
-        instance to avoid repeated slow network calls.
+        instance to avoid repeated slow network calls. With ``allow_discovery=False``,
+        return profile fallbacks and plugin declarations without consuming that attempt.
         """
         discovered: list[RegistryEntry] = []
-        if not self._manifest_discovery_attempted:
+        if allow_discovery and not self._manifest_discovery_attempted:
             self._manifest_discovery_attempted = True
             discovered = self._init_defaults_from_manifests()
 
@@ -1528,7 +1534,7 @@ class RegistryManager:
             changed = True
         return changed
 
-    def _load_registries(self) -> list[RegistryEntry]:
+    def _load_registries(self, *, allow_discovery: bool = True) -> list[RegistryEntry]:
         """Load registries from YAML configuration.
 
         Returns:
@@ -1536,7 +1542,7 @@ class RegistryManager:
         """
         if not self._registries_path.exists():
             logger.debug("No registries.yaml found, using defaults")
-            return self._default_registries()
+            return self._default_registries(allow_discovery=allow_discovery)
 
         # Read the file's revision BEFORE anything writes, since a write stamps
         # the marker and would make the file look already-migrated.
@@ -1580,7 +1586,7 @@ class RegistryManager:
             return self._apply_plugin_overlay(filtered)
         except Exception as e:
             logger.warning("Failed to load registries.yaml: %s", e)
-            return self._default_registries()
+            return self._default_registries(allow_discovery=allow_discovery)
 
     def _save_registries(self, entries: list[RegistryEntry], *, suppressed: list[str] | None = None) -> None:
         """Save registries to YAML configuration.
@@ -2429,19 +2435,20 @@ class RegistryManager:
         """
         self._set_registry_trusted(name, False)
 
-    def list_registries(self) -> list[RegistryEntry]:
-        """List all configured registries.
+    def list_registries(self, *, allow_discovery: bool = True) -> list[RegistryEntry]:
+        """List configured registries; disable discovery for an offline inventory.
 
         Returns:
             List of all registry entries
         """
-        return self._load_registries()
+        return self._load_registries(allow_discovery=allow_discovery)
 
-    def get_registry(self, name: str) -> RegistryEntry:
+    def get_registry(self, name: str, *, allow_discovery: bool = True) -> RegistryEntry:
         """Get a single registry by name.
 
         Args:
             name: Registry name
+            allow_discovery: Allow first-run manifest discovery over the network.
 
         Returns:
             Registry entry
@@ -2449,7 +2456,7 @@ class RegistryManager:
         Raises:
             RegistryError: If the registry is not found
         """
-        registries = self._load_registries()
+        registries = self._load_registries(allow_discovery=allow_discovery)
         for entry in registries:
             if entry.name == name:
                 return entry
@@ -2561,7 +2568,7 @@ class RegistryManager:
                 recipes.append(entry)
         return recipes
 
-    def search_recipes(self, query: str, include_hidden: bool = False) -> list[dict[str, Any]]:
+    def search_recipes(self, query: str, include_hidden: bool = False, *, allow_discovery: bool = True) -> list[dict[str, Any]]:
         """Search for recipes across all registries.
 
         Performs case-insensitive substring matching on recipe name, file stem,
@@ -2570,6 +2577,7 @@ class RegistryManager:
         Args:
             query: Search query string
             include_hidden: If True, include recipes from invisible registries
+            allow_discovery: Allow first-run manifest discovery over the network.
 
         Returns:
             List of recipe metadata dicts with 'registry' field added
@@ -2577,7 +2585,7 @@ class RegistryManager:
         from sparkrun.core.recipe import recipe_matches_query
 
         results = []
-        for entry in self._iter_registries(include_hidden=include_hidden):
+        for entry in self._iter_registries(include_hidden=include_hidden, allow_discovery=allow_discovery):
             recipe_dir = self._recipe_dir(entry)
             if recipe_dir is None:
                 continue

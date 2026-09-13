@@ -65,10 +65,18 @@ system, gateway registry, and execution-strategy extension points shipped in
 - Added offline documentation/import/help checks and installed downstream
   application/plugin compatibility tests. Documentation tests also collect from
   source archives. Generated CI runs pinned Ruff lint and Python formatting checks.
+  Pinned static consumer checks verify catalog types in editable and installed-wheel
+  environments, including diagnostics for invalid API usage.
 
 ### Fixed
 
 - Repaired tab-broken shell continuations, including recipe hook commands.
+- Status reports without an explicit context use the application's configured
+  cache for pending operations and job metadata. Intent matching respects the
+  requested hosts and their order when given a wider status snapshot.
+- Offline recipe searches and catalog listings skip first-run manifest discovery.
+  Search and filter operations reuse the context's registry manager, and an
+  offline read preserves later explicit initialization or refresh.
 
 ## [0.3.8] — 2026-09-07
 

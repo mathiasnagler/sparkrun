@@ -43,6 +43,24 @@ Requires [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/inst
 
 All tests are self-contained — no real hosts, SSH, or Docker needed. SSH/Docker operations are mocked via `conftest.py` fixtures.
 
+## API consumer typing
+
+The normal suite runs the pinned Pyright checker against small standalone
+catalog consumers. `uv sync` (or installing `.[dev]`) installs the checker and
+its Node.js runtime; no runtime download is needed for the check. The examples
+cover public dictionary fields, optional/null narrowing, facet filters, and
+resolved-recipe tuple unpacking. Intentional mistakes must produce exactly the
+expected diagnostics, so losing type information cannot silently pass.
+
+```bash
+pytest -q tests/test_api_typing.py
+SPARKRUN_TEST_WHEELS=1 pytest -q tests/test_application_profile_wheels.py
+```
+
+The wheel suite repeats the consumer check using the installed wheel's Python
+environment from a temporary directory outside the checkout. These are focused
+API contract checks, not a repository-wide typing gate.
+
 ## Documentation contracts
 
 The normal pytest suite also checks local Markdown links/anchors, Python example

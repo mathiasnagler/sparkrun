@@ -89,12 +89,14 @@ independent of the process working directory. A registry filter excludes these
 local roots; `local_only=True` excludes registry results. Enabled hidden
 registries are included for explicit selection.
 
-Search reads cached recipe contents and does not request a registry update.
-Registry inventory has its own first-run policy: when `registries.yaml` is absent,
-a profile's bootstrap URLs may be consulted to discover default manifests.
-For a strictly offline first use, provision registry inventory ahead of time or
-use an application profile with no bootstrap URLs. Listing/searching may create
-reference records, and search also cleans up expired staged uploads.
+`catalog_recipes` and `list_registries` read cached recipe contents and local
+inventory without network access, including first use. When `registries.yaml`
+is absent, they use the application's fallback registries and plugin declarations;
+manifest-only registries become available after an explicit `refresh_registries`.
+Likewise, `search_recipes(ensure_initialized=False)` skips both manifest discovery
+and registry synchronization. An offline read does not prevent later initialization
+on the same context. Search may create reference records and cleans up expired
+staged uploads.
 
 | `CatalogPage` field | Meaning |
 | --- | --- |

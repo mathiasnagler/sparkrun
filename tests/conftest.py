@@ -129,13 +129,27 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(_registry_module, "BOOTSTRAP_REGISTRY_URLS", [], raising=False)
 
-    # ...and no `git clone` / `git fetch` either. `_clone_or_pull` is the single
-    # choke point for every registry git operation (registry.py + core/mods.py);
-    # it is documented best-effort and already returns False on failure, so
-    # stubbing it takes a path callers handle. Profiling one CLI test showed
+    # Registry synchronization is best-effort and already returns False on
+    # failure, so stubbing it takes a path callers handle. Profiling one CLI test showed
     # 5.3s of its 5.9s inside `_sync_url` / `_clone_or_pull_single` -- real
     # network round-trips, in a suite that is supposed to be hermetic.
     monkeypatch.setattr(_registry_module.RegistryManager, "_clone_or_pull", lambda self, entry: False, raising=False)
+
+    # Manifest discovery bypasses _clone_or_pull. Catch unmocked Git network
+    # operations at the process boundary even when a test restores bootstrap
+    # URLs. Tests exercising Git arguments replace subprocess.run themselves;
+    # local Git setup/inspection remains available.
+    import subprocess
+
+    real_run = subprocess.run
+
+    def offline_git_run(args, *a, **kw):
+        if isinstance(args, (list, tuple)) and args and Path(args[0]).name == "git":
+            if {"clone", "fetch", "pull", "ls-remote"}.intersection(args[1:]):
+                pytest.fail("Unmocked Git network operation in test: %r" % (args,))
+        return real_run(args, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", offline_git_run)
 
     import sparkrun.core.bootstrap
 

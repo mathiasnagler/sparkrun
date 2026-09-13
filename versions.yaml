@@ -17,6 +17,7 @@ preferred_versions:
     "huggingface_hub": "1.14.0"
     "textual": "8.2.5"
     "ruff": "0.16.6"
+    "pyright": "1.1.414"
 
 # GitHub Actions generation. Run: generate-ci-gha [--check|--force]
 ci:

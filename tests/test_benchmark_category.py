@@ -338,7 +338,7 @@ class _FakeRegistryManager:
         self._root = root
         self._entries = entries
 
-    def _load_registries(self):
+    def _load_registries(self, *, allow_discovery=True):
         return self._entries
 
     def _cache_dir(self, name: str) -> Path:

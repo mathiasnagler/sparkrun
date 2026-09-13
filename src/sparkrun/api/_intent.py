@@ -72,7 +72,8 @@ def find_running_intent(
             a **raw** snapshot — one with this intent's workloads subtracted
             (as placement uses, see ``resolve_effective_hosts``'s
             ``exclude_intent_id``) would report nothing running by
-            construction.
+            construction. Only the requested hosts are considered, in request
+            order, even when the snapshot covers a larger cluster.
 
     Returns:
         The matching deployment with the most hosts (ties broken by
@@ -103,7 +104,9 @@ def find_running_intent(
     # cluster_id -> (hosts in query order, representative workload)
     by_cluster: dict[str, list] = {}
     meta: dict[str, object] = {}
-    for occ in status.hosts:
+    host_order = {host: index for index, host in enumerate(dict.fromkeys(hosts))}
+    observations = sorted((occ for occ in status.hosts if occ.host in host_order), key=lambda occ: host_order[occ.host])
+    for occ in observations:
         for w in occ.workloads:
             if not workload_matches_intent(w, intent_id):
                 continue

@@ -20,6 +20,7 @@ from sparkrun.api._models import RecipeSummary
 
 if TYPE_CHECKING:
     from sparkrun.core.context import SparkrunContext
+    from sparkrun.core.registry import RegistryManager
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +51,21 @@ def resolve_recipe_filter(
             self-contradictory.
     """
     from sparkrun.api._context import resolve_sctx
+
+    return _resolve_recipe_filter(query, registry, resolve_sctx(sctx).registry_manager)
+
+
+def _resolve_recipe_filter(
+    query: str | None,
+    registry: str | None,
+    manager: RegistryManager,
+    *,
+    allow_discovery: bool = True,
+) -> tuple[str | None, str | None]:
     from sparkrun.core.registry import RegistryFilterError, resolve_registry_filter
 
-    sctx = resolve_sctx(sctx)
     try:
-        return resolve_registry_filter(query, registry, sctx.config.get_registry_manager())
+        return resolve_registry_filter(query, registry, manager, allow_discovery=allow_discovery)
     except RegistryFilterError as e:
         raise InvalidRegistryFilter(str(e), registry=e.registry, reason=e.reason, available=e.available) from e
 
@@ -115,7 +126,7 @@ def search_recipes(
     from sparkrun.core.recipe import discover_cwd_recipes, filter_recipes, recipe_matches_query, recipe_summary
 
     sctx = resolve_sctx(sctx)
-    registry_mgr = sctx.config.get_registry_manager()
+    registry_mgr = sctx.registry_manager
 
     if ensure_initialized:
         # Registries listed in registries.yaml aren't searchable until they
@@ -127,13 +138,15 @@ def search_recipes(
         except Exception:
             logger.warning("registry initialization failed; searching what is already cached", exc_info=True)
 
-    registry, query = resolve_recipe_filter(query, registry=registry, sctx=sctx)
+    registry, query = _resolve_recipe_filter(query, registry, registry_mgr, allow_discovery=ensure_initialized)
 
     # An explicit registry is a stronger signal than that registry's
     # visibility default, which exists to keep unqualified CLI names and
     # tab-completion sane rather than to hide recipes from someone asking
     # for them by name.
-    entries = registry_mgr.search_recipes(query or "", include_hidden=include_hidden or registry is not None)
+    entries = registry_mgr.search_recipes(
+        query or "", include_hidden=include_hidden or registry is not None, allow_discovery=ensure_initialized
+    )
 
     # Drop entries that are literally the same file reached twice (shared
     # clones are symlinked per registry).  Deliberately keyed on path, not on
