@@ -79,7 +79,7 @@ def _selection(reference: str, sctx: SparkrunContext) -> tuple[Path, str | None,
             path = Path(record["path"])
             registry = record.get("registry")
             if registry:
-                entry = sctx.registry_manager.get_registry(registry)
+                entry = sctx.registry_manager.get_registry(registry, allow_discovery=False)
                 if not entry.enabled or entry.url != record.get("registry_url"):
                     raise RecipeNotFound("Selected recipe registry changed or is disabled; choose it again")
             if not path.is_file():
@@ -94,7 +94,7 @@ def _selection(reference: str, sctx: SparkrunContext) -> tuple[Path, str | None,
         from sparkrun.utils import parse_scoped_name
 
         scope, name = parse_scoped_name(reference)
-        matches = sctx.registry_manager.find_recipe_in_registries(name, include_hidden=True)
+        matches = sctx.registry_manager.find_recipe_in_registries(name, include_hidden=True, allow_discovery=False)
         matches = [(registry, selected) for registry, selected in matches if not scope or registry == scope]
         if len(matches) != 1:
             raise RecipeNotFound("Choose an exact cached recipe or an absolute path on the control node")
@@ -102,7 +102,7 @@ def _selection(reference: str, sctx: SparkrunContext) -> tuple[Path, str | None,
     if not path.is_file():
         raise RecipeNotFound("Recipe was not found on this controller")
     path = path.resolve()
-    return path, sctx.registry_manager.registry_for_path(path), path.parent == _root(sctx) / "imports"
+    return path, sctx.registry_manager.registry_for_path(path, allow_discovery=False), path.parent == _root(sctx) / "imports"
 
 
 def list_registries(*, sctx: SparkrunContext | None = None) -> list[CatalogRegistry]:
@@ -236,12 +236,16 @@ def resolve_catalog_recipe(
     Returns (Recipe, launch overrides). Image and env overrides are applied to
     the recipe before runtime selection and fingerprint derivation.
     """
+    sctx = resolve_sctx(sctx)
+    return _resolve_selected_recipe(*_selection(reference, sctx), overrides)
+
+
+def _resolve_selected_recipe(path: Path, registry: str | None, imported: bool, overrides: dict[str, Any] | None) -> ResolvedCatalogRecipe:
+    """Load a selected source once, sharing normalization across preview and resolution."""
     from sparkrun.core.recipe import Recipe, RecipeError
     from sparkrun.core.resolve import apply_recipe_overrides
     from sparkrun.utils import coerce_value
 
-    sctx = resolve_sctx(sctx)
-    path, registry, imported = _selection(reference, sctx)
     if path.stat().st_size > MAX_RECIPE_BYTES:
         raise SparkrunError("Recipe exceeds the size limit")
     try:
@@ -270,9 +274,9 @@ def get_recipe_details(
 
     sctx = resolve_sctx(sctx)
     path, registry, imported = _selection(reference, sctx)
-    recipe, normalized = resolve_catalog_recipe(reference, overrides, sctx=sctx)
+    recipe, normalized = _resolve_selected_recipe(path, registry, imported, overrides)
     runtime = resolve_runtime(recipe, sctx=sctx)
-    trusted = resolve_recipe_trust(recipe, False)
+    trusted = resolve_recipe_trust(recipe, False, sctx=sctx)
     issues: list[CatalogIssue] = [
         cast(CatalogIssue, issue.to_dict())
         for issue in validate_recipe(
@@ -388,10 +392,19 @@ def import_recipe(content: str, *, sctx: SparkrunContext | None = None) -> Catal
 
 
 def refresh_registries(*, progress: Callable[[str, bool], None] | None = None, sctx: SparkrunContext | None = None) -> CatalogRefreshResult:
-    """Explicitly initialize/update registries, preserving per-registry outcomes."""
+    """Retry unfinished discovery and update registries with per-registry outcomes.
+
+    Raises SparkrunError if bootstrap fails without any inventory. Deliberately
+    empty or disabled inventories can return empty successful outcomes.
+    """
     sctx = resolve_sctx(sctx)
+    from sparkrun.core.registry import RegistryError
+
     manager = sctx.registry_manager
-    updated = manager.update(progress=progress) or {}
+    try:
+        updated = manager.update(progress=progress) or {}
+    except RegistryError as exc:
+        raise SparkrunError("Registry refresh failed: %s" % exc) from exc
     return {
         "updated": {str(key): bool(value) for key, value in updated.items()},
         "failed": sorted(str(key) for key, value in updated.items() if not value),
@@ -431,9 +444,22 @@ def cleanup_catalog_imports(*, sctx: SparkrunContext | None = None, max_age_seco
 CATALOG_FACETS = get_args(CatalogFacet)
 
 
+def _catalog_number(value: object, *, allow_zero: bool = False) -> int | float | None:
+    """Accept representable finite metadata numbers without coercing other YAML values."""
+    import math
+
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        if math.isfinite(value) and (value >= 0 if allow_zero else value > 0):
+            return value
+    except OverflowError:
+        pass
+    return None
+
+
 def _declared_facets(path: Path) -> CatalogRecipeMetadata:
     """Only declared YAML metadata; no name heuristics, network, or HF resolver."""
-    import math
     import yaml
 
     try:
@@ -449,17 +475,14 @@ def _declared_facets(path: Path) -> CatalogRecipeMetadata:
         if not isinstance(defaults, dict) or not isinstance(metadata, dict):
             return {}
 
-        def number(value: object) -> int | float | None:
-            return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0 else None
-
-        params = number(metadata.get("model_params"))
+        params = _catalog_number(metadata.get("model_params"))
         quant = metadata.get("quantization", defaults.get("quantization"))
         return {
-            "min_nodes": number(data.get("min_nodes", 1)),
-            "tp": number(defaults.get("tensor_parallel")),
-            "pp": number(defaults.get("pipeline_parallel")),
+            "min_nodes": _catalog_number(data.get("min_nodes", 1)),
+            "tp": _catalog_number(defaults.get("tensor_parallel")),
+            "pp": _catalog_number(defaults.get("pipeline_parallel")),
             "quantization": quant[:128] if isinstance(quant, str) and quant else None,
-            "context_length": number(defaults.get("max_model_len")),
+            "context_length": _catalog_number(defaults.get("max_model_len")),
             "parameters_b": params / 1e9 if params else None,
             "benchmarks": _benchmark_context(metadata.get("benchmarks")),
         }
@@ -516,8 +539,6 @@ def catalog_cluster_capacity(cluster: str, *, sctx: SparkrunContext | None = Non
 
 def _benchmark_context(value) -> list[CatalogBenchmarkContext]:
     """Bounded, explicitly declared context; these are not measured by browsing."""
-    import math
-
     if not isinstance(value, list):
         return []
     result: list[CatalogBenchmarkContext] = []
@@ -526,8 +547,8 @@ def _benchmark_context(value) -> list[CatalogBenchmarkContext]:
             continue
         row: CatalogBenchmarkContext = {}
         for key in ("output_tokens_per_second", "time_to_first_token_ms", "input_tokens", "output_tokens", "concurrency"):
-            item = entry.get(key)
-            if isinstance(item, (int, float)) and not isinstance(item, bool) and math.isfinite(item) and item >= 0:
+            item = _catalog_number(entry.get(key), allow_zero=True)
+            if item is not None:
                 row[key] = item
         for key in ("hardware", "runtime", "date", "description"):
             item = entry.get(key)

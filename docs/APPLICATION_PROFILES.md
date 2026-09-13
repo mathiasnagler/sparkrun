@@ -329,6 +329,10 @@ the regular registry name, Git URL, and subpath rules when resolved. Optional
 listed sources; it never adds Sparkrun's bootstrap URLs. Explicit catalog entries
 are live defaults, not serialized into the user's configuration by `registry
 update`. `registry show` identifies their application profile as the source.
+Unfinished discovery can be retried with an explicit registry update; local
+catalog configuration edits preserve that pending work without using the network.
+See [catalog registry changes](CATALOG_API.md#import-lifetime-and-registry-changes)
+for retry, empty-inventory, and failure behavior.
 
 Users can still add their own registries, including a Spark registry deliberately.
 An empty profile catalog does not delete those entries. Plugin-contributed

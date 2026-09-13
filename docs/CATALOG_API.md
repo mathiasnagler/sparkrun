@@ -96,7 +96,11 @@ manifest-only registries become available after an explicit `refresh_registries`
 Likewise, `search_recipes(ensure_initialized=False)` skips both manifest discovery
 and registry synchronization. An offline read does not prevent later initialization
 on the same context. Search may create reference records and cleans up expired
-staged uploads.
+staged uploads. Preview, exact resolution, import, and retention also use local
+inventory without bootstrap discovery or registry synchronization. Preview
+resolves its source once and evaluates registry trust with the supplied context's
+manager. Enabled plugins may still perform their own work during parsing or
+validation.
 
 | `CatalogPage` field | Meaning |
 | --- | --- |
@@ -167,7 +171,10 @@ is recipe-item ownership information, not a complete dependency resolver.
 values may be `None`. `benchmarks` contains at most ten `CatalogBenchmarkContext`
 records of declared throughput/latency/token/concurrency figures and descriptive
 hardware/runtime/date/text fields. These are contextual claims supplied by a
-recipe, not benchmark measurements produced by browsing.
+recipe, not benchmark measurements produced by browsing. Numeric metadata must be
+finite and representable as a Python float; booleans and larger integers are
+omitted. Facet numbers must be positive, while benchmark numbers may be zero.
+An invalid number does not hide neighboring recipes or other readable metadata.
 
 ## Import lifetime and registry changes
 
@@ -184,13 +191,30 @@ Registry inventory records are `CatalogRegistry` dictionaries with `name`,
 `default`. Neither is a live health check.
 
 `configure_registry` accepts `add`, `remove`, `enable`, `disable`, `trust`, and
-`untrust`; `add` accepts `url` and optional `subpath`. Adding does not clone or
-grant trust. Trust requires `acknowledge_trust=True`; it should follow the
+`untrust`; `add` accepts `url` and optional `subpath`. These operations use local
+inventory without bootstrap discovery or registry synchronization. Adding does
+not grant trust. Trust requires `acknowledge_trust=True`; it should follow the
 application's explicit review flow. The result wraps inventory as
 `CatalogRegistryResult["registries"]`. `refresh_registries` returns
 `CatalogRefreshResult` with `updated: dict[str, bool]` and `failed: list[str]`
 for attempted registries. Its optional progress callback receives
 `(registry_name, success)`; individual refresh failures remain in the result.
+
+Ordinary network-enabled searches attempt unfinished bootstrap discovery at most
+once per context's manager. Each explicit refresh retries unfinished sources,
+including after a failed search on that same context. Pending work survives local
+configuration edits and partial discovery across new contexts/processes. Later
+discovery adds missing names and preserves existing entries and explicit removals;
+it does not overwrite their URL, subpath, enabled state, or trust choices. A valid
+existing inventory without pending work, including `registries: []`, is treated
+as intentional configuration.
+
+If discovery fails and there is no inventory, explicit refresh raises
+`SparkrunError` with its original `RegistryError` cause. Available fallback or
+partially discovered registries still receive normal per-registry outcomes;
+bootstrap failures are logged and left pending, not added as URL keys in those
+outcomes. An application with no sources, or an inventory containing only
+disabled registries, can successfully return empty `updated` and `failed` values.
 
 ## Capacity and errors
 
@@ -211,6 +235,7 @@ Selection failures use `RecipeNotFound`; invalid catalog requests, invalid recip
 resolution, and named-cluster lookup/configuration failures use `SparkrunError`.
 Implicit initialization wraps bootstrap errors with their original cause.
 Explicit `initialize()` exposes those bootstrap errors directly. Validation and
-trust findings in a successful preview are returned in `issues`; refreshing
-registries preserves per-registry failure outcomes. Interrupts propagate. See
+trust findings in a successful preview are returned in `issues`. Registry refresh
+preserves per-registry failure outcomes and raises `SparkrunError` when discovery
+fails without inventory, as described above. Interrupts propagate. See
 [the API error contract](DISTRIBUTION_API_MIGRATION.md#errors-and-release-ownership).

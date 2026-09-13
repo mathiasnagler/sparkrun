@@ -468,21 +468,22 @@ class TestRegistryUpdate:
 class TestEnsureInitialized:
     """Test ensure_initialized auto-download behavior."""
 
-    def test_calls_update_when_no_cache(self, mgr, sample_entry):
-        """Test that ensure_initialized calls update when no cache exists."""
+    def test_syncs_registry_when_no_cache(self, mgr, sample_entry):
+        """Automatic initialization syncs the missing cache."""
         mgr._save_registries([sample_entry])
-        with mock.patch.object(mgr, "update") as mock_update:
+        with mock.patch.object(mgr, "_clone_or_pull", return_value=True) as sync:
             mgr.ensure_initialized()
-            mock_update.assert_called_once()
+            sync.assert_called_once()
+            assert sync.call_args.args[0].name == sample_entry.name
 
     def test_skips_when_cache_exists(self, mgr, sample_entry):
         """Test that ensure_initialized skips when cache already exists."""
         mgr._save_registries([sample_entry])
         # Create fake .git dir
         (mgr._cache_dir(sample_entry.name) / ".git").mkdir(parents=True)
-        with mock.patch.object(mgr, "update") as mock_update:
+        with mock.patch.object(mgr, "_clone_or_pull") as sync:
             mgr.ensure_initialized()
-            mock_update.assert_not_called()
+            sync.assert_not_called()
 
 
 class TestRecipeDiscovery:

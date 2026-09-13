@@ -484,13 +484,18 @@ def _normalize_registry_url(url: str) -> str:
 CONFIG_VERSION = 1
 
 #: Top-level ``registries.yaml`` key holding names the user removed that a
-#: plugin still declares (see :meth:`RegistryManager._load_suppressed`).
+#: plugin still declares or pending bootstrap may discover again
+#: (see :meth:`RegistryManager._load_suppressed`).
 #:
 #: Additive: an older sparkrun ignores an unknown top-level key, and the overlay
 #: is not a file rewrite, so this needs no :data:`CONFIG_VERSION` bump.  Per the
 #: :data:`_MIGRATIONS` docstring, only migrations that cannot detect their own
 #: applicability from file content belong there.
 SUPPRESSED_REGISTRIES_KEY = "suppressed_plugin_registries"
+
+# Internal bootstrap progress, preserved by local edits. Absence in an existing
+# inventory means discovery is complete (including intentionally empty catalogs).
+PENDING_BOOTSTRAP_KEY = "pending_bootstrap_urls"
 
 #: Version implied by a file that carries no ``config_version`` key but does
 #: carry an explicit per-entry ``trusted`` field — i.e. one written after the
@@ -989,6 +994,7 @@ class RegistryManager:
         self.config_root.mkdir(parents=True, exist_ok=True)
         self.cache_root.mkdir(parents=True, exist_ok=True)
         self._manifest_discovery_attempted = False
+        self._bootstrap_failures: dict[str, str] = {}
 
     @property
     def _registries_path(self) -> Path:
@@ -1056,6 +1062,7 @@ class RegistryManager:
         asset: RegistryAsset,
         *,
         include_hidden: bool = False,
+        allow_discovery: bool = True,
         accept: Callable[[Path], bool] | None = None,
     ) -> list[tuple[str, Path]]:
         """Find an asset by file stem across registries.
@@ -1068,13 +1075,14 @@ class RegistryManager:
             name: File stem to find (may include a subpath, e.g. ``fam/foo``).
             asset: Which kind of asset to look for.
             include_hidden: Include assets from invisible registries.
+            allow_discovery: Allow unfinished bootstrap discovery over the network.
             accept: Optional per-candidate predicate (e.g. a category filter).
 
         Returns:
             List of ``(registry_name, path)`` tuples for disambiguation.
         """
         matches: list[tuple[str, Path]] = []
-        for entry in self._iter_registries(include_hidden=include_hidden):
+        for entry in self._iter_registries(include_hidden=include_hidden, allow_discovery=allow_discovery):
             base = self.asset_dir(entry, asset)
             if base is None:
                 continue
@@ -1116,11 +1124,12 @@ class RegistryManager:
         return self.asset_dir(entry, RECIPE_ASSET)
 
     def _load_suppressed(self) -> list[str]:
-        """Names the user removed that a plugin still declares (tombstones).
+        """Removed names that declarations or pending discovery could restore.
 
         ``registry remove`` on a declared registry cannot simply drop it — the
         declaration would put it straight back on the next launch, which is
-        indistinguishable from a bug.  So the removal is recorded here instead.
+        indistinguishable from a bug. Pending bootstrap can discover that name
+        later too. Both kinds of removal are recorded here.
         Kept as a plain list under :data:`SUPPRESSED_REGISTRIES_KEY` in
         ``registries.yaml``; an older sparkrun ignores the key.
         """
@@ -1208,6 +1217,28 @@ class RegistryManager:
             existing.add(name)
         return merged
 
+    def _pending_bootstrap_urls(self) -> list[str]:
+        """Only application-owned sources can remain pending; local data grants no trust."""
+        sources = list(dict.fromkeys(application_profile_bootstrap_urls()))
+        if not self._registries_path.exists():
+            return sources
+        try:
+            data = read_yaml(self._registries_path)
+        except (OSError, ValueError, yaml.YAMLError):
+            return sources
+        if not isinstance(data, dict):
+            return sources
+        if PENDING_BOOTSTRAP_KEY not in data:
+            try:
+                self._load_registries_from_file()
+            except Exception:
+                return sources  # a malformed inventory has not completed bootstrap
+            return []
+        pending = data[PENDING_BOOTSTRAP_KEY]
+        if not isinstance(pending, list):
+            return []
+        return [url for url in sources if url in pending]
+
     def _default_registries(self, *, allow_discovery: bool = True) -> list[RegistryEntry]:
         """Return the default registry list.
 
@@ -1221,9 +1252,9 @@ class RegistryManager:
         When manifest entries are discovered, the combined list is persisted
         to ``registries.yaml`` so subsequent loads read from file.
 
-        Manifest discovery is attempted at most once per ``RegistryManager``
-        instance to avoid repeated slow network calls. With ``allow_discovery=False``,
-        return profile fallbacks and plugin declarations without consuming that attempt.
+        Automatic discovery is attempted once per manager to bound slow calls.
+        Explicit update retries unfinished sources. With ``allow_discovery=False``,
+        return profile fallbacks and plugin declarations without consuming an attempt.
         """
         discovered: list[RegistryEntry] = []
         if allow_discovery and not self._manifest_discovery_attempted:
@@ -1251,15 +1282,15 @@ class RegistryManager:
         # is applied *after* this, so a declared registry is never written into
         # a fresh registries.yaml either.
         if discovered:
-            self._save_registries(combined)
+            self._save_registries(combined, pending_bootstrap_urls=list(self._bootstrap_failures))
 
         return self._apply_plugin_overlay(combined)
 
-    def _init_defaults_from_manifests(self) -> list[RegistryEntry]:
+    def _init_defaults_from_manifests(self, urls: list[str] | None = None) -> list[RegistryEntry]:
         """Try to discover default registries from git manifest files.
 
-        For each URL in ``BOOTSTRAP_REGISTRY_URLS``, clones the repo and reads
-        its ``.sparkrun/registry.yaml`` manifest.  Entries are collected,
+        For each application bootstrap URL (or the supplied unfinished subset),
+        clones the repo and reads its ``.sparkrun/registry.yaml`` manifest.  Entries are collected,
         deduplicated by name, and validated.
 
         URLs that fail to clone are skipped individually — successful URLs
@@ -1287,7 +1318,8 @@ class RegistryManager:
         all_entries: list[RegistryEntry] = []
         seen_names: set[str] = set()
 
-        for url in application_profile_bootstrap_urls():
+        self._bootstrap_failures = {}
+        for url in dict.fromkeys(application_profile_bootstrap_urls() if urls is None else urls):
             try:
                 entries = self._discover_manifest_entries(url)
                 for entry in entries:
@@ -1305,6 +1337,7 @@ class RegistryManager:
                     seen_names.add(entry.name)
                     all_entries.append(entry)
             except Exception as e:
+                self._bootstrap_failures[url] = str(e)
                 logger.warning("Manifest discovery failed for %s: %s", url, e)
                 # Continue to next URL instead of aborting entirely
 
@@ -1408,11 +1441,11 @@ class RegistryManager:
         their caches.
         """
         if self._registries_path.exists() and self._read_config_version() < CONFIG_VERSION:
-            self._load_registries()  # side effect: apply and persist migrations
+            self._load_registries(allow_discovery=False)  # side effect: apply and persist migrations
         try:
             return self._load_registries_from_file()
         except Exception:
-            return self._load_registries()
+            return self._load_registries(allow_discovery=False)
 
     def _run_one_shot_migrations(self, entries: list[RegistryEntry]) -> bool:
         """Apply every one-shot migration newer than the file's revision.
@@ -1454,11 +1487,10 @@ class RegistryManager:
         therefore a registry that appears healthy and silently cannot serve
         benchmark profiles, tuning configs or mods.
 
-        Nothing re-reads a registry's ``.sparkrun/registry.yaml`` manifest once
-        ``registries.yaml`` exists — manifests are consulted only on first-run
-        discovery — so a file written from :data:`FALLBACK_DEFAULT_REGISTRIES`
-        (which happens whenever discovery was offline) keeps whatever that list
-        spelled at the time, forever.
+        Completed bootstrap sources are not re-read, and retrying unfinished
+        sources preserves existing entries. A file written from
+        :data:`FALLBACK_DEFAULT_REGISTRIES` therefore needs this local repair
+        when a shipped default gains another asset kind.
 
         Only ever *adds*: a user who deliberately blanked a subpath gets it
         back, which is the accepted trade for repairing the far more common
@@ -1580,6 +1612,15 @@ class RegistryManager:
 
             if migrated or urls_migrated or subpaths_backfilled:
                 self._save_registries(filtered)
+            pending = self._pending_bootstrap_urls()
+            if allow_discovery and pending and not self._manifest_discovery_attempted:
+                self._manifest_discovery_attempted = True
+                discovered = self._init_defaults_from_manifests(pending)
+                # Completed inventory and explicit local edits take precedence;
+                # retry only fills missing names and respects removal tombstones.
+                known = {entry.name for entry in filtered} | set(self._load_suppressed())
+                filtered.extend(entry for entry in discovered if entry.name not in known)
+                self._save_registries(filtered, pending_bootstrap_urls=list(self._bootstrap_failures))
             # Overlay last: declared entries must not reach the rewrite or save
             # path above, or a plugin's registry would be persisted into the
             # user's file and outlive the plugin.
@@ -1588,7 +1629,9 @@ class RegistryManager:
             logger.warning("Failed to load registries.yaml: %s", e)
             return self._default_registries(allow_discovery=allow_discovery)
 
-    def _save_registries(self, entries: list[RegistryEntry], *, suppressed: list[str] | None = None) -> None:
+    def _save_registries(
+        self, entries: list[RegistryEntry], *, suppressed: list[str] | None = None, pending_bootstrap_urls: list[str] | None = None
+    ) -> None:
         """Save registries to YAML configuration.
 
         Plugin-declared entries (``declared_by`` set) are **skipped**.  Every
@@ -1604,10 +1647,14 @@ class RegistryManager:
             suppressed: Tombstone list to write.  ``None`` preserves whatever is
                 already on disk — this method rebuilds the document from
                 scratch, so anything not re-emitted is dropped.
+            pending_bootstrap_urls: Remaining application-owned discovery work.
+                None preserves progress; an explicit empty list marks completion.
         """
         if suppressed is None:
             suppressed = self._load_suppressed()
 
+        if pending_bootstrap_urls is None:
+            pending_bootstrap_urls = self._pending_bootstrap_urls()
         data_list = []
         for e in entries:
             if e.declared_by:
@@ -1643,6 +1690,8 @@ class RegistryManager:
         data: dict[str, Any] = {"config_version": CONFIG_VERSION, "registries": data_list}
         if suppressed:
             data[SUPPRESSED_REGISTRIES_KEY] = sorted(set(suppressed))
+        if pending_bootstrap_urls:
+            data[PENDING_BOOTSTRAP_KEY] = list(pending_bootstrap_urls)
         with open(self._registries_path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
         logger.debug("Saved registries to %s", self._registries_path)
@@ -2016,7 +2065,7 @@ class RegistryManager:
         # and this is the public entry point for programmatic adds.
         assert_safe_registry_entry(entry)
         validate_registry_name(entry.name, entry.url)
-        registries = self._load_registries()
+        registries = self._load_registries(allow_discovery=False)
         if any(r.name == entry.name for r in registries):
             raise RegistryError(f"Registry {entry.name!r} already exists")
         registries.append(entry)
@@ -2194,7 +2243,7 @@ class RegistryManager:
         Raises:
             RegistryError: If the registry is not found
         """
-        registries = self._load_registries()
+        registries = self._load_registries(allow_discovery=False)
         target = next((r for r in registries if r.name == name), None)
         if target is None:
             raise RegistryError(f"Registry {name!r} not found")
@@ -2203,16 +2252,12 @@ class RegistryManager:
         from sparkrun.core.registry_defaults import declared_registry_names
 
         declared_names = declared_registry_names() | {e.name for e in application_profile_registries() if e.declared_by}
-        if target.declared_by or name in declared_names:
+        if target.declared_by or name in declared_names or self._pending_bootstrap_urls():
             suppressed = self._load_suppressed()
             if name not in suppressed:
                 suppressed.append(name)
             self._save_registries(filtered, suppressed=suppressed)
-            logger.info(
-                "Removed registry %s (declared by plugin %r; suppressed so it is not re-added)",
-                name,
-                target.declared_by,
-            )
+            logger.info("Removed registry %s (suppressed so declarations or discovery cannot re-add it)", name)
             return
 
         self._save_registries(filtered)
@@ -2357,9 +2402,10 @@ class RegistryManager:
 
         # Allow manifest discovery to run again
         self._manifest_discovery_attempted = False
+        self._bootstrap_failures = {}
 
         entries = self._default_registries()
-        self._save_registries(entries)
+        self._save_registries(entries, pending_bootstrap_urls=list(self._bootstrap_failures))
         logger.info("Reset registries to defaults (%d entries)", len(entries))
         return entries
 
@@ -2373,7 +2419,7 @@ class RegistryManager:
         Raises:
             RegistryError: If the registry is not found.
         """
-        entries = self._load_registries()
+        entries = self._load_registries(allow_discovery=False)
         for e in entries:
             if e.name == name:
                 e.enabled = enabled
@@ -2409,7 +2455,7 @@ class RegistryManager:
         Raises:
             RegistryError: If the registry is not found.
         """
-        entries = self._load_registries()
+        entries = self._load_registries(allow_discovery=False)
         for e in entries:
             if e.name == name:
                 e.trusted = trusted
@@ -2469,8 +2515,10 @@ class RegistryManager:
     ) -> dict[str, bool]:
         """Update one or all registries.
 
-        Performs shallow clone or pull for specified registry or all enabled
-        registries if name is None.
+        Retry unfinished application bootstrap sources once, then perform a
+        shallow clone or pull for the named registry or all enabled registries.
+        Existing entries and explicit removals take precedence over late discovery.
+        Raises RegistryError when discovery fails without any usable inventory.
 
         Args:
             name: Optional registry name to update, or None for all.
@@ -2481,12 +2529,27 @@ class RegistryManager:
             Mapping of registry name to success status for each registry
             that was attempted.
         """
+        # An explicit update retries unfinished bootstrap once. Automatic reads
+        # and ensure_initialized use their existing attempt and inventory.
+        self._manifest_discovery_attempted = False
+        self._bootstrap_failures = {}
         registries = self._load_registries()
+        if not registries and self._bootstrap_failures:
+            failures = "; ".join("%s (%s)" % item for item in self._bootstrap_failures.items())
+            raise RegistryError("Registry discovery failed: %s" % failures)
+        return self._update_registries(registries, name=name, progress=progress)
+
+    def _update_registries(
+        self, registries: list[RegistryEntry], *, name: str | None = None, progress: Callable[[str, bool], None] | None = None
+    ) -> dict[str, bool]:
+        """Sync an already-resolved inventory without starting another discovery."""
         results: dict[str, bool] = {}
 
         if name is not None:
             # Update single registry
-            entry = self.get_registry(name)
+            entry = next((entry for entry in registries if entry.name == name), None)
+            if entry is None:
+                raise RegistryError("Registry %r not found" % name)
             if entry.enabled:
                 ok = self._clone_or_pull(entry)
                 results[entry.name] = ok
@@ -2511,7 +2574,9 @@ class RegistryManager:
     def ensure_initialized(self) -> None:
         """Ensure registries are initialized.
 
-        If no cache exists, runs update() to perform initial sync.
+        If an enabled registry lacks a cache, sync the resolved inventory.
+        Automatic discovery keeps its once-per-manager limit; this does not
+        perform the explicit update operation's retry.
         """
         registries = self._load_registries()
         needs_init = False
@@ -2525,7 +2590,7 @@ class RegistryManager:
 
         if needs_init:
             logger.debug("Initializing registries")
-            self.update()
+            self._update_registries(registries)
 
     def get_recipe_paths(self, include_hidden: bool = False) -> list[Path]:
         """Get all recipe directories from cached registries.
@@ -2595,11 +2660,11 @@ class RegistryManager:
 
         return results
 
-    def registry_for_path(self, path: Path) -> str | None:
+    def registry_for_path(self, path: Path, *, allow_discovery: bool = True) -> str | None:
         """Return the registry name that owns the given path, or None."""
         # Ownership is not a visibility question — a hidden registry still owns
         # its files, so this deliberately does not filter on `visible`.
-        for entry in self._iter_registries(include_hidden=True):
+        for entry in self._iter_registries(include_hidden=True, allow_discovery=allow_discovery):
             recipe_dir = self._recipe_dir(entry)
             if recipe_dir and path.is_relative_to(recipe_dir):
                 return entry.name
@@ -2628,19 +2693,20 @@ class RegistryManager:
         """
         return self.qualified_asset_name(registry_name, path, RECIPE_ASSET)
 
-    def find_recipe_in_registries(self, name: str, include_hidden: bool = False) -> list[tuple[str, Path]]:
+    def find_recipe_in_registries(self, name: str, include_hidden: bool = False, *, allow_discovery: bool = True) -> list[tuple[str, Path]]:
         """Find a recipe by file stem across all registries.
 
         Searches for recipes whose file stem matches the given name.
 
         Args:
             name: Recipe file stem to find (e.g. 'glm-4.7-flash-awq')
-            include_hidden: If True, include recipes from invisible registries
+            include_hidden: If True, include recipes from invisible registries.
+            allow_discovery: Allow unfinished bootstrap discovery over the network.
 
         Returns:
             List of (registry_name, recipe_path) tuples for disambiguation
         """
-        return self.find_asset_in_registries(name, RECIPE_ASSET, include_hidden=include_hidden)
+        return self.find_asset_in_registries(name, RECIPE_ASSET, include_hidden=include_hidden, allow_discovery=allow_discovery)
 
     def _tuning_dir(self, entry: RegistryEntry) -> Path | None:
         """Get the tuning directory within a cached registry."""

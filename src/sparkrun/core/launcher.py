@@ -84,7 +84,7 @@ class LaunchResult:
     startup_observation: dict[str, Any] = field(default_factory=dict)
 
 
-def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
+def resolve_recipe_trust(recipe: Recipe, trust_cli: bool, *, sctx: SparkrunContext | None = None) -> bool:
     """Decide whether recipe hooks (pre_exec/post_exec/post_commands) are trusted.
 
     A recipe is trusted when any of these hold:
@@ -113,6 +113,8 @@ def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
         recipe: The loaded recipe (used for ``source_registry``
             introspection).
         trust_cli: CLI ``--trust`` flag value.
+        sctx: Optional shared context for local registry inventory. Trust lookup
+            never starts manifest discovery or registry synchronization.
 
     Returns:
         True when the hook commands may run without per-launch
@@ -134,8 +136,8 @@ def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
         from sparkrun.core.config import SparkrunConfig
         from sparkrun.core.registry import RegistryError
 
-        mgr = SparkrunConfig().get_registry_manager()
-        entry = mgr.get_registry(recipe.source_registry)
+        mgr = sctx.registry_manager if sctx is not None else SparkrunConfig().get_registry_manager()
+        entry = mgr.get_registry(recipe.source_registry, allow_discovery=False)
         return bool(entry.trusted)
     except RegistryError:
         return False

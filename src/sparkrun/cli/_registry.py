@@ -406,29 +406,27 @@ def registry_update(ctx, name, config_path=None):
                 click.echo("Added missing default registry: %s" % rname)
 
         if name:
-            entry = registry_mgr.get_registry(name)
-            if not entry.enabled:
+            # A missing name may still be discovered by the explicit update.
+            # Keep this disabled-entry check local so discovery runs only once.
+            entry = next((e for e in registry_mgr.list_registries(allow_discovery=False) if e.name == name), None)
+            if entry is not None and not entry.enabled:
                 click.echo(
                     f"Error: Registry '{name}' is disabled; enable it before updating.",
                     err=True,
                 )
                 sys.exit(1)
-            entries = [entry]
-        else:
-            entries = [e for e in registry_mgr.list_registries() if e.enabled]
 
-        count = len(entries)
-        if count == 0:
-            click.echo("No enabled registries to update.")
-            return
-
-        click.echo(f"Updating {count} registr{'y' if count == 1 else 'ies'}...")
+        click.echo("Updating registry %s..." % name if name else "Updating registries...")
 
         def _progress(prog_name: str, success: bool) -> None:
             status = "done" if success else "FAILED"
             click.echo(f"  Updating {prog_name}... {status}")
 
         results = registry_mgr.update(name, progress=_progress)
+        count = len(results)
+        if count == 0:
+            click.echo("No enabled registries to update.")
+            return
         succeeded = sum(1 for v in results.values() if v)
         failed = sum(1 for v in results.values() if not v)
 

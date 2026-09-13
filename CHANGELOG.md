@@ -77,6 +77,13 @@ system, gateway registry, and execution-strategy extension points shipped in
 - Offline recipe searches and catalog listings skip first-run manifest discovery.
   Search and filter operations reuse the context's registry manager, and an
   offline read preserves later explicit initialization or refresh.
+- Explicit registry refresh retries unfinished bootstrap discovery, including
+  after partial success or a local configuration edit, and reports failure when
+  no inventory can be established. Configuration edits stay offline and retain
+  their precedence over late discovery.
+- Catalog preview resolves a selection once and uses the context's registry
+  manager for trust. Preview, resolution, import, and retention skip bootstrap
+  discovery. Unrepresentable numeric metadata is omitted without aborting browsing.
 
 ## [0.3.8] — 2026-09-07
 
