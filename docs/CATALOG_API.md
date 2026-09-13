@@ -99,8 +99,9 @@ on the same context. Search may create reference records and cleans up expired
 staged uploads. Preview, exact resolution, import, and retention also use local
 inventory without bootstrap discovery or registry synchronization. Preview
 resolves its source once and evaluates registry trust with the supplied context's
-manager. Enabled plugins may still perform their own work during parsing or
-validation.
+manager. Each browse, preview, resolution, or retention operation reads one
+registry inventory snapshot; the next operation reads configuration again. Enabled
+plugins may still perform their own work during parsing or validation.
 
 | `CatalogPage` field | Meaning |
 | --- | --- |
@@ -121,6 +122,9 @@ adds optional `pp`, `quantization`, `context_length`, `parameters_b`, and
 in details. When bounded metadata cannot be read, the lightweight summary's
 raw `min_nodes`/`tp` values remain; those two browse fields are typed `object`
 and require narrowing before numeric use. Browse rows are not validated recipes.
+Files with malformed `command`, `defaults`, or `runtime_config` shapes are omitted
+by the shared summary reader without hiding readable neighboring files. Exact
+resolution reports those malformed inputs through `SparkrunError`.
 
 `CatalogFacet` is the shared literal vocabulary: `min_nodes`, `tp`, `pp`,
 `quantization`, `context_length`, `parameters_b`. Filters are exact strings such
@@ -154,7 +158,15 @@ inputs; passive plugin annotations need not change them. A reference alone does
 not pin contents. Do not send `source_path` to remote nodes as if it existed there.
 
 Selection also accepts an absolute controller-local path or an unambiguous cached
-recipe name (including a registry scope). URL selections are rejected. Import
+recipe name (including a registry scope). Qualified names preserve their selected
+registry even when several registries share a cached clone. Absolute paths through
+registry aliases or shared clones retain registry ownership and trust; they do not
+become locally authored recipes. A canonical path with multiple possible registry
+owners requires an explicit qualified name or catalog reference. Disabled sources,
+orphaned cache paths, and stale references with incorrect local attribution are
+rejected. Local symlinks into registry caches retain that same provenance.
+Resolved recipes carry both the registry name and URL, including for downstream
+benchmark attribution. URL selections are rejected. Import
 and exact resolution are limited to 256 KiB. Imports accept one valid YAML
 mapping, store content under a hash-derived filename, and do not resolve build
 assets. Imported recipes remain URL-sourced/untrusted even when reopened by their

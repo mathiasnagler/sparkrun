@@ -20,7 +20,8 @@ from sparkrun.api._models import RecipeSummary
 
 if TYPE_CHECKING:
     from sparkrun.core.context import SparkrunContext
-    from sparkrun.core.registry import RegistryManager
+    from sparkrun.core.registry import RegistryEntry, RegistryManager
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -61,13 +62,26 @@ def _resolve_recipe_filter(
     manager: RegistryManager,
     *,
     allow_discovery: bool = True,
+    entries: Sequence[RegistryEntry] | None = None,
 ) -> tuple[str | None, str | None]:
     from sparkrun.core.registry import RegistryFilterError, resolve_registry_filter
 
     try:
-        return resolve_registry_filter(query, registry, manager, allow_discovery=allow_discovery)
+        return resolve_registry_filter(query, registry, manager, allow_discovery=allow_discovery, entries=entries)
     except RegistryFilterError as e:
         raise InvalidRegistryFilter(str(e), registry=e.registry, reason=e.reason, available=e.available) from e
+
+
+def _search_registry_recipes(query, registry, manager, *, include_hidden=False, allow_discovery=True, entries=None):
+    """Share scoped cached search between public listing and catalog operations."""
+    registry, query = _resolve_recipe_filter(query, registry, manager, allow_discovery=allow_discovery, entries=entries)
+    found = manager.search_recipes(
+        query or "",
+        include_hidden=include_hidden or registry is not None,
+        allow_discovery=allow_discovery,
+        **({"entries": entries} if entries is not None else {}),
+    )
+    return registry, query, found
 
 
 def search_recipes(
@@ -138,14 +152,8 @@ def search_recipes(
         except Exception:
             logger.warning("registry initialization failed; searching what is already cached", exc_info=True)
 
-    registry, query = _resolve_recipe_filter(query, registry, registry_mgr, allow_discovery=ensure_initialized)
-
-    # An explicit registry is a stronger signal than that registry's
-    # visibility default, which exists to keep unqualified CLI names and
-    # tab-completion sane rather than to hide recipes from someone asking
-    # for them by name.
-    entries = registry_mgr.search_recipes(
-        query or "", include_hidden=include_hidden or registry is not None, allow_discovery=ensure_initialized
+    registry, query, entries = _search_registry_recipes(
+        query, registry, registry_mgr, include_hidden=include_hidden, allow_discovery=ensure_initialized
     )
 
     # Drop entries that are literally the same file reached twice (shared

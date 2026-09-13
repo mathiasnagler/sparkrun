@@ -145,8 +145,8 @@ def resolve_recipe(
                 if recipe.source_registry:
                     entry = registry_mgr.get_registry(recipe.source_registry)
                     recipe.source_registry_url = entry.url
-            except Exception:
-                logger.debug("Failed to tag recipe registry source", exc_info=True)
+            except Exception as exc:
+                raise RecipeNotFound("Recipe source could not be established: %s" % recipe_input) from exc
 
     # Apply overrides if provided so downstream callers see a fully-
     # resolved recipe (runtime selection finalized, defaults merged).

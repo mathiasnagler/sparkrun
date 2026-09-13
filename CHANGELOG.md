@@ -84,6 +84,13 @@ system, gateway registry, and execution-strategy extension points shipped in
 - Catalog preview resolves a selection once and uses the context's registry
   manager for trust. Preview, resolution, import, and retention skip bootstrap
   discovery. Unrepresentable numeric metadata is omitted without aborting browsing.
+- Shared-clone catalog selections retain registry provenance and trust across
+  qualified names, references, and paths. Disabled, ambiguous, and orphaned cache
+  sources no longer fall back to trusted local identity. Catalog-resolved recipes
+  retain registry URLs for benchmark attribution.
+- Catalog operations reuse one inventory snapshot per call. Malformed core recipe
+  fields are isolated per file during browsing and reported as typed errors during
+  exact resolution.
 
 ## [0.3.8] — 2026-09-07
 

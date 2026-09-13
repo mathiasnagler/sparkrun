@@ -16,6 +16,7 @@ import subprocess
 from dataclasses import dataclass, replace as _dataclass_replace
 from pathlib import Path
 from typing import Any, Callable, Iterator
+from collections.abc import Sequence
 
 import yaml
 
@@ -61,6 +62,7 @@ def resolve_registry_filter(
     registry_manager: "RegistryManager",
     *,
     allow_discovery: bool = True,
+    entries: Sequence[RegistryEntry] | None = None,
 ) -> tuple[str | None, str | None]:
     """Resolve the registry filter for a recipe listing or search.
 
@@ -79,6 +81,8 @@ def resolve_registry_filter(
         registry: Explicit registry filter (may be None).
         registry_manager: Manager used to validate the resulting name.
         allow_discovery: Allow first-run manifest discovery over the network.
+        entries: Optional inventory for this operation. When supplied, no
+            inventory is loaded and allow_discovery has no effect.
 
     Returns:
         ``(registry, query)`` with any scope stripped off the query. A scope
@@ -102,7 +106,7 @@ def resolve_registry_filter(
     if registry is None:
         return registry, query
 
-    entries = registry_manager.list_registries(allow_discovery=allow_discovery)
+    entries = registry_manager.list_registries(allow_discovery=allow_discovery) if entries is None else entries
     available = tuple(sorted(e.name for e in entries))
     match = next((e for e in entries if e.name == registry), None)
     if match is None:
@@ -1018,6 +1022,7 @@ class RegistryManager:
         include_hidden: bool = False,
         only: str | None = None,
         allow_discovery: bool = True,
+        entries: Sequence[RegistryEntry] | None = None,
     ) -> Iterator[RegistryEntry]:
         """Yield eligible registries, applying the standard filters once.
 
@@ -1026,11 +1031,13 @@ class RegistryManager:
                 not filter on visibility at all pass True.
             only: Restrict to this registry name.
             allow_discovery: Allow first-run manifest discovery over the network.
+            entries: Optional inventory for this operation, replacing the load.
 
         Yields:
             Enabled registry entries passing the filters, in config order.
         """
-        for entry in self._load_registries(allow_discovery=allow_discovery):
+        inventory = self._load_registries(allow_discovery=allow_discovery) if entries is None else entries
+        for entry in inventory:
             if not entry.enabled:
                 continue
             if only is not None and entry.name != only:
@@ -1063,6 +1070,7 @@ class RegistryManager:
         *,
         include_hidden: bool = False,
         allow_discovery: bool = True,
+        entries: Sequence[RegistryEntry] | None = None,
         accept: Callable[[Path], bool] | None = None,
     ) -> list[tuple[str, Path]]:
         """Find an asset by file stem across registries.
@@ -1076,13 +1084,14 @@ class RegistryManager:
             asset: Which kind of asset to look for.
             include_hidden: Include assets from invisible registries.
             allow_discovery: Allow unfinished bootstrap discovery over the network.
+            entries: Optional inventory for this operation, replacing the load.
             accept: Optional per-candidate predicate (e.g. a category filter).
 
         Returns:
             List of ``(registry_name, path)`` tuples for disambiguation.
         """
         matches: list[tuple[str, Path]] = []
-        for entry in self._iter_registries(include_hidden=include_hidden, allow_discovery=allow_discovery):
+        for entry in self._iter_registries(include_hidden=include_hidden, allow_discovery=allow_discovery, entries=entries):
             base = self.asset_dir(entry, asset)
             if base is None:
                 continue
@@ -2633,7 +2642,9 @@ class RegistryManager:
                 recipes.append(entry)
         return recipes
 
-    def search_recipes(self, query: str, include_hidden: bool = False, *, allow_discovery: bool = True) -> list[dict[str, Any]]:
+    def search_recipes(
+        self, query: str, include_hidden: bool = False, *, allow_discovery: bool = True, entries: Sequence[RegistryEntry] | None = None
+    ) -> list[dict[str, Any]]:
         """Search for recipes across all registries.
 
         Performs case-insensitive substring matching on recipe name, file stem,
@@ -2643,6 +2654,7 @@ class RegistryManager:
             query: Search query string
             include_hidden: If True, include recipes from invisible registries
             allow_discovery: Allow first-run manifest discovery over the network.
+            entries: Optional inventory for this operation, replacing the load.
 
         Returns:
             List of recipe metadata dicts with 'registry' field added
@@ -2650,7 +2662,7 @@ class RegistryManager:
         from sparkrun.core.recipe import recipe_matches_query
 
         results = []
-        for entry in self._iter_registries(include_hidden=include_hidden, allow_discovery=allow_discovery):
+        for entry in self._iter_registries(include_hidden=include_hidden, allow_discovery=allow_discovery, entries=entries):
             recipe_dir = self._recipe_dir(entry)
             if recipe_dir is None:
                 continue
@@ -2660,14 +2672,32 @@ class RegistryManager:
 
         return results
 
-    def registry_for_path(self, path: Path, *, allow_discovery: bool = True) -> str | None:
-        """Return the registry name that owns the given path, or None."""
-        # Ownership is not a visibility question — a hidden registry still owns
-        # its files, so this deliberately does not filter on `visible`.
-        for entry in self._iter_registries(include_hidden=True, allow_discovery=allow_discovery):
+    def registry_for_path(self, path: Path, *, allow_discovery: bool = True, entries: Sequence[RegistryEntry] | None = None) -> str | None:
+        """Find cache ownership without treating disabled or ambiguous sources as local.
+
+        A per-registry alias retains explicit identity when roots overlap. A
+        canonical path requires unique ownership. Orphaned cache paths raise
+        RegistryError; None is reserved for paths outside the registry cache.
+        Supplied entries are an operation-local inventory and suppress discovery.
+        """
+        inventory = self._load_registries(allow_discovery=allow_discovery) if entries is None else entries
+        absolute, canonical = path.absolute(), path.resolve()
+        aliases, owners = [], []
+        for entry in inventory:
             recipe_dir = self._recipe_dir(entry)
-            if recipe_dir and path.is_relative_to(recipe_dir):
-                return entry.name
+            if recipe_dir is None:
+                continue
+            if absolute.is_relative_to(recipe_dir.absolute()):
+                aliases.append(entry.name)
+            if canonical.is_relative_to(recipe_dir.resolve()):
+                owners.append(entry.name)
+        matches = aliases or owners
+        if len(matches) > 1:
+            raise RegistryError("Recipe path belongs to multiple registries; select an explicit registry name")
+        if matches:
+            return matches[0]
+        if absolute.is_relative_to(self.cache_root.absolute()) or canonical.is_relative_to(self.cache_root.resolve()):
+            raise RegistryError("Recipe cache path has no configured registry; choose a configured source")
         return None
 
     def qualified_recipe_name(self, registry_name: str, path: Path) -> str:
@@ -2693,7 +2723,9 @@ class RegistryManager:
         """
         return self.qualified_asset_name(registry_name, path, RECIPE_ASSET)
 
-    def find_recipe_in_registries(self, name: str, include_hidden: bool = False, *, allow_discovery: bool = True) -> list[tuple[str, Path]]:
+    def find_recipe_in_registries(
+        self, name: str, include_hidden: bool = False, *, allow_discovery: bool = True, entries: Sequence[RegistryEntry] | None = None
+    ) -> list[tuple[str, Path]]:
         """Find a recipe by file stem across all registries.
 
         Searches for recipes whose file stem matches the given name.
@@ -2702,11 +2734,14 @@ class RegistryManager:
             name: Recipe file stem to find (e.g. 'glm-4.7-flash-awq')
             include_hidden: If True, include recipes from invisible registries.
             allow_discovery: Allow unfinished bootstrap discovery over the network.
+            entries: Optional inventory for this operation, replacing the load.
 
         Returns:
             List of (registry_name, recipe_path) tuples for disambiguation
         """
-        return self.find_asset_in_registries(name, RECIPE_ASSET, include_hidden=include_hidden, allow_discovery=allow_discovery)
+        return self.find_asset_in_registries(
+            name, RECIPE_ASSET, include_hidden=include_hidden, allow_discovery=allow_discovery, entries=entries
+        )
 
     def _tuning_dir(self, entry: RegistryEntry) -> Path | None:
         """Get the tuning directory within a cached registry."""

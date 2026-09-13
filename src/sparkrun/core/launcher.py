@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from sparkrun.core.context import SparkrunContext
     from sparkrun.core.progress import LaunchProgress
     from sparkrun.core.recipe import Recipe
-    from sparkrun.core.registry import RegistryManager
+    from sparkrun.core.registry import RegistryEntry, RegistryManager
     from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.runtimes.base import RuntimePlugin
     from sparkrun.builders.base import BuilderPlugin
@@ -84,7 +84,9 @@ class LaunchResult:
     startup_observation: dict[str, Any] = field(default_factory=dict)
 
 
-def resolve_recipe_trust(recipe: Recipe, trust_cli: bool, *, sctx: SparkrunContext | None = None) -> bool:
+def resolve_recipe_trust(
+    recipe: Recipe, trust_cli: bool, *, sctx: SparkrunContext | None = None, registry_entry: RegistryEntry | None = None
+) -> bool:
     """Decide whether recipe hooks (pre_exec/post_exec/post_commands) are trusted.
 
     A recipe is trusted when any of these hold:
@@ -115,6 +117,8 @@ def resolve_recipe_trust(recipe: Recipe, trust_cli: bool, *, sctx: SparkrunConte
         trust_cli: CLI ``--trust`` flag value.
         sctx: Optional shared context for local registry inventory. Trust lookup
             never starts manifest discovery or registry synchronization.
+        registry_entry: Already-resolved entry from this operation's inventory,
+            used without another lookup. Do not reuse it across operations.
 
     Returns:
         True when the hook commands may run without per-launch
@@ -136,9 +140,11 @@ def resolve_recipe_trust(recipe: Recipe, trust_cli: bool, *, sctx: SparkrunConte
         from sparkrun.core.config import SparkrunConfig
         from sparkrun.core.registry import RegistryError
 
-        mgr = sctx.registry_manager if sctx is not None else SparkrunConfig().get_registry_manager()
-        entry = mgr.get_registry(recipe.source_registry, allow_discovery=False)
-        return bool(entry.trusted)
+        entry = registry_entry
+        if entry is None:
+            mgr = sctx.registry_manager if sctx is not None else SparkrunConfig().get_registry_manager()
+            entry = mgr.get_registry(recipe.source_registry, allow_discovery=False)
+        return bool(entry.name == recipe.source_registry and entry.enabled and entry.trusted)
     except RegistryError:
         return False
     except Exception:

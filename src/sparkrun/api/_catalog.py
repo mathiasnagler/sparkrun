@@ -35,6 +35,7 @@ from sparkrun.api._catalog_models import (
 
 if TYPE_CHECKING:
     from sparkrun.core.context import SparkrunContext
+    from sparkrun.core.registry import RegistryEntry, RegistryManager
 
 from sparkrun.api._context import resolve_sctx
 from sparkrun.api._errors import RecipeNotFound, SparkrunError
@@ -58,10 +59,10 @@ def _atomic(path: Path, value: dict) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def _reference(path: Path, registry: str | None, sctx: SparkrunContext, *, imported: bool = False) -> str:
-    value = {"path": str(path.resolve()), "registry": registry, "imported": imported}
+def _reference(path: Path, registry: RegistryEntry | None, sctx: SparkrunContext, *, imported: bool = False) -> str:
+    value = {"path": str(path.resolve()), "registry": registry.name if registry else None, "imported": imported}
     if registry:
-        value["registry_url"] = sctx.registry_manager.get_registry(registry, allow_discovery=False).url
+        value["registry_url"] = registry.url
     identity = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()[:32]
     record = _root(sctx) / "references" / (identity + ".json")
     if not record.exists():
@@ -69,56 +70,75 @@ def _reference(path: Path, registry: str | None, sctx: SparkrunContext, *, impor
     return "catalog:" + identity
 
 
-def _selection(reference: str, sctx: SparkrunContext) -> tuple[Path, str | None, bool]:
+def _selection(reference: str, sctx: SparkrunContext) -> tuple[Path, RegistryEntry | None, bool]:
     from sparkrun.core.registry import RegistryError
 
-    match = _REFERENCE.fullmatch(reference)
-    if match:
-        try:
-            record = json.loads((_root(sctx) / "references" / (match[1] + ".json")).read_text())
-            path = Path(record["path"])
-            registry = record.get("registry")
-            if registry:
-                entry = sctx.registry_manager.get_registry(registry, allow_discovery=False)
-                if not entry.enabled or entry.url != record.get("registry_url"):
-                    raise RecipeNotFound("Selected recipe registry changed or is disabled; choose it again")
-            if not path.is_file():
-                raise RecipeNotFound("Selected recipe no longer exists; choose it again")
-            return path, registry, bool(record.get("imported"))
-        except (OSError, ValueError, KeyError, RegistryError) as exc:
-            raise RecipeNotFound("Recipe selection is unavailable; choose it again") from exc
-    if reference.startswith("catalog:") or "://" in reference:
-        raise RecipeNotFound("Select a cached registry recipe or a controller-local file")
-    path = Path(reference).expanduser()
-    if not path.is_absolute():
-        from sparkrun.utils import parse_scoped_name
-
-        scope, name = parse_scoped_name(reference)
-        matches = sctx.registry_manager.find_recipe_in_registries(name, include_hidden=True, allow_discovery=False)
-        matches = [(registry, selected) for registry, selected in matches if not scope or registry == scope]
-        if len(matches) != 1:
-            raise RecipeNotFound("Choose an exact cached recipe or an absolute path on the control node")
-        path = Path(matches[0][1])
-    if not path.is_file():
-        raise RecipeNotFound("Recipe was not found on this controller")
-    path = path.resolve()
-    return path, sctx.registry_manager.registry_for_path(path, allow_discovery=False), path.parent == _root(sctx) / "imports"
-
-
-def list_registries(*, sctx: SparkrunContext | None = None) -> list[CatalogRegistry]:
-    """List configured registries without initializing or updating them."""
-    sctx = resolve_sctx(sctx)
     manager = sctx.registry_manager
+    inventory = manager.list_registries(allow_discovery=False)
+    by_name = {entry.name: entry for entry in inventory}
+    registry = None
+    try:
+        match = _REFERENCE.fullmatch(reference)
+        if match:
+            record = json.loads((_root(sctx) / "references" / (match[1] + ".json")).read_text())
+            if not isinstance(record, dict):
+                raise ValueError("Invalid recipe reference record")
+            path = Path(record["path"]).resolve()
+            name = record.get("registry")
+            if name:
+                registry = by_name[name]
+                if registry.url != record.get("registry_url"):
+                    raise RecipeNotFound("Selected recipe registry changed; choose it again")
+            elif manager.registry_for_path(path, allow_discovery=False, entries=inventory) is not None:
+                # Old references must not preserve a mistaken local attribution.
+                raise RecipeNotFound("Selected recipe source changed; choose it again")
+            imported = bool(record.get("imported"))
+        else:
+            if reference.startswith("catalog:") or "://" in reference:
+                raise RecipeNotFound("Select a cached registry recipe or a controller-local file")
+            path = Path(reference).expanduser()
+            if not path.is_absolute():
+                from sparkrun.utils import parse_scoped_name
+
+                scope, name = parse_scoped_name(reference)
+                matches = manager.find_recipe_in_registries(name, include_hidden=True, allow_discovery=False, entries=inventory)
+                matches = [(owner, selected) for owner, selected in matches if not scope or owner == scope]
+                if len(matches) != 1:
+                    raise RecipeNotFound("Choose an exact cached recipe or an absolute path on the control node")
+                owner, path = matches[0]
+                registry = by_name[owner]
+            else:
+                owner = manager.registry_for_path(path, allow_discovery=False, entries=inventory)
+                registry = by_name[owner] if owner else None
+            path = path.resolve()
+            imported = False
+        imported = imported or path.parent == (_root(sctx) / "imports").resolve()
+        if not path.is_file():
+            raise RecipeNotFound("Selected recipe no longer exists; choose it again")
+        if registry and not registry.enabled:
+            raise RecipeNotFound("Selected recipe registry is disabled; choose it again")
+        return path, registry, imported
+    except (OSError, ValueError, TypeError, KeyError, RegistryError) as exc:
+        raise RecipeNotFound("Recipe selection is unavailable; choose it again") from exc
+
+
+def _registry_rows(manager: RegistryManager, entries: list[RegistryEntry]) -> list[CatalogRegistry]:
     return [
         {
             "name": entry.name,
             "enabled": entry.enabled,
-            "visible": getattr(entry, "visible", True),
-            "trusted": getattr(entry, "trusted", False),
+            "visible": entry.visible,
+            "trusted": entry.trusted,
             "cached": manager._cache_dir(entry.name).is_dir(),
         }
-        for entry in manager.list_registries(allow_discovery=False)
+        for entry in entries
     ]
+
+
+def list_registries(*, sctx: SparkrunContext | None = None) -> list[CatalogRegistry]:
+    """List configured registries without initializing or updating them."""
+    manager = resolve_sctx(sctx).registry_manager
+    return _registry_rows(manager, manager.list_registries(allow_discovery=False))
 
 
 def list_clusters(*, sctx: SparkrunContext | None = None) -> list[CatalogCluster]:
@@ -149,8 +169,9 @@ def catalog_recipes(
     sctx: SparkrunContext | None = None,
 ) -> CatalogPage:
     """Search cached recipes with exact file identity and bounded pagination."""
-    from sparkrun.api._recipes import search_recipes
-    from sparkrun.core.recipe import recipe_summary
+    from sparkrun.api._recipes import _search_registry_recipes
+    from sparkrun.core.recipe import recipe_summary, filter_recipes
+    from sparkrun.core.registry import RegistryError
 
     if not 1 <= limit <= 100 or offset < 0 or len(query) > 256:
         raise SparkrunError("Invalid catalog page or query")
@@ -163,20 +184,15 @@ def catalog_recipes(
         raise SparkrunError("Invalid recipe filters")
     sctx = resolve_sctx(sctx)
     cleanup_catalog_imports(sctx=sctx)
-    found = (
-        []
-        if local_only
-        else search_recipes(
-            query or None,
-            registry=registry or None,
-            runtime=runtime or None,
-            include_hidden=True,
-            include_local=False,
-            ensure_initialized=False,
-            sctx=sctx,
+    manager = sctx.registry_manager
+    inventory = manager.list_registries(allow_discovery=False)
+    by_name = {entry.name: entry for entry in inventory}
+    entries = []
+    if not local_only:
+        selected_registry, _, found = _search_registry_recipes(
+            query or None, registry or None, manager, include_hidden=True, allow_discovery=False, entries=inventory
         )
-    )
-    entries = [] if local_only else [entry.to_dict() for entry in found]
+        entries = filter_recipes(found, runtime=runtime or None, registry=selected_registry)
     if not registry:
         # Explicit controller-owned roots, independent of the bridge's cwd.
         roots = [Path(sctx.config.config_path).parent / "recipes", _root(sctx) / "imports"]
@@ -207,7 +223,15 @@ def catalog_recipes(
             if row.get(key) is not None:
                 row[key] = str(row[key])[:1024]
         row["source_path"] = str(path)[:4096]
-        row["reference"] = _reference(path, entry.get("registry"), sctx, imported=path.parent == _root(sctx) / "imports")
+        try:
+            owner = entry.get("registry") or manager.registry_for_path(Path(entry["path"]), allow_discovery=False, entries=inventory)
+            source = by_name[owner] if owner else None
+            if source and not source.enabled:
+                continue
+        except RegistryError:
+            continue  # an ambiguous/orphaned cache alias is not a local recipe
+        row["registry"] = source.name if source else None
+        row["reference"] = _reference(path, source, sctx, imported=path.parent == (_root(sctx) / "imports").resolve())
         row.update(_declared_facets(path))
         rows.append(row)
     rows.sort(key=lambda row: (bool(row["registry"]), str(row["name"]), row["source_path"]))
@@ -218,7 +242,7 @@ def catalog_recipes(
         if all((str(row.get(key)) if row.get(key) is not None else "unknown") == value for key, value in filters.items() if value)
     ]
     next_offset = offset + limit
-    registries = list_registries(sctx=sctx)
+    registries = _registry_rows(manager, inventory)
     return {
         "recipes": rows[offset:next_offset],
         "facets": facets,
@@ -240,7 +264,9 @@ def resolve_catalog_recipe(
     return _resolve_selected_recipe(*_selection(reference, sctx), overrides)
 
 
-def _resolve_selected_recipe(path: Path, registry: str | None, imported: bool, overrides: dict[str, Any] | None) -> ResolvedCatalogRecipe:
+def _resolve_selected_recipe(
+    path: Path, registry: RegistryEntry | None, imported: bool, overrides: dict[str, Any] | None
+) -> ResolvedCatalogRecipe:
     """Load a selected source once, sharing normalization across preview and resolution."""
     from sparkrun.core.recipe import Recipe, RecipeError
     from sparkrun.core.resolve import apply_recipe_overrides
@@ -250,7 +276,8 @@ def _resolve_selected_recipe(path: Path, registry: str | None, imported: bool, o
         raise SparkrunError("Recipe exceeds the size limit")
     try:
         recipe = Recipe.load(path, resolve=False)
-        recipe.source_registry = registry
+        recipe.source_registry = registry.name if registry else None
+        recipe.source_registry_url = registry.url if registry else None
         # Imported files have not inherited the trust of a local author.
         recipe.is_url_sourced = imported
         values = {str(key): coerce_value(value) if isinstance(value, str) else value for key, value in (overrides or {}).items()}
@@ -276,7 +303,7 @@ def get_recipe_details(
     path, registry, imported = _selection(reference, sctx)
     recipe, normalized = _resolve_selected_recipe(path, registry, imported, overrides)
     runtime = resolve_runtime(recipe, sctx=sctx)
-    trusted = resolve_recipe_trust(recipe, False, sctx=sctx)
+    trusted = resolve_recipe_trust(recipe, False, sctx=sctx, registry_entry=registry)
     issues: list[CatalogIssue] = [
         cast(CatalogIssue, issue.to_dict())
         for issue in validate_recipe(
@@ -341,7 +368,7 @@ def get_recipe_details(
         "reference": _reference(path, registry, sctx, imported=imported),
         "name": recipe.qualified_name,
         "source_path": str(path),
-        "registry": registry,
+        "registry": registry.name if registry else None,
         "model": recipe.effective_served_model_name or recipe.model,
         "hf_model": recipe.model,
         "runtime": recipe.runtime,

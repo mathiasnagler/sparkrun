@@ -653,6 +653,17 @@ _RECIPE_RESOLVERS = [
 ]
 
 
+def _validate_resolution_shapes(data: dict[str, Any]) -> None:
+    """Shared data checks before full or lightweight runtime/builder resolution."""
+    command = data.get("command")
+    if command is not None and not isinstance(command, str):
+        raise RecipeError("Recipe 'command' field must be a string, got %s" % type(command).__name__)
+    for field_name in ("defaults", "runtime_config"):
+        value = data.get(field_name)
+        if value is not None and not isinstance(value, dict):
+            raise RecipeError("Recipe '%s' field must be a mapping, got %s" % (field_name, type(value).__name__))
+
+
 def resolve_runtime(data: dict[str, Any], overrides: dict[str, Any] | None = None) -> str:
     """Lightweight runtime resolution from raw data (for listing/display).
 
@@ -664,6 +675,7 @@ def resolve_runtime(data: dict[str, Any], overrides: dict[str, Any] | None = Non
         overrides: Optional CLI overrides (checked before defaults for
             the vllm-variant decision).
     """
+    _validate_resolution_shapes(data)
     runtime = data.get("runtime") or ""
 
     # Command-hint resolver (mirrors _resolve_runtime_from_command_hint)
@@ -681,14 +693,9 @@ def resolve_runtime(data: dict[str, Any], overrides: dict[str, Any] | None = Non
     # v1 migration and eugr detection now only affect builder, not runtime.
     # Runtime falls through to vllm variant resolution below.
 
-    runtime_config = data.get("runtime_config") or {}
-    if runtime_config is not None and not isinstance(runtime_config, dict):
-        raise RecipeError("Recipe 'runtime_config' field must be a mapping, got %s" % type(runtime_config).__name__)
     if runtime in ("vllm", ""):
         effective = dict(overrides or {})
         defaults = data.get("defaults")
-        if defaults is not None and not isinstance(defaults, dict):
-            raise RecipeError("Recipe 'defaults' field must be a mapping, got %s" % type(defaults).__name__)
         defaults = defaults or {}
         # An explicit override wins over the literal-command hint (mirrors
         # _resolve_vllm_variant): -o distributed_executor_backend=mp flips a
@@ -722,6 +729,7 @@ def resolve_builder(data: dict[str, Any]) -> str:
     A catalog that disagrees with the launch about what will be built is worse
     than one that says nothing, because it is read as an answer.
     """
+    _validate_resolution_shapes(data)
     builder = data.get("builder", "")
     if builder:
         return builder
@@ -1039,6 +1047,7 @@ class Recipe:
     """A loaded and validated sparkrun recipe."""
 
     def __init__(self, data: dict[str, Any], source_path: str | None = None):
+        _validate_resolution_shapes(data)
         self._raw = data
         self.source_path = source_path
         self.source_registry: str | None = None  # set by _load_recipe after resolution
@@ -2370,7 +2379,8 @@ def recipe_summary(path: Path, registry_name: str | None = None) -> dict[str, An
     """Build a lightweight recipe summary dict from a YAML file.
 
     Returns a metadata dict suitable for recipe listing and search, or
-    ``None`` if the file cannot be read or does not contain a dict.
+    ``None`` if the file cannot be read, does not contain a dict, or has
+    malformed fields required by lightweight runtime/builder resolution.
 
     This is intentionally cheaper than constructing a full :class:`Recipe`
     — it skips version migration, resolver chains, and env expansion.
@@ -2384,14 +2394,19 @@ def recipe_summary(path: Path, registry_name: str | None = None) -> dict[str, An
     stem = path.stem
     defaults = data.get("defaults", {})
     qualified = ("@%s/%s" % (registry_name, stem)) if registry_name else stem
-    builder = resolve_builder(data)
+    try:
+        builder = resolve_builder(data)
+        runtime = resolve_runtime(data)
+    except RecipeError as exc:
+        logger.debug("Skipping malformed recipe %s: %s", path, exc)
+        return None
     entry: dict[str, Any] = {
         "name": qualified,
         "file": stem,
         "path": str(path),
         "model": data.get("model", ""),
         "description": data.get("description", ""),
-        "runtime": resolve_runtime(data),
+        "runtime": runtime,
         "min_nodes": data.get("min_nodes", 1),
         "tp": defaults.get("tensor_parallel", "") if isinstance(defaults, dict) else "",
         "gpu_mem": defaults.get("gpu_memory_utilization", "") if isinstance(defaults, dict) else "",
