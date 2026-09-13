@@ -1365,7 +1365,7 @@ def test_api_probe_nodes_fallback(tmp_path, monkeypatch):
 class _FakeRuntime:
     runtime_name = "vllm"
 
-    def resolve_container(self, recipe, overrides):
+    def resolve_container(self, recipe, *, host_hardware=None):
         return "ghcr.io/x/vllm:latest"
 
     def generate_command(self, recipe, overrides, is_cluster, num_nodes=1, head_ip=None, skip_keys=frozenset()):
@@ -1373,6 +1373,8 @@ class _FakeRuntime:
 
 
 class _FakeRecipe:
+    container = ""
+    containers = []
     executor = "k8s"
     env = {"HF_TOKEN": "x"}
     model = "M"

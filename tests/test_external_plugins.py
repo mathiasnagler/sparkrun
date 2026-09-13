@@ -23,7 +23,7 @@ from sparkrun.transports import list_transports
 
 def _write(dir_path: Path, name: str, body: str) -> None:
     dir_path.mkdir(parents=True, exist_ok=True)
-    (dir_path / ("%s.py" % name)).write_text(textwrap.dedent(body))
+    (dir_path / ("%s.py" % name)).write_text("SPARKRUN_PLUGIN_API_VERSION = 1\n" + textwrap.dedent(body))
 
 
 def _transport_module(transport_name: str) -> str:

@@ -122,15 +122,13 @@ def load_and_register_plugin(
     v: Variables | None,
     *,
     tier: DeclarationTier | None = None,
-    require_api_version: bool = False,
     source: tuple[str, str, str | None] | None = None,
 ) -> ModuleType:
     """Import, validate and register one module in a single transaction.
 
     Discovery and trust tier belong to the caller. Source-keyed failure details
     survive rollback for inventory; a successful retry clears the prior error.
-    Installed entry points require a version declaration. Legacy directory and
-    bundled modules may omit it, but any declared version must be compatible.
+    Every module declares SPARKRUN_PLUGIN_API_VERSION, regardless of source.
     Exceptions propagate after rollback; arbitrary plugin I/O is not undone.
     """
     try:
@@ -140,10 +138,13 @@ def load_and_register_plugin(
             module = loader()
             if not isinstance(module, ModuleType):
                 raise TypeError("Plugin loaders must return a module")
-            if require_api_version or hasattr(module, "SPARKRUN_PLUGIN_API_VERSION"):
-                api_version = getattr(module, "SPARKRUN_PLUGIN_API_VERSION", None)
-                if type(api_version) is not int or api_version != PLUGIN_API_VERSION:
-                    raise ValueError("Plugin API %r is incompatible with supported API %s" % (api_version, PLUGIN_API_VERSION))
+            api_version = getattr(module, "SPARKRUN_PLUGIN_API_VERSION", None)
+            if type(api_version) is not int or api_version != PLUGIN_API_VERSION:
+                raise ValueError(
+                    "Plugin API %r in %s is incompatible with supported API %s; "
+                    "update the plugin for this host and declare SPARKRUN_PLUGIN_API_VERSION = %s"
+                    % (api_version, module.__name__, PLUGIN_API_VERSION, PLUGIN_API_VERSION)
+                )
             _register_plugin_module(module, v, tier=tier)
             from sparkrun.core.setup_steps import all_setup_steps
 

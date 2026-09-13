@@ -281,7 +281,7 @@ def test_config_imports_a_cluster_and_retargets_the_run(tmp_path):
     envf.write_text("CLUSTER_NODES=10.0.0.1,10.0.0.2\n")
     rc, err = shim(RECIPE, "--solo", "--config", str(envf))
     assert rc == 0, err
-    assert "cluster import --from-spark-vllm-docker-env %s" % envf in err
+    assert "cluster import svd %s" % envf in err
     # --cluster is prepended so it precedes the mapped run options.
     assert "run %s --cluster <from-env> --solo --tp 1 --foreground" % RECIPE in err
 

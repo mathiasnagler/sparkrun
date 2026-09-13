@@ -1005,7 +1005,7 @@ def launch_inference(
     # Internal recipe escape hatch: ``cluster_config`` launch overrides
     # (undocumented).  Applied at this single launch choke point so both the
     # CLI and ``api.run`` honour them.  Recipe-level values take precedence
-    # over cluster/global config.  See :class:`sparkrun.core.recipe.ClusterConfig`.
+    # over cluster/global config.  See :class:`sparkrun.core.recipe.LaunchOverrides`.
     from sparkrun.core.recipe import is_local_model_path
 
     _cluster_config = recipe.cluster_config
@@ -1127,9 +1127,6 @@ def launch_inference(
         config_chain = recipe.build_config_chain(overrides)
         serve_port = int(config_chain.get("port") or 8000)
 
-    # Resolve container image
-    container_image = runtime.resolve_container(recipe, overrides)
-
     # Per-machine images (``containers:``) are gated *before* any side effect —
     # the guards must fire before the builder runs, the image is pulled, or the
     # model is synced.  The plan itself is resolved after the builder phase,
@@ -1194,7 +1191,6 @@ def launch_inference(
         recipe,
         runtime,
         host_list,
-        overrides,
         config=config,
         v=v,
         cluster=cluster,
@@ -1204,7 +1200,6 @@ def launch_inference(
         run_builder=_run_builder,
         images_by_node=(asset_policy.images_by_node if asset_policy is not None else None),
         strategy_name=(prepared_execution.strategy if prepared_execution is not None else ""),
-        source_image=container_image,
         # Already gated above, before the builder could run.
         validate=False,
     )

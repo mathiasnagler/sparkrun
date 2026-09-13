@@ -672,7 +672,12 @@ def _execute_benchmark(
             emitter=emitter,
         )
 
-    container_image = runtime.resolve_container(recipe, overrides)
+    from sparkrun.core.images import ImagePlanError, resolve_runtime_image_plan
+
+    try:
+        container_image = resolve_runtime_image_plan(recipe, runtime, host_list, cluster=cluster_cfg).head_image()
+    except ImagePlanError as error:
+        raise BenchmarkFailed(str(error)) from error
 
     config_chain = recipe.build_config_chain(overrides)
     effective_tp = int(config_chain.get("tensor_parallel") or 1)
@@ -979,7 +984,7 @@ def _execute_benchmark(
         if not launched or no_stop or dry_run or cleanup_attempted:
             return
         cleanup_attempted = True
-        _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, strict=True)
+        _stop_inference(host_list, cluster_id, dry_run, sctx=sctx, strict=True)
 
     try:
         bench_result.benchmark_id = state.benchmark_id if state else ""
@@ -1222,7 +1227,7 @@ def _execute_benchmark(
                         target_url=base_url,
                         model=recipe.model,
                         timeout=effective_timeout,
-                        progress_ui=pui,
+                        task_events=pui,
                         cache_dir=cache_dir,
                         exit_on_first_fail=exit_on_first_fail,
                         credentials=credentials,
@@ -1601,7 +1606,7 @@ def _emit_results_outputs(results: dict[str, Any], paths: dict[str, Path], emitt
     return written
 
 
-def _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=None, emitter: _ProgressEmitter | None = None, *, strict=False):
+def _stop_inference(host_list, cluster_id, dry_run, sctx=None, emitter: _ProgressEmitter | None = None, *, strict=False):
     """Stop the inference workload via the library API.
 
     ``emitter`` (optional) lets the orchestration surface the dry-run notice
@@ -2025,7 +2030,7 @@ def _resume_locked(
                 target_url=base_url,
                 model=recipe.model,
                 timeout=effective_timeout,
-                progress_ui=pui,
+                task_events=pui,
                 cache_dir=cache_dir,
                 exit_on_first_fail=effective_fail_fast,
                 credentials=credentials,

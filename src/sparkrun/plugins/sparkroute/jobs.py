@@ -220,13 +220,13 @@ def previous_placement() -> dict | None:
 
 def run_worker(config_path: Path, operation_id: str) -> None:
     import sparkrun.api as api
-    from ._application_profile import worker_context
+    from sparkrun.application import initialize
     import logging
     from logging.handlers import RotatingFileHandler
     from .operations import _ensure_ready, _require_feature_enabled, _resolve_binding
 
     global _current
-    sctx = worker_context(config_path)
+    sctx = initialize(config_path=config_path)
     path = _path(sctx)
     with _connect(path) as db:
         row = db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()

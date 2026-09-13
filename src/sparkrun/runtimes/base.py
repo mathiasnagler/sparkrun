@@ -22,6 +22,7 @@ from sparkrun.core.log_source import (
 if TYPE_CHECKING:
     from sparkrun.core.backend_select import BackendBundle
     from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.hardware import HostHardware
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.parallelism import ParallelismConfig
     from sparkrun.core.recipe import Recipe
@@ -219,48 +220,30 @@ class RuntimePlugin(Plugin):
         """
         ...
 
-    def resolve_container(self, recipe: Recipe, overrides: dict[str, Any] | None = None) -> str:
-        """Resolve the container image to use.
+    def resolve_container(self, recipe: Recipe, *, host_hardware: HostHardware | None = None) -> str:
+        """Select one host's image, giving an explicit recipe image precedence.
 
-        Returns the recipe's explicit container if set, otherwise
-        falls back to ``{default_image_prefix}:latest``.
-
-        Subclasses may override for custom resolution logic.
+        Runtime implementations customize :meth:`default_image_for`; this
+        policy keeps explicit images authoritative. An empty result means no
+        default exists; the image planner requires an explicit per-host image.
         """
-        if recipe.container:
-            return recipe.container
-        return "%s:latest" % self.default_image_prefix
+        return recipe.container or self.default_image_for(host_hardware) or ""
 
-    def default_image_for(self, host_hardware=None) -> str | None:
-        """Return a default container image for a given host's hardware.
+    def default_image_for(self, host_hardware: HostHardware | None = None) -> str | None:
+        """Default-image hook: matching platform, then the runtime image prefix.
 
-        Resolution order:
-
-        1. If *host_hardware* matches a registered
-           :class:`HardwarePlatformPlugin` (via
-           :func:`sparkrun.platforms.resolve_platform`) and that
-           platform publishes a default for this runtime, return it.
-        2. Otherwise fall back to the legacy
-           ``{default_image_prefix}:latest``.
-        3. Return ``None`` when no prefix is declared, so callers can
-           surface "no default image; set ``recipe.container`` explicitly".
-
-        Subclasses are encouraged to override this rather than
-        :meth:`resolve_container` for vendor-specific defaults; doing so
-        keeps explicit ``recipe.container`` values authoritative across
-        all hosts.
+        ``None`` means no default is available. Platform lookup is performed
+        only when hardware is supplied; callers with no cluster metadata use
+        the runtime prefix. Explicit recipe images bypass this hook.
         """
         if host_hardware is not None:
-            try:
-                from sparkrun.platforms import resolve_platform
+            from sparkrun.platforms import resolve_platform
 
-                platform = resolve_platform(host_hardware)
-            except Exception:
-                platform = None
+            platform = resolve_platform(host_hardware)
             if platform is not None:
-                img = platform.default_image(self.runtime_name)
-                if img is not None:
-                    return img
+                image = platform.default_image(self.runtime_name)
+                if image is not None:
+                    return image
         if self.default_image_prefix:
             return "%s:latest" % self.default_image_prefix
         return None

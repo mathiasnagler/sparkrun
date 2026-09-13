@@ -53,7 +53,7 @@ def _write(package: _FakePlugins, name: str, body: str, *, flag: bool | None = T
     """
     module = package.root / name
     module.mkdir()
-    (module / "__init__.py").write_text(textwrap.dedent(body))
+    (module / "__init__.py").write_text("SPARKRUN_PLUGIN_API_VERSION = 1\n" + textwrap.dedent(body))
     if flag is not None:
         flag_name = "test.%s" % name
         IN_TREE_PLUGIN_FEATURES[name] = flag_name

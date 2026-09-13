@@ -22,7 +22,8 @@ from sparkrun.plugins.sparkroute import _application_profile, release, jobs
 
 @pytest.fixture
 def profile(tmp_path, monkeypatch):
-    api = pytest.importorskip("sparkrun.core.application_profile")
+    from sparkrun.core import application_profile as api
+
     api._reset_application_profile_for_tests()
     monkeypatch.setenv("HOME", str(tmp_path))
     code = (
@@ -121,17 +122,10 @@ def test_worker_environment_and_fresh_api_initialization(profile, tmp_path):
     assert json.loads(result.stdout) == [profile.id, str(config.config_path), False]
 
 
-def test_legacy_host_preserves_environment(monkeypatch):
-    monkeypatch.setattr(_application_profile, "host_api", lambda: None)
+def test_child_preserves_process_settings_and_explicit_identity(profile, tmp_path, monkeypatch):
     monkeypatch.setenv("PRESERVE_TEST_SETTING", "value")
-    assert _application_profile.child_environment()["PRESERVE_TEST_SETTING"] == "value"
-
-
-def test_missing_host_api_cannot_silently_drop_child_identity(monkeypatch):
-    missing = ModuleNotFoundError("legacy host", name="sparkrun.core.application_profile")
-    with mock.patch.object(_application_profile.importlib, "import_module", side_effect=missing):
-        monkeypatch.delenv("SPARKRUN_APPLICATION_PROFILE", raising=False)
-        assert _application_profile.host_api() is None
-        monkeypatch.setenv("SPARKRUN_APPLICATION_PROFILE", "example:PROFILE")
-        with pytest.raises(RuntimeError, match="requires a host"):
-            _application_profile.host_api()
+    config = tmp_path / "explicit.yaml"
+    environment = _application_profile.child_environment(config)
+    assert environment["PRESERVE_TEST_SETTING"] == "value"
+    assert environment["SPARKRUN_APPLICATION_PROFILE"] == profile.profile_ref
+    assert environment["SPARKRUN_APPLICATION_CONFIG"] == str(config)

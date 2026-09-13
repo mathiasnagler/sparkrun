@@ -138,7 +138,7 @@ def _run(
                 target_url="http://localhost:8000/v1",
                 model="org/model",
                 timeout=None,
-                progress_ui=ui,
+                task_events=ui,
                 cache_dir=str(tmp_path),
                 exit_on_first_fail=exit_on_first_fail,
             )
@@ -194,7 +194,7 @@ def test_run_schedule_filename_suffix_stub_fw(tmp_path: Path):
                 target_url="http://localhost:8000/v1",
                 model="org/model",
                 timeout=None,
-                progress_ui=ui,
+                task_events=ui,
                 cache_dir=str(tmp_path),
             )
 
@@ -237,7 +237,7 @@ def test_run_schedule_filename_suffix_llama_benchy(tmp_path: Path):
                 target_url="http://localhost:8000/v1",
                 model="org/model",
                 timeout=None,
-                progress_ui=ui,
+                task_events=ui,
                 cache_dir=str(tmp_path),
             )
 
@@ -284,7 +284,7 @@ def test_run_schedule_warmup_rule(tmp_path: Path):
                 target_url="http://localhost:8000/v1",
                 model="org/model",
                 timeout=None,
-                progress_ui=ui,
+                task_events=ui,
                 cache_dir=str(tmp_path),
             )
 
@@ -357,7 +357,7 @@ def test_run_schedule_resume_warmup_rule(tmp_path: Path):
                     target_url="http://localhost:8000/v1",
                     model="org/model",
                     timeout=None,
-                    progress_ui=ui,
+                    task_events=ui,
                     cache_dir=str(tmp_path),
                 )
 
@@ -406,7 +406,7 @@ def test_run_schedule_exit_on_first_fail(tmp_path: Path):
                 target_url="http://localhost:8000/v1",
                 model="org/model",
                 timeout=None,
-                progress_ui=ui,
+                task_events=ui,
                 cache_dir=str(tmp_path),
                 exit_on_first_fail=True,
             )
@@ -481,7 +481,7 @@ def test_run_schedule_gap_requeue(tmp_path: Path):
                     target_url="http://localhost:8000/v1",
                     model="org/model",
                     timeout=None,
-                    progress_ui=ui,
+                    task_events=ui,
                     cache_dir=str(tmp_path),
                 )
 

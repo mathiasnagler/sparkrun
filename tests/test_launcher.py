@@ -248,7 +248,7 @@ class _StubRuntime:
     def is_delegating_runtime(self):
         return False
 
-    def resolve_container(self, recipe, overrides=None):
+    def resolve_container(self, recipe, *, host_hardware=None):
         return "stub:latest"
 
     def prepare(self, *args, **kwargs):
@@ -1305,7 +1305,7 @@ def _builder_phase_harness(monkeypatch, tmp_path):
     class _Runtime:
         runtime_name = "stub"
 
-        def resolve_container(self, recipe, overrides):
+        def resolve_container(self, recipe, *, host_hardware=None):
             return "stub:latest"
 
         def get_family(self):

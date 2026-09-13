@@ -100,8 +100,10 @@ Arbitrary plugin I/O is outside rollback. The SAF adapter depends on
 changing that pin requires profile, rollback, and installed-wheel checks.
 Plugin modules declare literal integer `SPARKRUN_PLUGIN_API_VERSION = 1`, checked
 against `core.registration.PLUGIN_API_VERSION`, independently of the application
-profile API version. Installed modules require it; other sources validate it when
-present. See [framework registration and identifier terminology](PLUGINS.md#installing-a-benchmark-framework).
+profile API version. Installed, directory, bundled, and direct module loaders all
+require it. A missing or incompatible declaration rejects that plugin before
+registration; inventory retains the reason and enlisted import-time contributions
+are rolled back. Upgrade directory plugins before enabling them on 0.4. See [framework registration and identifier terminology](PLUGINS.md#installing-a-benchmark-framework).
 
 Run-handler callbacks now receive `before_start` as a required keyword argument.
 For real launches call this core-owned, idempotent callback after validation and
@@ -573,8 +575,9 @@ policy to an existing snapshot.
 Gateway plugins implement `query_models() -> tuple[ProxyModel, ...]` and raise
 `GatewayQueryError` for unavailable observations. Import those from
 `sparkrun.proxy.contracts`; `api.proxy.ProxyModel` remains the same public class.
-The supervisor adapts legacy dictionary providers, including the pinned
-SparkRoute plugin, so this addition does not require editing vendored code.
+LiteLLM and SparkRoute implement this contract directly; legacy dictionary
+providers must migrate their decoding in the provider. SparkRoute changes belong
+in its upstream checkout and are imported as a committed vendor snapshot.
 
 Console and credential support are optional structural protocols in that module.
 See [the gateway contract](PROXY.md#gateway-plugin-contract). `ui(issue_token=True)`
@@ -651,3 +654,53 @@ Passive metadata reads do not initialize plugins, including after a failed plugi
 bootstrap. Invalid configuration or config-property errors propagate instead of
 silently selecting a different cache. An explicit cache permits metadata recovery
 without reading a broken config file.
+
+
+## Legacy helper and signature removals
+
+| Previous import or input | 0.4 replacement |
+| --- | --- |
+| `core.recipe.ClusterConfig` | `core.recipe.LaunchOverrides`. The persisted `cluster_config` field remains supported. |
+| `models.vram._resolve_quant_dtype` | `models.quantization.resolve_quantization(hf_config={"quantization_config": ...})`, then read `weight_dtype` if a result exists. |
+| `core.fingerprint.fingerprint_host` | `core.hardware_probe.probe_host`; it returns accelerator and InfiniBand information together. |
+| `orchestration.networking.distribute_cx7_host_keys` | `distribute_host_keys` in the same module. |
+| `orchestration.docker.parse_teardown_removed` | `orchestration.teardown.parse_teardown_removed`. |
+| Scheduler `run_schedule(progress_ui=...)` | `run_schedule(task_events=...)`; the task-event protocol is unchanged. |
+| `detect_infiniband(..., head_host=...)`, `resolve_nccl_env(..., head_host=...)` | Omit the unused head-host argument; results remain per host. |
+| `validate_ib_connectivity({host: ip})` | Pass `{host: [ip, ...]}`. The return value still maps each reachable host to one verified IP. |
+| `prepare_images(..., overrides, source_image=...)` | Pass the already resolved recipe; source selection belongs to the shared image planner. |
+| `RuntimePlugin.resolve_container(recipe, overrides)` | `resolve_container(recipe, host_hardware=...)`; apply image overrides to the recipe before resolution. Customize defaults with `default_image_for`, not a recipe-selection override. |
+
+Private benchmark shells no longer accept both `fresh` and a resolved mode, or
+unused runtime/config cleanup arguments. Frontends should call the public
+benchmark API with `BenchmarkOptions.resume_mode` and consume its events. CLI
+`--fresh` and `--resume` keep their existing meanings.
+
+### Runtime image policy
+
+`resolve_container()` selects a single host's image: explicit `recipe.container`,
+then `default_image_for(host_hardware)`. The latter is the runtime customization
+hook: a matching platform default takes precedence over `default_image_prefix`.
+Without hardware, only the runtime default is used. No prefix/default yields an
+empty selection, which the image planner rejects unless a per-host image exists.
+
+`core.images.resolve_runtime_image_plan()` applies that policy to selected hosts
+and overlays explicit `containers:` entries. Launch preparation, API
+materialization, Kubernetes launch, tuning, and benchmark image summaries use this shared
+plan. The planner does not rewrite recipe image declarations or workload identity.
+A runtime that requires one build rejects differing per-host defaults; set an
+explicit common image. An image-transforming builder also requires one source
+image. Builder output remains authoritative for the subsequent launch plan.
+
+The SparkRoute plugin now requires the host's 0.4 application APIs directly.
+Workers use `sparkrun.application.initialize(config_path=...)`; child processes
+preserve the selected application/config identity and inherited process settings.
+The canonical plugin checkout owns these changes and the bundled snapshot is
+imported from its committed source.
+
+### CLI and saved-data boundaries
+
+See the [CLI retirement and stored-data migration plan](LEGACY_MIGRATION_PLAN.md)
+for the 0.4.x/0.5.x support windows and required conversion/recovery work. Legacy
+ownership, benchmark results, Arena submission IDs, and recipe parsing remain
+readable until their migration paths are implemented and verified.

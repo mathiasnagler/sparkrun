@@ -81,11 +81,8 @@ verbatim, and `HostHardware.accelerators` is materialized through
 `build_host_hardware`.
 
 `probe_hosts()` parallelizes via `ssh.run_remote_scripts_parallel` — one SSH
-connection per host, all concurrent. Replaces the older two-trip pattern
-(`fingerprint_host` then `detect_ib_for_hosts`).
-
-`fingerprint_host` (`core/fingerprint.py`) is now a thin shim retained for
-callers that only want accelerator data and don't pay for the IB section.
+connection per host, all concurrent. Single-host callers use `probe_host()`;
+both APIs return accelerator and InfiniBand information together.
 
 ### Plugin-owned hardware probes
 
@@ -226,9 +223,10 @@ needed — `runtime.run(..., backends=...)` already consumes
   them and requires an explicit `recipe.layout`.
 - **Across hosts, single vendor**: auto-packing works (e.g. mixed RTX + H200
   cluster as long as both are NVIDIA).
-- **Across hosts, multi-vendor**: `core/placement.py` raises
-  `LayoutRequiredError`. Recipes must declare a `RecipeLayout` mapping ranks
-  to (host, local-GPU) explicitly.
+- **Across selected hosts, multi-vendor**: `schedulers/greedy.py:pack()` raises
+  `core.scheduler.LayoutRequiredError`. Recipes must declare a `RecipeLayout`
+  mapping ranks to (host, local-GPU) explicitly. Unselected hosts do not impose
+  a vendor constraint on the placement.
 
 ## Apple / CPU
 

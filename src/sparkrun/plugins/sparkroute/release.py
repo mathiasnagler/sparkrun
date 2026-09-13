@@ -437,13 +437,12 @@ def resolve_sparkrun_executable() -> str:
             in a source checkout that was never installed; ``uv sync`` (or any
             pip/pipx/uvx install) provides the script.
     """
-    from ._application_profile import host_api
+    from sparkrun.core.application_profile import get_application_profile
     import sys
 
-    api = host_api()
-    profile = api.get_application_profile() if api is not None else None
-    command = profile.command if profile is not None else "sparkrun"
-    if profile is not None and profile.id != "sparkrun":
+    profile = get_application_profile()
+    command = profile.command
+    if profile.id != "sparkrun":
         # A PATH entry can belong to another installation with different plugins.
         windows = sys.platform == "win32"
         candidate = Path(sys.prefix) / ("Scripts" if windows else "bin") / (command + (".exe" if windows else ""))

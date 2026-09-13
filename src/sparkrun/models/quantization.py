@@ -195,8 +195,7 @@ def _algo_to_dtype_bits(algo: str) -> tuple[str, int | None]:
 def _resolve_from_quantization_config(qc: dict[str, Any]) -> QuantizationInfo | None:
     """Resolve quantization from a HuggingFace ``quantization_config`` block.
 
-    Enhanced version of the former ``_resolve_quant_dtype()`` that returns
-    full :class:`QuantizationInfo` instead of just a dtype string.
+    Returns full :class:`QuantizationInfo`, including the weight dtype.
     """
     method = str(qc.get("quant_method", "")).lower().strip()
     if not method:

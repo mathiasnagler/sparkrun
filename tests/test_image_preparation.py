@@ -24,8 +24,8 @@ class _Runtime:
     runtime_name = "stub"
     supports_heterogeneous_images = True
 
-    def resolve_container(self, recipe, overrides):
-        return overrides.get("container", recipe.container)
+    def resolve_container(self, recipe, *, host_hardware=None):
+        return recipe.container
 
 
 def _recipe(**extra):
@@ -55,7 +55,6 @@ def test_prepare_images_runs_builder_and_returns_authoritative_plan(monkeypatch)
         recipe,
         _Runtime(),
         HOSTS,
-        {},
         transfer_mode="delegated",
     )
 
@@ -77,7 +76,6 @@ def test_prepare_images_strategy_override_skips_builder_and_drives_distribution(
         recipe,
         _Runtime(),
         HOSTS,
-        {},
         run_builder=False,
         images_by_node=capsules,
         strategy_name="snapshot",

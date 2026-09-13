@@ -977,11 +977,6 @@ class LaunchOverrides:
         return None if cc.is_empty() else cc
 
 
-# Back-compat alias: this type was previously named ``ClusterConfig``, which
-# collided with the cluster-side config types.  Keep the old name importable.
-ClusterConfig = LaunchOverrides
-
-
 def is_local_model_path(model: str | None) -> bool:
     """True when a recipe's ``model:`` value is an absolute host path.
 

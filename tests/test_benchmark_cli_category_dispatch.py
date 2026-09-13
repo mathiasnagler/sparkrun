@@ -169,7 +169,7 @@ def test_run_subcommand_preserves_legacy_no_category():
 
 
 def test_category_command_accepts_fresh_flag():
-    """`benchmark performance <recipe> --fresh` reaches _run_benchmark with fresh=True."""
+    """`benchmark performance <recipe> --fresh` reaches _run_benchmark with ResumeMode.FRESH."""
     init_sparkrun()
     from sparkrun.cli._benchmark import benchmark as benchmark_group, _register_category_commands
 
@@ -178,7 +178,10 @@ def test_category_command_accepts_fresh_flag():
     runner = CliRunner()
     with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_make_capture_side_effect(captured)):
         runner.invoke(benchmark_group, ["performance", "my-recipe", "--fresh", "--hosts", "h1"], catch_exceptions=False)
-    assert captured.get("fresh") is True
+    from sparkrun.api import ResumeMode
+
+    assert captured["resume_mode"] is ResumeMode.FRESH
+    assert "fresh" not in captured
 
 
 def test_category_command_accepts_resume_flag():
@@ -210,6 +213,7 @@ def test_framework_category_mismatch_raises():
     """
     init_sparkrun()
     from sparkrun.cli._benchmark import _run_benchmark
+    from sparkrun.api import ResumeMode
 
     from sparkrun.application import initialize
 
@@ -245,7 +249,7 @@ def test_framework_category_mismatch_raises():
             dry_run=True,
             executor_args=(),
             extra_args=(),
-            fresh=False,
+            resume_mode=ResumeMode.AUTO,
             scheduler_name=None,
             category="tools",
         )
@@ -273,6 +277,7 @@ def test_framework_category_match_does_not_raise():
     """Pinning framework + category where the framework IS in the category is fine."""
     init_sparkrun()
     from sparkrun.cli._benchmark import _run_benchmark
+    from sparkrun.api import ResumeMode
     from sparkrun.api._errors import FrameworkCategoryMismatch
 
     from sparkrun.application import initialize
@@ -311,7 +316,7 @@ def test_framework_category_match_does_not_raise():
             dry_run=True,
             executor_args=(),
             extra_args=(),
-            fresh=False,
+            resume_mode=ResumeMode.AUTO,
             scheduler_name=None,
             category="performance",
         )

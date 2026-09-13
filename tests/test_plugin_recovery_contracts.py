@@ -8,7 +8,7 @@ from test_external_plugins import clean_sys as clean_sys
 
 
 @pytest.mark.parametrize("source", ["directory", "bundled", "installed"])
-@pytest.mark.parametrize("failure_phase", ["import", "hook"])
+@pytest.mark.parametrize("failure_phase", ["import", "hook", "api"])
 def test_failed_plugin_rolls_back_and_independent_plugin_still_loads(tmp_path, monkeypatch, clean_sys, source, failure_phase):
     import importlib
     from types import SimpleNamespace
@@ -50,6 +50,8 @@ def register(v):
 """
     if failure_phase == "import":
         body += '\ncontribute()\nraise RuntimeError("bad import")\n'
+    if failure_phase == "api":
+        body = body.replace("SPARKRUN_PLUGIN_API_VERSION = 1", "") + "\ncontribute()\n"
     (package / "recovery_bad.py").write_text(body)
     (package / "recovery_good.py").write_text("""
 SPARKRUN_PLUGIN_API_VERSION = 1
@@ -97,7 +99,12 @@ def register(v):
 
     inventory = {row.name: row for row in list_plugins(config, v)}
     bad, good = inventory["recovery_bad"], inventory["recovery_good"]
-    assert not bad.loaded and bad.failure == "RuntimeError: bad " + ("import" if failure_phase == "import" else "registration")
+    assert not bad.loaded
+    if failure_phase == "api":
+        assert "Plugin API None" in bad.failure
+        assert "declare SPARKRUN_PLUGIN_API_VERSION = 1" in bad.failure
+    else:
+        assert bad.failure == "RuntimeError: bad " + ("import" if failure_phase == "import" else "registration")
     assert good.loaded and good.failure is None
     assert bad.to_dict()["failure"] == bad.failure
     assert loaded_plugin_module(prefix + "recovery_bad") is None
@@ -127,6 +134,7 @@ def test_direct_module_registration_restores_state_on_failure(monkeypatch, error
     v = get_variables()
     monkeypatch.setattr("sparkrun.core.run_handlers._RUN_HANDLERS", {})
     module = ModuleType("recovery_direct")
+    module.SPARKRUN_PLUGIN_API_VERSION = 1
 
     def register(v):
         register_run_handler(RunHandler("recovery_direct", lambda *a, **kw: None))
@@ -185,18 +193,19 @@ def test_installed_plugin_api_is_integer_and_independent_of_profile_api(monkeypa
         assert "Plugin API" in row.failure
 
 
-@pytest.mark.parametrize("declared", [False, True])
-def test_legacy_direct_module_may_omit_but_not_misdeclare_api(monkeypatch, declared):
+@pytest.mark.parametrize("declaration", [None, True, 1.0, "1", 0, 1, 2])
+def test_direct_module_requires_compatible_api(declaration):
     from unittest.mock import Mock
     from sparkrun.core.bootstrap import get_variables
     from sparkrun.core.external_plugins import load_plugin_module
 
-    module = ModuleType("legacy_api_declaration")
+    module = ModuleType("module_api_declaration")
     module.register = Mock()
-    if declared:
-        module.SPARKRUN_PLUGIN_API_VERSION = True
-    assert load_plugin_module(module, get_variables()) is (not declared)
-    assert module.register.call_count == int(not declared)
+    if declaration is not None:
+        module.SPARKRUN_PLUGIN_API_VERSION = declaration
+    accepted = type(declaration) is int and declaration == 1
+    assert load_plugin_module(module, get_variables()) is accepted
+    assert module.register.call_count == int(accepted)
 
 
 @pytest.mark.parametrize("source", ["directory", "bundled", "installed"])
@@ -298,7 +307,9 @@ def test_setup_dependencies_allow_same_module_forward_references_and_loaded_prov
 
     v = get_variables()
     provider = ModuleType("graph_provider")
+    provider.SPARKRUN_PLUGIN_API_VERSION = 1
     consumer = ModuleType("graph_consumer")
+    consumer.SPARKRUN_PLUGIN_API_VERSION = 1
 
     def register_provider(v):
         register_feature(FeatureFlag("setup.steps.graph_provider", "provider", default=False))
@@ -333,7 +344,9 @@ def test_directory_inventory_retains_source_failure_and_clears_on_success(tmp_pa
     first.mkdir()
     second.mkdir()
     name = "recovery_source_outcome"
-    (first / (name + ".py")).write_text("def register(v):\n    if not v.get('RECOVERY_RETRY_OK'): raise RuntimeError('retry me')\n")
+    (first / (name + ".py")).write_text(
+        "SPARKRUN_PLUGIN_API_VERSION = 1\ndef register(v):\n    if not v.get('RECOVERY_RETRY_OK'): raise RuntimeError('retry me')\n"
+    )
     (second / (name + ".py")).write_text("raise AssertionError('listing must not import')\n")
     config = SparkrunConfig()
     config._data["plugins"] = {"paths": [str(first), str(second)]}

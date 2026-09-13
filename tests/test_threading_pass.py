@@ -402,7 +402,7 @@ def test_cluster_update_infer_hardware_persists_fingerprints(tmp_path, monkeypat
     mgr = ClusterManager(tmp_path)
     mgr.create("test-cluster", ["host1", "host2"])
 
-    # Mock fingerprint_host to return a known HostHardware
+    # Mock probe_host to return a known HostHardware
     def _fake_fingerprint(host, ssh_kwargs):
         hw = default_dgx_spark_hardware()
         # Replace notes with host name so we can tell each host apart in storage
@@ -413,7 +413,7 @@ def test_cluster_update_infer_hardware_persists_fingerprints(tmp_path, monkeypat
     def _fake_get_mgr(*args, **kwargs):
         return mgr
 
-    monkeypatch.setattr("sparkrun.core.fingerprint.fingerprint_host", _fake_fingerprint)
+    monkeypatch.setattr("sparkrun.core.hardware_probe.probe_host", _fake_fingerprint)
     monkeypatch.setattr("sparkrun.cli._cluster._get_cluster_manager", _fake_get_mgr)
 
     runner = CliRunner()

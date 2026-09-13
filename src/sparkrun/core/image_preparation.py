@@ -16,7 +16,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
-from sparkrun.core.images import ImagePlan, ImagePlanError, derive_container_entries, resolve_image_plan
+from sparkrun.core.images import ImagePlan, ImagePlanError, derive_container_entries, resolve_image_plan, resolve_runtime_image_plan
 
 if TYPE_CHECKING:
     from scitrera_app_framework import Variables
@@ -120,7 +120,6 @@ def prepare_images(
     recipe: Recipe,
     runtime: RuntimePlugin,
     host_list: list[str],
-    overrides: dict[str, Any],
     *,
     config: SparkrunConfig | None = None,
     v: Variables | None = None,
@@ -131,7 +130,6 @@ def prepare_images(
     run_builder: bool = True,
     images_by_node: Sequence[str] | None = None,
     strategy_name: str = "",
-    source_image: str | None = None,
     validate: bool = True,
     transform_check: Callable[[Recipe, Variables | None], bool] = builder_transforms_image,
     builder_context: Mapping[str, Any] | None = None,
@@ -148,7 +146,13 @@ def prepare_images(
             transform_check=transform_check,
         )
 
-    source = source_image if source_image is not None else runtime.resolve_container(recipe, overrides)
+    from sparkrun.core.recipe import RecipeError
+
+    try:
+        image_plan = resolve_runtime_image_plan(recipe, runtime, host_list, cluster=cluster)
+    except ImagePlanError as error:
+        raise RecipeError(str(error)) from error
+    source = image_plan.head_image()
     default_image = source
     builder: BuilderPlugin | None = None
     if getattr(recipe, "builder", "") and run_builder:
@@ -159,6 +163,8 @@ def prepare_images(
         # an image/environment the recipe did not describe.
         builder = get_builder(recipe.builder, v)
         if builder is not None:
+            if image_plan.heterogeneous and builder.transforms_image:
+                raise RecipeError("A builder requires one source image; set `container:` or build per-host images separately")
             default_image = builder.prepare(
                 default_image,
                 recipe,
@@ -170,17 +176,13 @@ def prepare_images(
                 builder_context=builder_context,
             )
 
-    from sparkrun.core.recipe import RecipeError
-
-    try:
-        image_plan = resolve_image_plan(
-            recipe,
-            default_image,
-            host_list,
-            cluster_hosts=list(cluster.hosts) if cluster is not None else None,
-        )
-    except ImagePlanError as error:
-        raise RecipeError(str(error)) from error
+    if default_image != source:
+        try:
+            image_plan = resolve_image_plan(
+                recipe, default_image, host_list, cluster_hosts=list(cluster.hosts) if cluster is not None else None
+            )
+        except ImagePlanError as error:
+            raise RecipeError(str(error)) from error
 
     if images_by_node is not None:
         resolved = tuple(str(image).strip() for image in images_by_node)

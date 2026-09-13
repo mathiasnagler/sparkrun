@@ -28,7 +28,10 @@ def _sources(tmp_path, *, package=False):
     for version, path in enumerate(paths, 1):
         target = path / name / "__init__.py" if package else path / (name + ".py")
         target.parent.mkdir(parents=True)
-        target.write_text('__version__ = %r\ndef register(v):\n    v.set("ORIGIN_EXECUTED", %r)\n' % (str(version), str(path)))
+        target.write_text(
+            'SPARKRUN_PLUGIN_API_VERSION = 1\n__version__ = %r\ndef register(v):\n    v.set("ORIGIN_EXECUTED", %r)\n'
+            % (str(version), str(path))
+        )
     config = SparkrunConfig()
     config._data["plugins"] = {"paths": [str(p) for p in paths]}
     return name, paths, config
@@ -38,7 +41,7 @@ def _sources(tmp_path, *, package=False):
 def test_duplicate_directory_names_rejected_before_import(tmp_path, clean_sys, package):
     name, paths, config = _sources(tmp_path, package=package)
     v = get_variables()
-    (paths[0] / "origin_independent.py").write_text("def register(v): v.set('ORIGIN_INDEPENDENT', True)\n")
+    (paths[0] / "origin_independent.py").write_text("SPARKRUN_PLUGIN_API_VERSION = 1\ndef register(v): v.set('ORIGIN_INDEPENDENT', True)\n")
     assert load_external_plugins(v, paths=paths) == ["origin_independent"]
     assert name not in sys.modules and v.get("ORIGIN_EXECUTED") is None
     assert v.get("ORIGIN_INDEPENDENT") is True

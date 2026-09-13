@@ -288,7 +288,6 @@ def sync_resource_to_hosts(
 
 def detect_infiniband(
     hosts: list[str],
-    head_host: str | None = None,
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
     topology: str | None = None,
@@ -316,10 +315,6 @@ def detect_infiniband(
         topology=topology,
         mgmt_interface=mgmt_interface,
     )
-    # ``head_host`` is accepted for backward-compat with older callers
-    # but the per-host map is now the source of truth — logging is
-    # handled inside ``detect_ib_for_hosts``.
-    _ = head_host
     return ib_result.comm_env
 
 
@@ -348,7 +343,6 @@ def detect_infiniband_local(
 def resolve_nccl_env(
     comm_env: ClusterCommEnv | None,
     hosts: list[str],
-    head_host: str | None = None,
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
     topology: str | None = None,
@@ -359,9 +353,6 @@ def resolve_nccl_env(
         comm_env: Pre-detected :class:`ClusterCommEnv`, or ``None`` to
             trigger detection.
         hosts: Hosts to probe for InfiniBand.
-        head_host: Which host's IB config to log about (defaults to
-            ``hosts[0]``).  Informational only — the per-host map
-            captures the full picture.
         ssh_kwargs: SSH connection parameters.
         dry_run: Log without executing.
     """
@@ -371,7 +362,6 @@ def resolve_nccl_env(
     logger.info("Detecting InfiniBand on %d host(s)...", len(hosts))
     return detect_infiniband(
         hosts,
-        head_host=head_host,
         ssh_kwargs=ssh_kwargs,
         dry_run=dry_run,
         topology=topology,

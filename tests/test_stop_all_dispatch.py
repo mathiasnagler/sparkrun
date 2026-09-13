@@ -359,7 +359,8 @@ def test_teardown_script_fails_when_docker_is_unusable():
 
 def test_teardown_script_reports_removed_count():
     """The removed count comes from the teardown, not from len(hosts)."""
-    from sparkrun.orchestration.docker import docker_teardown_script, parse_teardown_removed
+    from sparkrun.orchestration.docker import docker_teardown_script
+    from sparkrun.orchestration.teardown import parse_teardown_removed
 
     # Real docker semantics: only 'a' exists, and ``rm -f`` exits 0 for both
     # (see test_teardown_script_does_not_count_containers_that_never_existed).
@@ -389,7 +390,8 @@ def test_teardown_script_does_not_count_containers_that_never_existed():
     single-container job reported four containers removed — and a host holding
     nothing at all reported removals.
     """
-    from sparkrun.orchestration.docker import docker_teardown_script, parse_teardown_removed
+    from sparkrun.orchestration.docker import docker_teardown_script
+    from sparkrun.orchestration.teardown import parse_teardown_removed
 
     # An empty but perfectly healthy docker: ps succeeds listing nothing, and
     # rm -f exits 0 for names that do not exist (verified against Docker 28).
@@ -402,7 +404,8 @@ def test_teardown_script_does_not_count_containers_that_never_existed():
 
 def test_teardown_script_tolerates_containers_that_are_already_gone():
     """Teardown is idempotent: nothing to remove is success, not failure."""
-    from sparkrun.orchestration.docker import docker_teardown_script, parse_teardown_removed
+    from sparkrun.orchestration.docker import docker_teardown_script
+    from sparkrun.orchestration.teardown import parse_teardown_removed
 
     stub = "docker() { if [ \"$1\" = 'ps' ]; then return 0; else return 1; fi; }\n"
     rc, out, _err = _run_script(docker_teardown_script(["gone"]), stub)
@@ -413,7 +416,7 @@ def test_teardown_script_tolerates_containers_that_are_already_gone():
 
 def test_parse_teardown_removed_defaults_to_zero():
     """An absent/garbled marker reports nothing removed, never a guess."""
-    from sparkrun.orchestration.docker import parse_teardown_removed
+    from sparkrun.orchestration.teardown import parse_teardown_removed
 
     assert parse_teardown_removed("") == 0
     assert parse_teardown_removed("unrelated output\n") == 0

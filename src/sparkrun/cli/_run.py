@@ -676,7 +676,7 @@ def run(
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.version import display_version
 
-    container_image = runtime.resolve_container(recipe, overrides)
+    container_image = recipe.container or "selected per host during image preparation"
     click.echo(render_identity_text("{app_command} v%s" % display_version(SparkrunConfig())))
     click.echo()
     click.echo("Runtime:   %s" % runtime.runtime_name)

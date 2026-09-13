@@ -684,7 +684,7 @@ class _StubRuntime:
     def is_delegating_runtime(self):
         return False
 
-    def resolve_container(self, recipe, overrides=None):
+    def resolve_container(self, recipe, *, host_hardware=None):
         return "stub:latest"
 
     def prepare(self, *args, **kwargs):
@@ -796,8 +796,9 @@ def test_image_identity_is_probed_only_when_image_keying_is_on(monkeypatch, tmp_
     _launch(monkeypatch, tmp_path)
     assert probes == []
 
-    _launch(monkeypatch, tmp_path, recipe=_recipe(runtime_cache={"key_by_image": True}))
-    assert probes == ["stub:latest"]
+    recipe = _recipe(runtime_cache={"key_by_image": True})
+    _launch(monkeypatch, tmp_path, recipe=recipe)
+    assert probes == [recipe.container]
 
 
 def test_image_identity_separates_a_repulled_mutable_tag(monkeypatch, tmp_path):
@@ -816,8 +817,9 @@ def test_image_identity_separates_a_repulled_mutable_tag(monkeypatch, tmp_path):
 
 def test_unresolvable_image_identity_falls_back_to_the_ref(monkeypatch, tmp_path):
     monkeypatch.setattr("sparkrun.core.runtime_cache.probe_image_identity", lambda *a, **kw: None)
-    m = _launch(monkeypatch, tmp_path, recipe=_recipe(runtime_cache={"key_by_image": True}))["runtime_cache"]
-    assert m is not None and image_key("stub:latest") in m.leaf
+    recipe = _recipe(runtime_cache={"key_by_image": True})
+    m = _launch(monkeypatch, tmp_path, recipe=recipe)["runtime_cache"]
+    assert m is not None and image_key(recipe.container) in m.leaf
 
 
 def test_image_identity_probe_is_skipped_on_dry_run_and_never_raises(monkeypatch):

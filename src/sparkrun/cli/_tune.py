@@ -114,9 +114,6 @@ def tune_sglang(
 
     runtime = _require_runtime_family(recipe, v, "sglang", "tune sglang requires an SGLang recipe")
 
-    # Resolve container image
-    container_image = image or runtime.resolve_container(recipe)
-
     # host_list injected by @with_host_context; only use the first host
     target_host = host_list[0]
     if len(host_list) > 1:
@@ -129,6 +126,13 @@ def tune_sglang(
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
+    from sparkrun.core.images import ImagePlanError, resolve_runtime_image_plan
+
+    image_cluster = cluster_mgr.get(cluster_cfg.name) if cluster_cfg.name and cluster_mgr else None
+    try:
+        container_image = image or resolve_runtime_image_plan(recipe, runtime, [target_host], cluster=image_cluster).head_image()
+    except ImagePlanError as error:
+        raise click.ClickException(str(error)) from error
     remote_cache_dir = resolve_effective_cache_dir(
         cluster_cfg.cache_dir,
         host_list,
@@ -234,9 +238,6 @@ def tune_vllm(
 
     runtime = _require_runtime_family(recipe, v, "vllm", "tune vllm requires a vLLM recipe")
 
-    # Resolve container image
-    container_image = image or runtime.resolve_container(recipe)
-
     # host_list injected by @with_host_context; only use the first host
     target_host = host_list[0]
     if len(host_list) > 1:
@@ -249,6 +250,13 @@ def tune_vllm(
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
+    from sparkrun.core.images import ImagePlanError, resolve_runtime_image_plan
+
+    image_cluster = cluster_mgr.get(cluster_cfg.name) if cluster_cfg.name and cluster_mgr else None
+    try:
+        container_image = image or resolve_runtime_image_plan(recipe, runtime, [target_host], cluster=image_cluster).head_image()
+    except ImagePlanError as error:
+        raise click.ClickException(str(error)) from error
     remote_cache_dir = resolve_effective_cache_dir(
         cluster_cfg.cache_dir,
         host_list,

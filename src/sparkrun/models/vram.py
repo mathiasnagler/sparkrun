@@ -496,26 +496,6 @@ def _fetch_safetensors_params(model_id: str, revision: str | None) -> int | None
     return None
 
 
-def _resolve_quant_dtype(quantization_config: dict[str, Any]) -> str | None:
-    """Derive a model weight dtype from a HuggingFace quantization_config block.
-
-    Handles common quant methods: fp8, awq, gptq, marlin, bitsandbytes,
-    mxfp4, nvfp4, compressed-tensors.
-    Returns a dtype string recognized by :func:`bytes_per_element`, or ``None``
-    if the method is unrecognized.
-
-    .. note::
-       This is a thin wrapper around
-       :func:`sparkrun.models.quantization._resolve_from_quantization_config`
-       kept for backward compatibility.  New code should use
-       :func:`~sparkrun.models.quantization.resolve_quantization` instead.
-    """
-    from sparkrun.models.quantization import _resolve_from_quantization_config
-
-    info = _resolve_from_quantization_config(quantization_config)
-    return info.weight_dtype if info else None
-
-
 def _extract_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
     """Extract architecture info from a single config dict (top-level or nested)."""
     info: dict[str, Any] = {}

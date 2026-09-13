@@ -124,7 +124,7 @@ def test_saved_success_without_usable_artifact_is_retried(tmp_path, damaged):
     process = Mock(side_effect=_make_process_runner([0]))
     with patch("sparkrun.benchmarking.scheduler.run_benchmark_process", process):
         result = run_schedule(
-            _FakeFW(), _make_tasks(2), state, target_url="http://local", model="m", timeout=1, progress_ui=Mock(), cache_dir=str(tmp_path)
+            _FakeFW(), _make_tasks(2), state, target_url="http://local", model="m", timeout=1, task_events=Mock(), cache_dir=str(tmp_path)
         )
     process.assert_called_once()
     assert process.call_args.args[0][-1] == str(runs / "001.json")

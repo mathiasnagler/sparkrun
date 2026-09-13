@@ -61,7 +61,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         select_subnets,
         select_subnets_for_topology,
         apply_cx7_plan,
-        distribute_cx7_host_keys,
+        distribute_host_keys,
     )
     from sparkrun.orchestration.primitives import build_ssh_kwargs
     from sparkrun.orchestration.sudo import dispatch_sudo_script, run_sudo_script_on_host
@@ -810,7 +810,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             # Distribute host keys for CX7 IPs
                             all_cx7_ips = [a.ip for hp in plan.host_plans for a in hp.assignments if a.ip]
                             if all_cx7_ips:
-                                distribute_cx7_host_keys(
+                                distribute_host_keys(
                                     all_cx7_ips,
                                     host_list,
                                     ssh_kwargs=ssh_kwargs,

@@ -62,9 +62,9 @@ class EugrVllmRayRuntime(VllmRayRuntime):
         """
         return None
 
-    def resolve_container(self, recipe: Recipe, overrides: dict[str, Any] | None = None) -> str:
-        """Resolve container -- eugr images use plain names, not prefix:tag."""
-        return recipe.container or "vllm-node"
+    def default_image_for(self, host_hardware=None) -> str:
+        """Eugr local builds use an untagged image name."""
+        return "vllm-node"
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Validate eugr-vllm-specific recipe fields."""

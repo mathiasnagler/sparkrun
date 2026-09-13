@@ -11,68 +11,68 @@ from sparkrun.models.quantization import (
 )
 
 
-class TestResolveFromQuantizationConfig:
-    """Test _resolve_from_quantization_config for all known quant methods."""
+class TestResolveQuantizationConfig:
+    """Resolve standard HuggingFace quantization through the public API."""
 
     def test_fp8(self):
-        info = _resolve_from_quantization_config({"quant_method": "fp8"})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "fp8"}})
         assert info is not None
         assert info.method == "fp8"
         assert info.bits == 8
         assert info.weight_dtype == "fp8"
 
     def test_awq_default_4bit(self):
-        info = _resolve_from_quantization_config({"quant_method": "awq"})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "awq"}})
         assert info is not None
         assert info.method == "awq"
         assert info.bits == 4
         assert info.weight_dtype == "awq4"
 
     def test_awq_explicit_4bit(self):
-        info = _resolve_from_quantization_config({"quant_method": "awq", "bits": 4})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "awq", "bits": 4}})
         assert info.weight_dtype == "awq4"
 
     def test_awq_8bit(self):
-        info = _resolve_from_quantization_config({"quant_method": "awq", "bits": 8})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "awq", "bits": 8}})
         assert info.weight_dtype == "awq8"
         assert info.bits == 8
 
     def test_gptq_default_4bit(self):
-        info = _resolve_from_quantization_config({"quant_method": "gptq"})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "gptq"}})
         assert info.weight_dtype == "gptq"
         assert info.bits == 4
 
     def test_gptq_8bit(self):
-        info = _resolve_from_quantization_config({"quant_method": "gptq", "bits": 8})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "gptq", "bits": 8}})
         assert info.weight_dtype == "int8"
         assert info.bits == 8
 
     def test_marlin(self):
-        info = _resolve_from_quantization_config({"quant_method": "marlin", "bits": 4})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "marlin", "bits": 4}})
         assert info.method == "marlin"
         assert info.weight_dtype == "gptq"
 
     def test_bitsandbytes_4bit(self):
-        info = _resolve_from_quantization_config({"quant_method": "bitsandbytes", "load_in_4bit": True})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "bitsandbytes", "load_in_4bit": True}})
         assert info.method == "bitsandbytes"
         assert info.bits == 4
         assert info.weight_dtype == "int4"
 
     def test_bitsandbytes_nf4(self):
-        info = _resolve_from_quantization_config({"quant_method": "bitsandbytes", "quant_type": "nf4"})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "bitsandbytes", "quant_type": "nf4"}})
         assert info.weight_dtype == "int4"
 
     def test_bitsandbytes_8bit(self):
-        info = _resolve_from_quantization_config({"quant_method": "bitsandbytes", "load_in_8bit": True})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "bitsandbytes", "load_in_8bit": True}})
         assert info.weight_dtype == "int8"
         assert info.bits == 8
 
     def test_bitsandbytes_no_bits_returns_none(self):
-        info = _resolve_from_quantization_config({"quant_method": "bitsandbytes"})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "bitsandbytes"}})
         assert info is None
 
     def test_mxfp4(self):
-        info = _resolve_from_quantization_config({"quant_method": "mxfp4"})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "mxfp4"}})
         assert info is not None
         assert info.method == "mxfp4"
         assert info.bits == 4
@@ -84,7 +84,7 @@ class TestResolveFromQuantizationConfig:
         Detecting it here is what lets a recipe omit metadata.model_dtype."""
         from sparkrun.models.dtypes import bytes_per_element
 
-        info = _resolve_from_quantization_config({"quant_method": "exl3", "bits": 2.05, "head_bits": 5})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "exl3", "bits": 2.05, "head_bits": 5}})
         assert info is not None
         assert info.method == "exl3"
         assert info.bits == 2.05
@@ -92,7 +92,7 @@ class TestResolveFromQuantizationConfig:
         assert bytes_per_element(info.weight_dtype) == 2.05 / 8
 
     def test_exl2_uses_the_same_shape(self):
-        info = _resolve_from_quantization_config({"quant_method": "exl2", "bits": 4.25})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "exl2", "bits": 4.25}})
         assert info is not None
         assert info.weight_dtype == "exl2:4.25"
 
@@ -100,10 +100,10 @@ class TestResolveFromQuantizationConfig:
         """No nominal default: any guess would be wrong for two of the three
         published builds, and an unknown dtype degrades to 'no weight estimate'
         rather than to a confidently wrong one."""
-        assert _resolve_from_quantization_config({"quant_method": "exl3"}) is None
+        assert resolve_quantization(hf_config={"quantization_config": {"quant_method": "exl3"}}) is None
 
     def test_nvfp4(self):
-        info = _resolve_from_quantization_config({"quant_method": "nvfp4"})
+        info = resolve_quantization(hf_config={"quantization_config": {"quant_method": "nvfp4"}})
         assert info is not None
         assert info.method == "nvfp4"
         assert info.bits == 4
@@ -300,13 +300,13 @@ class TestResolveFromQuantizationConfig:
         assert info.weight_dtype == "int4"
 
     def test_unknown_method(self):
-        assert _resolve_from_quantization_config({"quant_method": "unknown_method"}) is None
+        assert resolve_quantization(hf_config={"quantization_config": {"quant_method": "unknown_method"}}) is None
 
     def test_empty_method(self):
-        assert _resolve_from_quantization_config({"quant_method": ""}) is None
+        assert resolve_quantization(hf_config={"quantization_config": {"quant_method": ""}}) is None
 
     def test_no_method(self):
-        assert _resolve_from_quantization_config({}) is None
+        assert resolve_quantization(hf_config={"quantization_config": {}}) is None
 
 
 class TestResolveFromHfQuantConfig:

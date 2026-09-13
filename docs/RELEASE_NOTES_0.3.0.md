@@ -65,8 +65,9 @@ Repository: <https://github.com/spark-arena/sparkrun>
   accelerator fingerprint and InfiniBand detection into a single SSH
   round-trip. Output is split by sentinel markers and routed to existing
   parsers.
-- `core/fingerprint.py:fingerprint_host` is now a thin shim retained for
-  callers that don't pay for the IB section.
+- `core/fingerprint.py:fingerprint_host()` remains a deprecated wrapper in
+  0.3.0, delegating to the combined `probe_host()` implementation. See the
+  [0.4.0 migration guide](DISTRIBUTION_API_MIGRATION.md) for its later removal.
 - `core/backend_select.py:select_backends(host_hardware)` returns a
   `BackendBundle(accelerator_vendor, collective)`. `launcher.py` calls this
   per host and threads the result through `runtime.run(..., backends=...)`.

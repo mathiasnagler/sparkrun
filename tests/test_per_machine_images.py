@@ -241,7 +241,7 @@ def _launch_harness(monkeypatch, tmp_path, runtime_supports, builder="", builder
         runtime_name = "stub"
         supports_heterogeneous_images = runtime_supports
 
-        def resolve_container(self, recipe, overrides):
+        def resolve_container(self, recipe, *, host_hardware=None):
             return "stub:latest"
 
         def get_family(self):

@@ -10,7 +10,7 @@ from __future__ import annotations
 from sparkrun.orchestration.executors._base import ExecutorTarget
 
 from sparkrun.core.cluster_manager import ClusterDefinition
-from sparkrun.core.recipe import ClusterConfig, Recipe
+from sparkrun.core.recipe import LaunchOverrides, Recipe
 from sparkrun.orchestration.primitives import resolved_model_volume
 
 
@@ -34,7 +34,9 @@ def _recipe_dict(**cluster_config):
 
 def test_cluster_config_parsed_into_recipe():
     r = Recipe.from_dict(_recipe_dict(remote_cache_dir="/nfs/hf", local_cache_dir="/tmp/hf", resolved_model_path="/nfs/models/qwen3"))
-    assert r.cluster_config == ClusterConfig(remote_cache_dir="/nfs/hf", local_cache_dir="/tmp/hf", resolved_model_path="/nfs/models/qwen3")
+    assert r.cluster_config == LaunchOverrides(
+        remote_cache_dir="/nfs/hf", local_cache_dir="/tmp/hf", resolved_model_path="/nfs/models/qwen3"
+    )
 
 
 def test_cluster_config_absent_is_none_and_not_swept():
@@ -54,7 +56,7 @@ def test_cluster_config_empty_block_is_none():
 
 def test_cluster_config_partial_block():
     r = Recipe.from_dict(_recipe_dict(resolved_model_path="/nfs/m"))
-    assert r.cluster_config == ClusterConfig(resolved_model_path="/nfs/m")
+    assert r.cluster_config == LaunchOverrides(resolved_model_path="/nfs/m")
     assert r.cluster_config.remote_cache_dir is None
 
 
@@ -237,7 +239,7 @@ class _StubRuntime:
     def is_delegating_runtime(self):
         return False
 
-    def resolve_container(self, recipe, overrides=None):
+    def resolve_container(self, recipe, *, host_hardware=None):
         return "stub:latest"
 
     def prepare(self, *a, **k):
@@ -344,7 +346,7 @@ def test_launch_inference_applies_cluster_config_overrides(monkeypatch, tmp_path
             return None
 
     recipe = _Recipe(
-        cluster_config=ClusterConfig(
+        cluster_config=LaunchOverrides(
             remote_cache_dir="/nfs/remote",
             local_cache_dir="/nfs/local",
             resolved_model_path="/nfs/models/qwen3",

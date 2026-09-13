@@ -86,15 +86,9 @@ def materialize(
     if world_size <= 0:
         raise ValueError("native materialization requires at least one worker")
 
-    from sparkrun.core.images import ImagePlan, resolve_image_plan
+    from sparkrun.core.images import ImagePlan, resolve_runtime_image_plan
 
-    default_image = runtime.resolve_container(recipe, overrides)
-    image_plan = resolve_image_plan(
-        recipe,
-        default_image,
-        hosts,
-        cluster_hosts=list(plan.cluster.hosts),
-    )
+    image_plan = resolve_runtime_image_plan(recipe, runtime, hosts, cluster=plan.cluster)
     if images_by_node is not None:
         prepared = tuple(str(image).strip() for image in images_by_node)
         if len(prepared) != len(hosts):

@@ -216,13 +216,13 @@ def test_compute_fingerprint_hash_empty_is_stable():
 
 
 # --------------------------------------------------------------------------
-# fingerprint_host SSH wrapper (mocked)
+# probe_host SSH wrapper (mocked)
 # --------------------------------------------------------------------------
 
 
-def test_fingerprint_host_success(monkeypatch):
-    """fingerprint_host delegates to probe_host and parses combined output."""
-    from sparkrun.core import fingerprint as fp_mod
+def test_probe_host_success(monkeypatch):
+    """Combined probe preserves accelerator parsing."""
+    from sparkrun.core.hardware_probe import probe_host
     from sparkrun.core.hardware_probe import _ACCEL_END, _ACCEL_START, _IB_END, _IB_START
 
     # Wrap the legacy stub output in combined-probe sentinels so the
@@ -245,14 +245,14 @@ def test_fingerprint_host_success(monkeypatch):
         return _Result()
 
     monkeypatch.setattr("sparkrun.orchestration.ssh.run_remote_script", _fake_run)
-    hw = fp_mod.fingerprint_host("test-host")
+    hw = probe_host("test-host")
     assert hw.accelerators[0].model == "gb10"
     assert hw.fingerprint
 
 
-def test_fingerprint_host_failure_returns_empty_with_note(monkeypatch):
+def test_probe_host_failure_returns_empty_with_note(monkeypatch):
     """A failed probe surfaces a clear note rather than raising."""
-    from sparkrun.core import fingerprint as fp_mod
+    from sparkrun.core.hardware_probe import probe_host
 
     class _Result:
         success = False
@@ -263,7 +263,6 @@ def test_fingerprint_host_failure_returns_empty_with_note(monkeypatch):
         return _Result()
 
     monkeypatch.setattr("sparkrun.orchestration.ssh.run_remote_script", _fake_run)
-    hw = fp_mod.fingerprint_host("dead-host")
+    hw = probe_host("dead-host")
     assert hw.accelerators == []
-    # fingerprint_host now delegates to probe_host — note text reflects that
     assert "probe failed" in hw.notes

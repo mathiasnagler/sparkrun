@@ -93,6 +93,10 @@ when the plugin is unavailable.
 
 ## Application profile API compatibility
 
+The plugin requires Sparkrun `>=0.4,<0.5` and declares module contract
+`SPARKRUN_PLUGIN_API_VERSION = 1`. Workers initialize through the host application
+API directly; hosts without that API are unsupported.
+
 The source manifest declares `application_profile_api = 1`. A compatible host records
 that declaration in verified vendor metadata before enabling the integration for
 an alternate application profile. Cache roots follow the active profile;

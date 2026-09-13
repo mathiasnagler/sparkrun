@@ -331,9 +331,7 @@ def probe_host(
     stdout populates both :attr:`HostHardware.accelerators` (with
     fingerprint hash) and :attr:`HostHardware.ib_info`.
 
-    This replaces calling :func:`~sparkrun.core.fingerprint.fingerprint_host`
-    and :func:`~sparkrun.orchestration.infiniband.detect_ib_for_hosts`
-    separately — one SSH round-trip instead of two.
+    Accelerator and InfiniBand detection share one SSH round-trip.
 
     Args:
         host: Hostname or IP.

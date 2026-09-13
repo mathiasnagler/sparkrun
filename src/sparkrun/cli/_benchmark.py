@@ -247,7 +247,7 @@ def _invoke_benchmark(ctx, *, category, **kwargs):
     from sparkrun.api._benchmark_models import ResumeMode
 
     resume_flag = kwargs.pop("resume_flag", False)
-    fresh = kwargs.get("fresh", False)
+    fresh = kwargs.pop("fresh", False)
     integrations = ctx.command.pop_extension_values(ctx, kwargs)
 
     if resume_flag and fresh:
@@ -289,7 +289,6 @@ def _invoke_benchmark(ctx, *, category, **kwargs):
         dry_run=kwargs.pop("dry_run"),
         executor_args=kwargs.pop("executor_args"),
         extra_args=kwargs.pop("extra_args"),
-        fresh=fresh,
         resume_mode=_resume_mode,
         scheduler_name=kwargs.pop("scheduler_name"),
         host_list=kwargs.pop("host_list", None),
@@ -446,8 +445,8 @@ def _run_benchmark(
     extra_args,
     trust: bool = False,
     export_results_files=True,
-    fresh: bool = False,
-    resume_mode: "ResumeMode | None" = None,
+    *,
+    resume_mode: "ResumeMode",
     decision_callback: "Callable[[BenchmarkDecision], bool] | None" = None,
     integrations: dict[str, dict] | None = None,
     scheduler_name: str | None = None,
@@ -464,7 +463,7 @@ def _run_benchmark(
     Returns the internal ``sparkrun.benchmarking.base.BenchmarkResult`` so
     CLI callers can inspect the execution outcome.
     """
-    from sparkrun.api._benchmark_models import ResumeMode as _ResumeMode, BenchmarkOptions
+    from sparkrun.api._benchmark_models import BenchmarkOptions
     from sparkrun.api._benchmark import _execute_benchmark
     from sparkrun.api._errors import (
         BenchmarkFailed,
@@ -474,11 +473,6 @@ def _run_benchmark(
     from sparkrun.core.hosts import parse_host_list
 
     sctx = _get_context(ctx)
-
-    # Translate legacy ``fresh`` bool to the new ResumeMode axis when caller
-    # didn't provide one.
-    if resume_mode is None:
-        resume_mode = _ResumeMode.FRESH if fresh else _ResumeMode.AUTO
 
     decision_callback = decision_callback or _cli_decision
 
@@ -597,17 +591,3 @@ def _run_benchmark(
         sys.exit(1)
 
     return bench_result
-
-
-def _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=None):
-    """Thin CLI shell over ``sparkrun.api._benchmark._stop_inference``.
-
-    ``runtime`` is retained in the signature for backward compatibility with
-    existing callers; the actual stop is dispatched through ``api.stop`` (via
-    the canonical API helper) so executor / collective-backend lookup mirrors
-    the launch path.  A click-backed emitter surfaces the dry-run notice and
-    any warning to the console.
-    """
-    from sparkrun.api._benchmark import _stop_inference as _api_stop_inference
-
-    _api_stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=_CliEmitter())

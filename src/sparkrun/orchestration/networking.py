@@ -1962,10 +1962,6 @@ def distribute_host_keys(
     return results
 
 
-# Backward-compatible alias (used by setup_cx7 command)
-distribute_cx7_host_keys = distribute_host_keys
-
-
 # ---------------------------------------------------------------------------
 # CX7 peer discovery
 # ---------------------------------------------------------------------------

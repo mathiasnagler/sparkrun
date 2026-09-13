@@ -566,7 +566,7 @@ def cluster_update(
         update_kwargs["max_gpu_memory_utilization"] = max_gpu_mem_util if max_gpu_mem_util else None
 
     if infer_hardware:
-        from sparkrun.core.fingerprint import fingerprint_host
+        from sparkrun.core.hardware_probe import probe_host
         from sparkrun.orchestration.primitives import build_ssh_kwargs
 
         # Resolve hosts list to probe: prefer the (possibly updated) host_list
@@ -587,7 +587,7 @@ def cluster_update(
         for host in probe_hosts:
             click.echo("  %s ..." % host, nl=False)
             try:
-                hw = fingerprint_host(host, ssh_kwargs)
+                hw = probe_host(host, ssh_kwargs=ssh_kwargs)
             except Exception as e:
                 click.echo(" FAILED (%s)" % e)
                 continue

@@ -5,8 +5,8 @@ resolved executor is ``k8s`` *and* the flag is on, :func:`sparkrun.api.run`
 delegates here instead of the SSH-oriented ``launch_inference`` path.
 
 This first integration is intentionally narrow: **solo (single-pod)**
-launches on a **homogeneous** cluster.  It reuses the runtime's own
-``resolve_container`` / ``generate_command`` to produce the image + serve
+launches on a **homogeneous** cluster. It uses the shared image planner and
+the runtime's ``generate_command`` to produce the image + serve
 command, resolves the single GPU class from the node inventory, and submits
 a Kueue-admitted JobSet via :func:`sparkrun.plugins.k8s.api.launch_jobset`.
 
@@ -68,7 +68,9 @@ def run_k8s(
     except ValueError as exc:
         raise SparkrunError("Inference port must be an integer between 1 and 65535") from exc
     overrides["port"] = serve_port
-    image = runtime.resolve_container(recipe, overrides)
+    from sparkrun.core.images import resolve_runtime_image_plan
+
+    image = resolve_runtime_image_plan(recipe, runtime, host_list, cluster=plan.cluster).head_image()
     serve_command = runtime.generate_command(recipe, overrides, is_cluster=False, num_nodes=1)
 
     # Use the same caller/recipe/cluster/default chain as other executor paths.

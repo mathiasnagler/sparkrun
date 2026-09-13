@@ -179,7 +179,7 @@ def test_native_benchmark_cleanup_and_lost_metadata_recovery(lifecycle_env):
 
     env = lifecycle_env
     result = run(env.options, sctx=env.sctx)
-    _stop_inference(env.launch.runtime, list(result.host_list), result.cluster_id, env.sctx.config, False, sctx=env.sctx, strict=True)
+    _stop_inference(list(result.host_list), result.cluster_id, False, sctx=env.sctx, strict=True)
     assert not env.objects[env.target] and _record(env, result) is None
     result = run(env.options, sctx=env.sctx)
     remove_job_metadata(result.cluster_id, cache_dir=str(env.sctx.config.cache_dir))

@@ -39,7 +39,7 @@ with `MULTIPLATFORM.md`, `EXECUTORS.md`, and `SECURITY.md` for the deeper dives.
                v                     +---------------------------------+
    +-----------------------+
    | core/fingerprint.py   |         +---------------------------------+
-   | core/placement.py     |         | orchestration/executors/        |
+   | core/scheduler.py     |         | orchestration/executors/        |
    | core/layout.py        |         |  _base.py (Executor ABC)        |
    +-----------------------+         |  docker.py (default)            |
                                      |  local.py  (experimental)       |
@@ -62,10 +62,10 @@ with `MULTIPLATFORM.md`, `EXECUTORS.md`, and `SECURITY.md` for the deeper dives.
 | Module               | Purpose                                                                                                                                      |
 |----------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
 | `hardware.py`        | `AcceleratorSpec`, `HostHardware`, `default_dgx_spark_hardware()`. Vendor/model/capability records consumed by every multiplatform path.     |
-| `fingerprint.py`     | Thin shim around the combined probe. Parses accelerator KV output into a `HostHardware`. Standalone fingerprint script kept for legacy use.  |
+| `fingerprint.py`     | Generates accelerator probes, parses their KV output into `HostHardware`, and computes stable hardware fingerprints.  |
 | `hardware_probe.py`  | `probe_host()` / `probe_hosts()` — single SSH script that emits both the fingerprint section and the IB section, split by sentinel markers.  |
 | `backend_select.py`  | `select_backends(host_hardware) -> BackendBundle`. Raises `NoMatchingBackendError` when no collective matches.                               |
-| `placement.py`       | `compute_placement()` — maps a `ParallelismConfig` onto hosts, honoring explicit `RecipeLayout` or auto-packing single-vendor clusters.      |
+| `scheduler.py`       | Placement records and scheduler contracts; `schedulers/greedy.py:pack()` implements capacity packing and explicit layouts.      |
 | `layout.py`          | `RecipeLayout` / `Placement` dataclasses (per-rank `(host, local_gpu)`). Parsed from recipe `layout:` block.                                 |
 | `image_preparation.py` | Shared builder, per-node image-plan, distribution-entry, image-only staging, and immutable identity receipts used by launch and integrations. |
 | `launcher.py`        | `launch_inference()`. Resolves trust, per-host backends, runs the central compatibility check, threads `BackendBundle` to `runtime.run()`.   |
@@ -144,10 +144,11 @@ logs warnings (does not raise).
 1. Resolve trust (`resolve_recipe_trust`).
 2. SSH kwargs + transfer mode + serve port.
 3. Generate `cluster_id`.
-4. Resolve container image (delegated to `runtime.resolve_container`).
+4. Validate declared per-host image/runtime/builder constraints.
 5. Expand `recipe.mods` into `pre_exec`.
-6. Shared image preparation (`prepare_images`): optional builder, per-node
-   image plan, and distribution entries.
+6. Shared image preparation (`prepare_images`): resolve per-host runtime/platform
+   defaults beneath explicit recipe images, apply an optional builder, then derive
+   the final image plan and distribution entries.
 7. **`resolve_per_host_backends(host_list, cluster=...)`** — returns
    `dict[host, BackendBundle]`. Hosts that fail to resolve are dropped from the
    dict; per-host env then flows through

@@ -37,6 +37,8 @@ __version__ = "0.1.1"
 
 import logging
 
+SPARKRUN_PLUGIN_API_VERSION = 1
+
 logger = logging.getLogger(__name__)
 
 #: Selector for this gateway (``proxy.gateway`` in ``proxy.yaml``).

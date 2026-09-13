@@ -354,7 +354,7 @@ class TestRuntimePluginDefaultExecutor:
             def generate_command(self, recipe, overrides=None, **kwargs):
                 return "echo stub"
 
-            def resolve_container(self, recipe, overrides=None):
+            def resolve_container(self, recipe, *, host_hardware=None):
                 return "img:tag"
 
         # ``RuntimePlugin`` itself extends SAF's ``Plugin``; we don't

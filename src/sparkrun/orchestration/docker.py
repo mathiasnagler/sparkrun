@@ -9,11 +9,7 @@ from __future__ import annotations
 
 import logging
 
-# The teardown reporting protocol is substrate-agnostic and lives in
-# ``orchestration.teardown``, but it was born here and callers/tests import it
-# from this module — re-exported so those imports keep resolving.
 from sparkrun.orchestration.teardown import TEARDOWN_REMOVED_MARKER
-from sparkrun.orchestration.teardown import parse_teardown_removed as parse_teardown_removed
 from sparkrun.utils.shell import b64_wrap_bash, quote
 
 logger = logging.getLogger(__name__)

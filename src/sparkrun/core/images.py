@@ -32,9 +32,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import DistributionContainerEntry, Recipe
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.runtimes.base import RuntimePlugin
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +47,7 @@ class ImagePlanError(ValueError):
 
     Always a recipe/cluster mismatch the user must fix — a typo'd hostname, a
     duplicate entry, or a machine with neither an entry nor a ``container:``
-    fallback.  Never raised for a recipe without a ``containers:`` block.
+    fallback. Also raised when a runtime has no default image.
     """
 
 
@@ -92,13 +95,12 @@ class ImagePlan:
     """
 
     default_image: str
-    """The recipe's ``container:`` (post-override, post-builder).  May be empty
-    only when every selected host has an explicit entry."""
+    """Common fallback or the first host's runtime default; may be empty
+    when per-host declarations supply the images."""
 
     declared: tuple[tuple[str, str], ...] = ()
     """Sorted ``(host, image)`` pairs exactly as declared.  Empty ⇒ no
-    ``containers:`` block, and every path must behave as it did before this
-    feature existed."""
+    ``containers:`` block; hardware defaults can still differ per host."""
 
     images_by_node: tuple[str, ...] = ()
     """Image per node, aligned with the resolved host list."""
@@ -123,7 +125,7 @@ class ImagePlan:
         return self.default_image
 
     def head_image(self) -> str:
-        """Image the head node runs — the scalar every legacy caller wants."""
+        """Image the head node runs, for summaries and single-host operations."""
         return self.images_by_node[0] if self.images_by_node else self.default_image
 
 
@@ -132,6 +134,8 @@ def resolve_image_plan(
     default_image: str,
     host_list: list[str],
     cluster_hosts: list[str] | None = None,
+    *,
+    fallback_images: Mapping[str, str] | None = None,
 ) -> ImagePlan:
     """Resolve a recipe's images against the hosts this launch will use.
 
@@ -143,6 +147,8 @@ def resolve_image_plan(
         cluster_hosts: The cluster's full host list, used to validate declared
             hostnames.  ``None`` skips that check (explicit ``--hosts`` runs,
             where there is no cluster definition to check against).
+        fallback_images: Hardware-resolved fallback per host, before any builder.
+            An explicit per-host empty value means no default exists there.
 
     Raises:
         ImagePlanError: A declared host is not in the cluster, a host is
@@ -150,15 +156,6 @@ def resolve_image_plan(
             ``container:`` fallback.
     """
     declared_raw = getattr(recipe, "containers", None) or []
-
-    if not declared_raw:
-        # No block: byte-identical to pre-feature behavior.  Note images_by_node
-        # is still populated so callers have one uniform accessor.
-        return ImagePlan(
-            default_image=default_image,
-            declared=(),
-            images_by_node=tuple(default_image for _ in host_list),
-        )
 
     by_host: dict[str, str] = {}
     for entry in declared_raw:
@@ -189,26 +186,26 @@ def resolve_image_plan(
     for host in host_list:
         img = by_host.get(host)
         if img is None:
-            if not default_image:
+            fallback = fallback_images.get(host, default_image) if fallback_images is not None else default_image
+            if not fallback:
                 missing.append(host)
                 continue
             fell_back.append(host)
-            img = default_image
+            img = fallback
         images.append(img)
 
     if missing:
         raise ImagePlanError(
             "No container image for host(s) %s: they have no `containers:` entry and the "
-            "recipe declares no `container:` fallback." % ", ".join(missing)
+            "recipe/runtime supplies no fallback. Set `container:` or a per-host image." % ", ".join(missing)
         )
 
-    if fell_back:
+    if fell_back and declared_raw:
         # Never silent: on a machine-tuned cluster, running the generic image is
         # a material difference the user should see without --verbose.
         logger.info(
-            "Host(s) %s have no machine-specific image; using the recipe default '%s'",
+            "Host(s) %s have no machine-specific image; using their resolved defaults",
             ", ".join(fell_back),
-            default_image,
         )
 
     return ImagePlan(
@@ -234,3 +231,37 @@ def derive_container_entries(plan: ImagePlan, host_list: list[str]) -> list["Dis
         targets.setdefault(image, []).append(index)
 
     return [DistributionContainerEntry(name=image, target=indices) for image, indices in targets.items()]
+
+
+def resolve_runtime_image_plan(
+    recipe: Recipe,
+    runtime: RuntimePlugin,
+    hosts: list[str],
+    *,
+    cluster: ClusterDefinition | None = None,
+) -> ImagePlan:
+    """Resolve explicit images and each selected host's runtime/platform default.
+
+    This is a read-only plan: builders and distribution consume its images
+    without changing the recipe declarations used for workload identity.
+    """
+    declared_hosts = {entry["host"] for entry in (getattr(recipe, "containers", None) or [])}
+    fallbacks = {}
+    for host in hosts:
+        if recipe.container or host in declared_hosts:
+            fallbacks[host] = recipe.container
+        else:
+            fallbacks[host] = runtime.resolve_container(recipe, host_hardware=cluster.hardware_for(host) if cluster is not None else None)
+    plan = resolve_image_plan(
+        recipe,
+        next(iter(fallbacks.values()), ""),
+        hosts,
+        cluster_hosts=list(cluster.hosts) if cluster is not None else None,
+        fallback_images=fallbacks,
+    )
+    if plan.heterogeneous and not runtime.supports_heterogeneous_images:
+        raise ImagePlanError(
+            "Runtime '%s' requires one image across all hosts; set an explicit `container:` image compatible with every host"
+            % runtime.runtime_name
+        )
+    return plan

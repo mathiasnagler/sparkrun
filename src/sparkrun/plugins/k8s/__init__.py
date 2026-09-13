@@ -6,6 +6,8 @@ from sparkrun.core.features import FeatureFlag
 
 from sparkrun import __version__ as __version__
 
+SPARKRUN_PLUGIN_API_VERSION = 1
+
 FEATURE_FLAG = "integration.k8s"
 
 # The loader registers these only after the application enables this plugin.

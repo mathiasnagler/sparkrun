@@ -48,7 +48,9 @@ def test_profile_source_plugins_load_without_user_config(tmp_path, monkeypatch):
     monkeypatch.delenv("SPARKRUN_NO_EXTERNAL_PLUGINS")
     root = tmp_path / "plugins"
     root.mkdir()
-    (root / "review_default_plugin.py").write_text('def register(v):\n    v.set("review.plugin.loaded", True)\n')
+    (root / "review_default_plugin.py").write_text(
+        'SPARKRUN_PLUGIN_API_VERSION = 1\ndef register(v):\n    v.set("review.plugin.loaded", True)\n'
+    )
     select_application_profile(
         ApplicationProfile(
             id="review-app",

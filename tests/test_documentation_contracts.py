@@ -15,7 +15,7 @@ from click.testing import CliRunner
 
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR = "src/sparkrun/plugins/sparkroute/"
-HISTORICAL = {"CHANGELOG.md", "docs/RELEASE_NOTES.md"}
+HISTORICAL = {"CHANGELOG.md", "docs/RELEASE_NOTES_0.3.0.md"}
 
 
 def _documents(root=ROOT):

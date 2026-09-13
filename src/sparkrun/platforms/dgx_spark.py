@@ -14,8 +14,8 @@ from sparkrun.platforms.base import HardwarePlatformPlugin
 # Per-runtime defaults curated for GB10 / Spark Arena.  ``None`` means
 # "no default image — recipe.container must be set explicitly".
 _DGX_SPARK_DEFAULTS: dict[str, str | None] = {
-    "vllm-distributed": "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest",
-    "vllm-ray": "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest",
+    "vllm-distributed": "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest",
+    "vllm-ray": "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest",
     "sglang": "scitrera/dgx-spark-sglang:latest",
     "llama-cpp": "scitrera/dgx-spark-llama-cpp:latest",
     "trtllm": "nvcr.io/nvidia/tensorrt-llm/release:latest",

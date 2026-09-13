@@ -237,3 +237,18 @@ def test_materialize_single_host_tp8_as_one_unit_with_eight_workers():
     assert len(spec.execution.workers) == 8
     assert all(worker.unit == "unit-0" for worker in spec.execution.workers)
     assert "--nnodes" not in spec.units[0].command[4]
+
+
+def test_materialize_and_preparation_share_per_host_platform_images():
+    from sparkrun.core.image_preparation import prepare_images
+
+    options, plan, sctx = _fixture()
+    plan.recipe.container = ""
+    plan.cluster.hosts_hardware = {
+        "h1": HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="gb10")]),
+        "h2": HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="h200")]),
+    }
+    prepared = prepare_images(plan.recipe, plan.runtime, list(plan.host_list), cluster=plan.cluster, run_builder=False)
+    spec = api.materialize(options, plan=plan, sctx=sctx)
+    assert tuple(unit.image for unit in spec.units) == prepared.images_by_node
+    assert len(set(prepared.images_by_node)) == 2

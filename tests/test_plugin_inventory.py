@@ -62,7 +62,7 @@ def fake_in_tree(tmp_path, monkeypatch):
     def add(name: str, body: str = "", *, flag: bool | None = True) -> None:
         pkg = root / name
         pkg.mkdir()
-        (pkg / "__init__.py").write_text(textwrap.dedent(body))
+        (pkg / "__init__.py").write_text("SPARKRUN_PLUGIN_API_VERSION = 1\n" + textwrap.dedent(body))
         if flag is None:
             return
         flag_name = "test.inv.%s" % name
@@ -84,7 +84,7 @@ def fake_in_tree(tmp_path, monkeypatch):
 def _external_dir(tmp_path: Path, name: str, body: str) -> Path:
     plugin_dir = tmp_path / "ext"
     plugin_dir.mkdir(exist_ok=True)
-    (plugin_dir / ("%s.py" % name)).write_text(textwrap.dedent(body))
+    (plugin_dir / ("%s.py" % name)).write_text("SPARKRUN_PLUGIN_API_VERSION = 1\n" + textwrap.dedent(body))
     return plugin_dir
 
 

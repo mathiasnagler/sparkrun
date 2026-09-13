@@ -89,7 +89,7 @@ def run_schedule(
     target_url: str,
     model: str,
     timeout: int | None,
-    progress_ui: "BenchmarkProgress",
+    task_events: "BenchmarkProgress",
     cache_dir: str | None = None,
     exit_on_first_fail: bool = False,
     credentials: BenchmarkCredentials | None = None,
@@ -104,7 +104,7 @@ def run_schedule(
         model: Model name forwarded to the benchmark command.
         timeout: Per-task subprocess timeout in seconds, or ``None`` for no limit.
         credentials: Ephemeral authentication injected only into command construction.
-        progress_ui: Task event sink (the keyword is retained for compatibility).
+        task_events: Task event sink.
         cache_dir: Override for the sparkrun cache directory root.
         exit_on_first_fail: Stop immediately after the first task failure.
             Otherwise attempt the remaining tasks, skipping failures for this
@@ -144,7 +144,7 @@ def run_schedule(
                 break
 
             task = tasks[idx]
-            progress_ui.start_task(idx, task.label)
+            task_events.start_task(idx, task.label)
 
             # Build per-task args, applying framework's warmup/coherence rule.
             run_args = fw.apply_session_warmup_state(task.run_args, is_first_task=session_first_task)
@@ -180,7 +180,7 @@ def run_schedule(
                     failed_this_run.add(idx)
                     state.mark_failed(idx, "timeout after %ds" % timeout)
                     state.save(cache_dir)
-                    progress_ui.end_task(idx, success=False, duration_s=duration_s)
+                    task_events.end_task(idx, success=False, duration_s=duration_s)
                     if exit_on_first_fail:
                         state.mark_session_ended("partial")
                         state.save(cache_dir)
@@ -193,15 +193,15 @@ def run_schedule(
                 if rc == 0 and read_task_result(result_file) is not None:
                     state.mark_completed(idx)
                     state.save(cache_dir)
-                    progress_ui.end_task(idx, success=True, duration_s=duration_s)
+                    task_events.end_task(idx, success=True, duration_s=duration_s)
                     consolidated = _consolidate()
-                    progress_ui.update_results_table(consolidated)
+                    task_events.update_results_table(consolidated)
                     session_first_task = False
                 else:
                     failed_this_run.add(idx)
                     state.mark_failed(idx, "exit code %d" % rc if rc else "missing or invalid result artifact")
                     state.save(cache_dir)
-                    progress_ui.end_task(idx, success=False, duration_s=duration_s)
+                    task_events.end_task(idx, success=False, duration_s=duration_s)
                     if exit_on_first_fail:
                         state.mark_session_ended("partial")
                         state.save(cache_dir)
@@ -233,7 +233,7 @@ def run_schedule(
         # Post-loop gap analysis — done at most once.
         gaps = gap_analysis(tasks, consolidated, fw, completed_indices=state.completed_indices)
         if gaps:
-            progress_ui.log("Found %d gap(s); re-queueing" % len(gaps))
+            task_events.log("Found %d gap(s); re-queueing" % len(gaps))
             for gap_task in gaps:
                 if gap_task.index in state.completed_indices:
                     state.mark_failed(gap_task.index, "missing measurement coverage")
@@ -260,7 +260,7 @@ def run_schedule(
             if task.index in state.completed_indices:
                 state.mark_failed(task.index, "missing measurement coverage")
         consolidated = _consolidate()
-        progress_ui.update_results_table(consolidated)
+        task_events.update_results_table(consolidated)
 
         if state.is_complete(total):
             state.mark_session_ended("completed")

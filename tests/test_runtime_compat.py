@@ -262,7 +262,7 @@ class _StubRuntime:
     def is_delegating_runtime(self):
         return False
 
-    def resolve_container(self, recipe, overrides=None):
+    def resolve_container(self, recipe, *, host_hardware=None):
         return "stub:latest"
 
     def prepare(self, *args, **kwargs):

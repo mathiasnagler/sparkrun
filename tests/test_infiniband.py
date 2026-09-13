@@ -224,6 +224,14 @@ DETECTED_HCA_LIST=mlx5_0
 class TestValidateIbConnectivity:
     """Tests for validate_ib_connectivity."""
 
+    @patch("sparkrun.orchestration.ssh.run_remote_command")
+    def test_scalar_candidates_fail_before_probing(self, mock_cmd):
+        import pytest
+
+        with pytest.raises(TypeError, match="list of IP strings"):
+            validate_ib_connectivity({"spark1": "10.0.0.1"})
+        mock_cmd.assert_not_called()
+
     def test_empty_map_returns_empty(self):
         """Empty ib_ip_map returns empty dict without any SSH calls."""
         result = validate_ib_connectivity({})
@@ -232,7 +240,7 @@ class TestValidateIbConnectivity:
     def test_dry_run_returns_map_unchanged(self):
         """Dry-run mode skips the connectivity check."""
         ib_map = {"spark1": "10.0.0.1", "spark2": "10.0.0.2"}
-        result = validate_ib_connectivity(ib_map, dry_run=True)
+        result = validate_ib_connectivity({host: [ip] for host, ip in ib_map.items()}, dry_run=True)
         assert result == ib_map
 
     @patch("sparkrun.orchestration.ssh.run_remote_command")
@@ -249,7 +257,7 @@ class TestValidateIbConnectivity:
             stderr="",
         )
         ib_map = {"spark1": "10.0.0.1", "spark2": "10.0.0.2"}
-        result = validate_ib_connectivity(ib_map, ssh_kwargs={"ssh_user": "user"})
+        result = validate_ib_connectivity({host: [ip] for host, ip in ib_map.items()}, ssh_kwargs={"ssh_user": "user"})
 
         assert result == ib_map
         # Each host gets its own probe; both first-IP probes succeed.
@@ -267,7 +275,7 @@ class TestValidateIbConnectivity:
             stderr="Connection timed out",
         )
         ib_map = {"spark1": "10.0.0.1", "spark2": "10.0.0.2"}
-        result = validate_ib_connectivity(ib_map)
+        result = validate_ib_connectivity({host: [ip] for host, ip in ib_map.items()})
 
         assert result == {}
 
@@ -422,7 +430,7 @@ def test_ssh_kwargs_passed_through(mock_cmd):
     )
     ssh_kw = {"ssh_user": "drew", "ssh_key": "/path/to/key", "ssh_options": ["-o", "Foo=bar"]}
     ib_map = {"spark1": "10.0.0.1"}
-    validate_ib_connectivity(ib_map, ssh_kwargs=ssh_kw)
+    validate_ib_connectivity({host: [ip] for host, ip in ib_map.items()}, ssh_kwargs=ssh_kw)
 
     mock_cmd.assert_called_once_with(
         "10.0.0.1",

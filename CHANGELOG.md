@@ -4,7 +4,7 @@ All notable changes to sparkrun are documented in this file. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows semantic versioning.
 
-For the long-form 0.3.0 narrative, see [`docs/RELEASE_NOTES.md`](docs/RELEASE_NOTES.md).
+For the long-form 0.3.0 narrative, see [`docs/RELEASE_NOTES_0.3.0.md`](docs/RELEASE_NOTES_0.3.0.md).
 The 0.3.x entries below follow release-tag ancestry: changes are listed in the
 first tagged release containing them, regardless of their original commit date.
 
@@ -18,6 +18,15 @@ fields, and downstream migration steps. The existing library API, in-tree plugin
 system, gateway registry, and execution-strategy extension points shipped in
 0.3.x; the changes below build on those foundations.
 
+- Removed obsolete recipe/fingerprint/networking/teardown aliases and private
+  benchmark wrappers. Benchmark dispatch resolves one resume mode; scheduled
+  progress uses task events. Plugin modules now declare API version 1 across
+  every loading source, and IB probes accept per-host candidate lists only.
+- Unified runtime image selection across preparation and materialization, using
+  per-host platform defaults while preserving explicit recipe images and
+  homogeneous-runtime/builder constraints. SparkRoute uses required 0.4 host
+  initialization directly. Published a separate [CLI and saved-data migration
+  plan](docs/LEGACY_MIGRATION_PLAN.md) before retiring recovery support.
 - Added immutable application profiles and profile-aware, console-free
   initialization for CLI, daemon, desktop, and other Python frontends. Plugins
   can read application and controller identities; one controller represents an

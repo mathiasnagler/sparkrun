@@ -151,6 +151,7 @@ def test_the_loader_supplies_the_tier(monkeypatch):
     from sparkrun.core.external_plugins import load_plugin_module
 
     module = types.ModuleType("fake_in_tree_plugin")
+    module.SPARKRUN_PLUGIN_API_VERSION = 1
     module.register = lambda v: register_default_registry(_entry(trusted=True), owner="coldsnap")
     monkeypatch.setattr("sparkrun.core.external_plugins._plugin_base_types", lambda: [])
 
@@ -166,6 +167,7 @@ def test_the_tier_does_not_leak_past_a_load(monkeypatch):
     from sparkrun.core.external_plugins import load_plugin_module
 
     module = types.ModuleType("fake_plugin")
+    module.SPARKRUN_PLUGIN_API_VERSION = 1
     module.register = lambda v: None
     monkeypatch.setattr("sparkrun.core.external_plugins._plugin_base_types", lambda: [])
     load_plugin_module(module, None, tier=DeclarationTier.IN_TREE)

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from sparkrun import __version__ as __version__
 
+SPARKRUN_PLUGIN_API_VERSION = 1
+
 FEATURE_FLAG = "integration.arena"
 ARENA_BENCHMARK_PROFILE = "@official/spark-arena-v2"
 

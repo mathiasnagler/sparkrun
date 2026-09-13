@@ -340,7 +340,7 @@ def pin_comm_env_to_ib(
 
 
 def validate_ib_connectivity(
-    ib_candidates: dict[str, str] | dict[str, list[str]],
+    ib_candidates: dict[str, list[str]],
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
 ) -> dict[str, str]:
@@ -354,9 +354,8 @@ def validate_ib_connectivity(
     peer; this function iterates the per-host candidates and records
     the first one that responds.
 
-    Accepts either the legacy ``dict[host, str]`` (single best-guess
-    IP per host) or the new ``dict[host, list[str]]`` (full per-host
-    candidate list from :class:`IBDetectionResult.ib_candidates`).
+    Accepts the per-host candidate lists from
+    :attr:`IBDetectionResult.ib_candidates`.
     Returns an empty dict — signalling management-network fallback —
     only when *every* host has zero reachable candidates.
 
@@ -373,18 +372,18 @@ def validate_ib_connectivity(
     if not ib_candidates:
         return {}
 
-    # Normalize legacy single-IP shape to per-host list.
-    normalized: dict[str, list[str]] = {}
-    for host, val in ib_candidates.items():
-        if isinstance(val, str):
-            normalized[host] = [val] if val else []
-        else:
-            normalized[host] = [ip for ip in val if ip]
+    # Reject old scalar inputs before probing; iterating an IP string would
+    # otherwise attempt SSH to individual characters.
+    candidates: dict[str, list[str]] = {}
+    for host, ips in ib_candidates.items():
+        if not isinstance(ips, list) or any(not isinstance(ip, str) for ip in ips):
+            raise TypeError("IB candidates for %s must be a list of IP strings" % host)
+        candidates[host] = [ip for ip in ips if ip]
 
     if dry_run:
-        # Preserve legacy behavior: return a single-IP-per-host map
+        # Return the first candidate per host
         # without performing probes.
-        return {host: ips[0] for host, ips in normalized.items() if ips}
+        return {host: ips[0] for host, ips in candidates.items() if ips}
 
     from concurrent.futures import ThreadPoolExecutor
 
@@ -398,7 +397,7 @@ def validate_ib_connectivity(
     # takes the full SSH timeout to fail and serial probing would stack
     # 10s of latency per extra candidate per host.
     work: list[tuple[str, str]] = []
-    for host, cands in normalized.items():
+    for host, cands in candidates.items():
         for ip in cands:
             work.append((host, ip))
 
@@ -420,7 +419,7 @@ def validate_ib_connectivity(
     # responded; record the rest as unreachable for diagnostic logging.
     verified: dict[str, str] = {}
     unreachable: dict[str, list[str]] = {}
-    for host, cands in normalized.items():
+    for host, cands in candidates.items():
         if not cands:
             unreachable[host] = []
             continue

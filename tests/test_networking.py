@@ -747,13 +747,6 @@ class TestDiscoverHostNetworkIps:
         assert discover_host_network_ips([]) == {}
 
 
-class TestDistributeHostKeysAlias:
-    def test_alias(self):
-        from sparkrun.orchestration.networking import distribute_cx7_host_keys, distribute_host_keys
-
-        assert distribute_cx7_host_keys is distribute_host_keys
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -373,10 +373,10 @@ main() {
     # report goes to stderr.
     if [[ -n "$CONFIG_ENV" ]]; then
         if [[ "${RUN_RECIPE_DEBUG:-0}" == "1" ]]; then
-            err "DEBUG import: ${SPARKRUN[*]} cluster import --from-spark-vllm-docker-env ${CONFIG_ENV}"
+            err "DEBUG import: ${SPARKRUN[*]} cluster import svd ${CONFIG_ENV}"
             CLUSTER_NAME="<from-env>"
         else
-            CLUSTER_NAME="$("${SPARKRUN[@]}" cluster import --from-spark-vllm-docker-env "$CONFIG_ENV")" \
+            CLUSTER_NAME="$("${SPARKRUN[@]}" cluster import svd "$CONFIG_ENV")" \
                 || die "cluster import failed for ${CONFIG_ENV}"
             [[ -n "$CLUSTER_NAME" ]] || die "cluster import returned no cluster name for ${CONFIG_ENV}"
             err "${PROG}: imported '${CONFIG_ENV}' as sparkrun cluster '${CLUSTER_NAME}'."

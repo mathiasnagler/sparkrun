@@ -228,6 +228,24 @@ Nothing is fetched until something clones it, so suggest `sparkrun registry
 update` after your plugin is first enabled rather than paying a clone inside
 the next `sparkrun run`.
 
+## Declaring the module API contract
+
+Every top-level plugin module/package, whether bundled, loaded from a directory,
+installed through an entry point, or registered directly, must declare:
+
+```python
+SPARKRUN_PLUGIN_API_VERSION = 1
+```
+
+This literal integer declares compatibility with the host plugin contract. It is
+separate from the plugin's optional release `__version__` below and from the
+application-profile schema version. Missing, boolean, string, or incompatible
+values reject the plugin before its registration hook runs. The loader records
+the failure and rolls back enlisted import-time contributions. Optional failures
+allow other plugins to load; required integrations still block dependent work.
+Update old directory plugins and add the declaration after checking their APIs
+against the [0.4 migration guide](DISTRIBUTION_API_MIGRATION.md).
+
 ## Declaring a version
 
 Set `__version__` on your plugin's top-level module or package:
@@ -745,4 +763,5 @@ New engines implement the typed model-query contract in
 [`sparkrun.proxy.contracts`](PROXY.md#gateway-plugin-contract), using the same
 `ProxyModel` class returned by the public API. Console, console-credential
 issuance, and admin-token management are separate optional protocols. Existing
-legacy dictionary providers are adapted by the shared supervisor.
+dictionary-returning providers must migrate their own response decoding to this
+typed contract; the supervisor supplies no legacy model adapter.

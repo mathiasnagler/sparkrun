@@ -163,7 +163,7 @@ def load_installed_plugins(v, *, config=None) -> None:
         if row.failure or not row.selected:
             continue
         try:
-            load_and_register_plugin(providers[index].load, v, require_api_version=True, source=("installed", row.name, row.package))
+            load_and_register_plugin(providers[index].load, v, source=("installed", row.name, row.package))
             _inventory[index] = replace(row, loaded=True)
         except Exception as exc:
             failure = format_plugin_failure(exc)

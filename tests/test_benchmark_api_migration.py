@@ -14,7 +14,7 @@ import pytest
 from click.testing import CliRunner
 
 from sparkrun.cli import main as cli_main
-from sparkrun.cli._benchmark import _stop_inference
+from sparkrun.api._benchmark import _stop_inference
 
 
 # ---------------------------------------------------------------------------
@@ -43,17 +43,13 @@ def test_stop_inference_calls_api_stop_with_cluster_id_and_hosts():
     """Verify ``_stop_inference`` delegates to ``api.stop`` with the
     expected keyword arguments and does NOT touch ``runtime.stop``.
     """
-    runtime = MagicMock()
-    runtime.stop = MagicMock()
 
     fake_sctx = object()
 
     with patch("sparkrun.api.stop") as mock_stop:
         _stop_inference(
-            runtime=runtime,
             host_list=["h1", "h2"],
             cluster_id="sparkrun_0123456789abcdef_aabbccddeeff",
-            config=None,
             dry_run=False,
             sctx=fake_sctx,
         )
@@ -64,24 +60,20 @@ def test_stop_inference_calls_api_stop_with_cluster_id_and_hosts():
     assert kwargs["hosts"] == ("h1", "h2")
     assert kwargs["sctx"] is fake_sctx
 
-    # Direct runtime.stop must not be called from the benchmark stop path.
-    runtime.stop.assert_not_called()
-
 
 def test_stop_inference_dry_run_skips_api_stop():
-    """Dry-run mode prints the would-stop line and skips ``api.stop``."""
-    runtime = MagicMock()
+    """Dry-run reports through the event sink and skips ``api.stop``."""
+    emitter = MagicMock()
     with patch("sparkrun.api.stop") as mock_stop:
         _stop_inference(
-            runtime=runtime,
             host_list=["h1"],
             cluster_id="sparkrun_0123456789abcdef_aabbccddeeff",
-            config=None,
             dry_run=True,
             sctx=None,
+            emitter=emitter,
         )
     mock_stop.assert_not_called()
-    runtime.stop.assert_not_called()
+    emitter.info.assert_called_once_with("[dry-run] Would stop cluster sparkrun_0123456789abcdef_aabbccddeeff on h1")
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +181,7 @@ def test_benchmark_run_uses_api_run_and_threads_scheduler_flag(fake_recipe_env, 
     assert opts.hosts == ("h1",)
 
     # api.stop is also called (post-benchmark cleanup) — dry-run skips it
-    # at the _stop_inference shim.
+    # in the cleanup helper.
     mock_stop.assert_not_called()
 
 
@@ -315,3 +307,15 @@ def test_benchmark_perf_skip_run_bypasses_scheduler_capacity(fake_recipe_env):
     mock_schedule.assert_not_called()
     mock_run.assert_not_called()
     mock_stop.assert_not_called()
+
+
+def test_benchmark_cli_reports_image_plan_failure(fake_recipe_env, monkeypatch):
+    from sparkrun.core.images import ImagePlanError
+
+    def fail_plan(*args, **kwargs):
+        raise ImagePlanError("no image for h1")
+
+    monkeypatch.setattr("sparkrun.core.images.resolve_runtime_image_plan", fail_plan)
+    result = CliRunner().invoke(cli_main, ["benchmark", "run", "--solo", "--dry-run", "--hosts", "h1", "test-recipe"])
+    assert result.exit_code == 1
+    assert "Error: no image for h1" in result.output

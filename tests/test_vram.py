@@ -13,7 +13,6 @@ from sparkrun.models.kv.mla import (
     reconcile_compress_ratios,
 )
 from sparkrun.models.vram import (
-    _resolve_quant_dtype,
     bytes_per_element,
     estimate_vram,
     extract_model_info,
@@ -700,49 +699,6 @@ class TestExtractModelInfo:
         }
         info = extract_model_info(config)
         assert "quant_dtype" not in info
-
-
-class TestResolveQuantDtype:
-    """Test _resolve_quant_dtype helper."""
-
-    def test_fp8(self):
-        assert _resolve_quant_dtype({"quant_method": "fp8"}) == "fp8"
-
-    def test_awq_default_4bit(self):
-        assert _resolve_quant_dtype({"quant_method": "awq"}) == "awq4"
-
-    def test_awq_explicit_4bit(self):
-        assert _resolve_quant_dtype({"quant_method": "awq", "bits": 4}) == "awq4"
-
-    def test_awq_8bit(self):
-        assert _resolve_quant_dtype({"quant_method": "awq", "bits": 8}) == "awq8"
-
-    def test_gptq_default_4bit(self):
-        assert _resolve_quant_dtype({"quant_method": "gptq"}) == "gptq"
-
-    def test_gptq_8bit(self):
-        assert _resolve_quant_dtype({"quant_method": "gptq", "bits": 8}) == "int8"
-
-    def test_marlin(self):
-        assert _resolve_quant_dtype({"quant_method": "marlin", "bits": 4}) == "gptq"
-
-    def test_bitsandbytes_4bit(self):
-        assert _resolve_quant_dtype({"quant_method": "bitsandbytes", "load_in_4bit": True}) == "int4"
-
-    def test_bitsandbytes_nf4(self):
-        assert _resolve_quant_dtype({"quant_method": "bitsandbytes", "quant_type": "nf4"}) == "int4"
-
-    def test_bitsandbytes_8bit(self):
-        assert _resolve_quant_dtype({"quant_method": "bitsandbytes", "load_in_8bit": True}) == "int8"
-
-    def test_unknown_method(self):
-        assert _resolve_quant_dtype({"quant_method": "unknown_method"}) is None
-
-    def test_empty_method(self):
-        assert _resolve_quant_dtype({"quant_method": ""}) is None
-
-    def test_no_method(self):
-        assert _resolve_quant_dtype({}) is None
 
 
 class _FakeSafeTensorsInfo:

@@ -59,7 +59,7 @@ def select_backends(host_hardware: HostHardware) -> BackendBundle:
 
     Args:
         host_hardware: Per-host hardware metadata, typically produced
-            by :func:`sparkrun.core.fingerprint.fingerprint_host` or
+            by :func:`sparkrun.core.hardware_probe.probe_host` or
             populated explicitly in cluster YAML.
 
     Returns:

@@ -108,7 +108,7 @@ class _StubRuntime(RuntimePlugin):
     def generate_command(self, recipe, overrides, is_cluster, num_nodes=1, head_ip=None):
         return ""
 
-    def resolve_container(self, recipe, overrides=None):
+    def resolve_container(self, recipe, *, host_hardware=None):
         return "stub:latest"
 
 
