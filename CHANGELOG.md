@@ -73,7 +73,14 @@ system, gateway registry, and execution-strategy extension points shipped in
 - Gateway management initializes application plugins before resolving the running
   implementation, while preserving process status/stop if bootstrap fails or a
   plugin is unavailable. Recorded gateway identity takes precedence over a saved
-  preference for the next start.
+  preference for the next start. CLI status/stop reach the same recovery path,
+  and unavailable model queries fail explicitly after bootstrap errors.
+- Gateway start translates declared provider operational failures into
+  `ProxyStartFailed` across construction, preparation, shutdown, and launch,
+  preserving causes and normal CLI diagnostics.
+- CLI context creation and extension discovery use the shared application
+  initializer and bind custom configuration before plugin loading. Quiet mode
+  no longer supplies an invalid negative progress-verbosity value.
 - Rejected proxy starts and timed-out restarts preserve generated configuration
   and discovery snapshots. Successful fileless gateway starts return `None` for
   `config_path`, matching dry-run results.

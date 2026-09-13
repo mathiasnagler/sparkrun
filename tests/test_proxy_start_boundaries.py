@@ -118,7 +118,8 @@ def test_invalid_preview_does_not_stop_a_working_gateway(gateway, monkeypatch):
     monkeypatch.setattr(type(engine), "prepare_config", Mock(side_effect=GatewayOperationError("invalid configuration")))
     wait = Mock()
     monkeypatch.setattr(_ops, "_stop_and_wait", wait)
-    with pytest.raises(GatewayOperationError, match="invalid configuration"):
+    with pytest.raises(api.proxy.ProxyStartFailed, match="invalid configuration") as caught:
         api.proxy.start(api.proxy.ProxyStartOptions(gateway=name, restart=True, persist=False), sctx=context)
+    assert isinstance(caught.value.__cause__, GatewayOperationError)
     wait.assert_not_called()
     assert generated_files(context, engine) == before

@@ -280,6 +280,9 @@ manageable after a feature is disabled; when an implementation is unavailable,
 the base supervisor can still inspect state and stop the recorded process.
 This fallback also covers plugin initialization failures: the failure is logged,
 status reports model enumeration as unavailable, and process stop remains usable.
+The CLI's `proxy status`, `proxy stop`, and `proxy models` reach this same recovery
+path without requiring successful plugin bootstrap; models fail explicitly when
+enumeration is unavailable.
 An invalid application profile still raises instead of accessing another
 application's state.
 
@@ -289,6 +292,9 @@ Duplicate-start rejection and shutdown timeout preserve those files. Explicit
 settings still persist to `proxy.yaml` before the lifecycle decision unless
 `persist=False` or `dry_run=True`. `ProxyStartResult.config_path` is a string for
 a generated file, or `None` for a fileless gateway or dry run.
+Expected provider configuration, preparation, shutdown, and launch failures raise
+`ProxyStartFailed` with the original cause. Availability failures remain
+`GatewayUnavailable`; interrupts and unrelated programming errors propagate.
 
 ### Gateway plugin contract
 

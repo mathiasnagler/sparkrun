@@ -221,8 +221,11 @@ def stop(dry_run):
     """
     from sparkrun import api
 
-    sctx = _get_context(click.get_current_context())
-    result = api.proxy.stop(dry_run=dry_run, sctx=sctx)
+    sctx = click.get_current_context().ensure_object(dict).get("sparkrun_ctx")
+    try:
+        result = api.proxy.stop(dry_run=dry_run, sctx=sctx)
+    except api.SparkrunError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     if not result.was_running:
         click.echo("No proxy is currently running.")
@@ -246,8 +249,11 @@ def status(output_json):
     """Show proxy process status and registered models."""
     from sparkrun import api
 
-    sctx = _get_context(click.get_current_context())
-    result = api.proxy.status(sctx=sctx)
+    sctx = click.get_current_context().ensure_object(dict).get("sparkrun_ctx")
+    try:
+        result = api.proxy.status(sctx=sctx)
+    except api.SparkrunError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     if not result.known:
         if output_json:
@@ -339,9 +345,11 @@ def models(refresh, output_json):
     """
     from sparkrun import api
 
-    sctx = _get_context(click.get_current_context())
-
-    proxy_status = api.proxy.status(sctx=sctx)
+    sctx = click.get_current_context().ensure_object(dict).get("sparkrun_ctx")
+    try:
+        proxy_status = api.proxy.status(sctx=sctx)
+    except api.SparkrunError as exc:
+        raise click.ClickException(str(exc)) from exc
     if not proxy_status.running:
         if output_json:
             print_json([])
@@ -354,7 +362,7 @@ def models(refresh, output_json):
             click.echo("Re-discovering endpoints...")
         try:
             synced = api.proxy.sync(require_running=True, sctx=sctx)
-        except api.proxy.ProxyUpdateFailed as exc:
+        except api.SparkrunError as exc:
             click.echo("Error: %s" % exc, err=True)
             sys.exit(1)
         if not output_json:

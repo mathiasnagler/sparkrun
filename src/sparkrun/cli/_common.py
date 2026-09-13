@@ -53,11 +53,22 @@ def print_json(data: Any) -> None:
     click.echo(dumps_json(data))
 
 
+def _initialize_application(ctx=None, config_path=None) -> "SparkrunContext":
+    """Bind CLI configuration before plugin discovery, without presentation setup."""
+    obj = ctx.ensure_object(dict) if ctx is not None else {}
+    cached = obj.get("sparkrun_ctx")
+    if cached is not None:
+        return cached
+    from sparkrun.application import initialize
+
+    return initialize(config_path=config_path if config_path is not None else obj.get("config_path"))
+
+
 def _get_context(ctx, config_path=None) -> "SparkrunContext":
     """Lazily create and cache a :class:`SparkrunContext` on the Click context.
 
-    Calls ``init_sparkrun()`` and creates a ``SparkrunConfig``, bundling
-    them into a single context object stored in ``ctx.obj["sparkrun_ctx"]``.
+    Uses the shared application initializer, then adds CLI progress/verbosity
+    and stores the context in ``ctx.obj["sparkrun_ctx"]``.
 
     Logging is *not* re-applied here — ``_setup_logging()`` is already
     called once from the ``main()`` group callback, and SAF's
@@ -69,14 +80,7 @@ def _get_context(ctx, config_path=None) -> "SparkrunContext":
     if sctx is not None:
         return sctx
 
-    from sparkrun.core.bootstrap import init_sparkrun
-    from sparkrun.core.config import SparkrunConfig
-    from sparkrun.core.context import SparkrunContext
-
-    v = init_sparkrun()
-    if config_path is None:
-        config_path = obj.get("config_path")
-    config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
+    sctx = _initialize_application(ctx, config_path)
 
     from sparkrun.core.progress import LaunchProgress, Verbosity
 
@@ -84,14 +88,10 @@ def _get_context(ctx, config_path=None) -> "SparkrunContext":
     # Backward compat: bool True → 1
     if isinstance(verbose_count, bool):
         verbose_count = 1 if verbose_count else 0
-    progress = LaunchProgress(verbosity=Verbosity(min(verbose_count, Verbosity.DEBUG)))
+    progress = LaunchProgress(verbosity=Verbosity(max(0, min(verbose_count, Verbosity.DEBUG))))
 
-    sctx = SparkrunContext(
-        variables=v,
-        config=config,
-        verbose=verbose_count > 0,
-        progress=progress,
-    )
+    sctx.verbose = verbose_count > 0
+    sctx.progress = progress
     obj["sparkrun_ctx"] = sctx
     return sctx
 

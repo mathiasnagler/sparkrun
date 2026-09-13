@@ -345,13 +345,21 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
     Raises:
         GatewayUnavailable: the resolved gateway is disabled or unknown.
         ProxyAlreadyRunning: a proxy is up and ``options.restart`` is False.
-        ProxyStartFailed: the gateway process did not come up (or the
-            superseded one refused to exit).
+        ProxyStartFailed: gateway configuration, launch, or shutdown failed.
+            The original operational failure is retained as the cause.
     """
     from sparkrun.proxy.gateway import GatewayError
 
-    options = options or ProxyStartOptions()
-    sctx = resolve_sctx(sctx)
+    try:
+        return _start(options or ProxyStartOptions(), sctx=resolve_sctx(sctx))
+    except GatewayError as exc:
+        raise _as_gateway_unavailable(exc) from exc
+    except GatewayOperationError as exc:
+        raise ProxyStartFailed(str(exc)) from exc
+
+
+def _start(options: ProxyStartOptions, *, sctx: "SparkrunContext") -> ProxyStartResult:
+    """Execute the lifecycle inside the public operational-error boundary."""
     proxy_cfg = sctx.proxy_config
 
     gateway = resolve_gateway(options.gateway, sctx=sctx)
@@ -413,10 +421,7 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
 
     # Refuse a foreign state directory before invoking plugin preparation.
     if not options.dry_run:
-        try:
-            engine.claim_state_directory()
-        except GatewayOperationError as exc:
-            raise ProxyStartFailed(str(exc)) from exc
+        engine.claim_state_directory()
 
     # Validate without changing generated files or gateway snapshots while a
     # previous process may still be serving them. The same preview supplies
@@ -467,10 +472,7 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
             "application_config_path": sctx.config.config_path,
         }
 
-    try:
-        rc = engine.start(config_path=config_path, foreground=options.foreground, autodiscover_kwargs=ad_kwargs)
-    except GatewayError as exc:  # engine-level backstop for the same gate
-        raise _as_gateway_unavailable(exc) from exc
+    rc = engine.start(config_path=config_path, foreground=options.foreground, autodiscover_kwargs=ad_kwargs)
 
     if options.foreground:
         # Blocking mode: start() returns the proxy's own exit code.

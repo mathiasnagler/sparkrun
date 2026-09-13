@@ -81,9 +81,9 @@ def test_attach_does_not_clobber_builtin(clean_registry):
 
 
 def test_pluggable_group_attaches_on_resolution(clean_registry, monkeypatch):
-    # ensure_cli_extensions runs init_sparkrun (heavy); stub it to isolate the
+    # ensure_cli_extensions initializes the application; stub it to isolate the
     # lazy-attach behavior of PluggableGroup itself.
-    monkeypatch.setattr(ext, "ensure_cli_extensions", ext.attach_cli_extensions)
+    monkeypatch.setattr(ext, "ensure_cli_extensions", lambda root, **kw: ext.attach_cli_extensions(root))
 
     root = ext.PluggableGroup(name="root")
     ext.register_cli_command(_leaf("plugincmd"))
@@ -96,7 +96,7 @@ def test_pluggable_group_attaches_on_resolution(clean_registry, monkeypatch):
 
 def test_pluggable_group_ensure_runs_once(clean_registry, monkeypatch):
     calls = []
-    monkeypatch.setattr(ext, "ensure_cli_extensions", lambda root: calls.append(root))
+    monkeypatch.setattr(ext, "ensure_cli_extensions", lambda root, **kw: calls.append(root))
 
     root = ext.PluggableGroup(name="root")
     root.add_command(_leaf("a"))

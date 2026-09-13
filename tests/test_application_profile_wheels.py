@@ -648,3 +648,48 @@ assert 'click' not in sys.modules and 'sparkrun.cli' not in sys.modules
         env_extra={"SPARKRUN_APPLICATION_PROFILE": profile_ref, "SPARKRUN_APPLICATION_CONFIG": str(config)},
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("application", ["sparkrun", "profile-test-app"])
+@pytest.mark.parametrize("command", ["status", "stop", "models"])
+def test_installed_cli_gateway_recovery_after_bootstrap_failure(wheels, tmp_path, application, command):
+    config = tmp_path / "custom-config" / "config.yaml"
+    config.parent.mkdir()
+    config.write_text("integrations: []\n")  # Invalid installed-plugin configuration poisons bootstrap.
+    code = """
+import json, os, subprocess, sys
+from pathlib import Path
+application, command = sys.argv[1:]
+state = Path.home() / '.cache' / application / 'proxy' / 'state.yaml'
+state.parent.mkdir(parents=True)
+state.write_text(json.dumps({'gateway': 'removed-provider', 'pid': os.getpid(), 'distribution': application}))
+before = state.read_bytes()
+# The parent supplies a live PID. Stop is always a dry run; no signal is sent.
+flags = ['--dry-run'] if command == 'stop' else ['--json']
+result = subprocess.run([str(Path(sys.executable).with_name(application)), 'proxy', command, *flags], capture_output=True, text=True, timeout=20)
+assert 'integrations' in result.stderr, result.stderr
+if command == 'models':
+    assert result.returncode == 1, result.stderr
+    assert 'Model list unavailable' in result.stderr and not result.stdout
+else:
+    assert result.returncode == 0, result.stderr
+    if command == 'status':
+        snapshot = json.loads(result.stdout)
+        assert snapshot['running'] and snapshot['pid'] == os.getpid()
+        assert snapshot['gateway'] == 'removed-provider' and snapshot['model_query_error']
+    else:
+        assert 'Proxy stopped.' in result.stdout
+assert state.read_bytes() == before
+"""
+    profile_ref = "sparkrun.core.application_profile:SPARKRUN" if application == "sparkrun" else "profile_test_app.profile:PROFILE_TEST_APP"
+    result = invoke(
+        wheels,
+        tmp_path,
+        "python",
+        "-c",
+        code,
+        application,
+        command,
+        env_extra={"SPARKRUN_APPLICATION_PROFILE": profile_ref, "SPARKRUN_APPLICATION_CONFIG": str(config)},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

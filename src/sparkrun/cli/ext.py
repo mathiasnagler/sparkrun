@@ -15,7 +15,7 @@ command, so registering costs no Click import.  This module re-exports the
 registry API and owns the attach half, which needs Click.
 
 **Timing.** The CLI command tree is built at import of :mod:`sparkrun.cli`, but
-external plugins load later, during :func:`sparkrun.core.bootstrap.init_sparkrun`.
+external plugins load later, through :func:`sparkrun.application.initialize`.
 :class:`PluggableGroup` bridges the gap: the top-level ``main`` group is a
 ``PluggableGroup``, so the first time Click resolves *any* subcommand it runs
 :func:`ensure_cli_extensions` — which loads plugins (they call
@@ -52,7 +52,7 @@ def _resolve_group(root: click.Group, path: tuple[str, ...]) -> "click.Group | N
     :meth:`PluggableGroup.get_command` (which would recurse into the ensure
     hook).  Returns ``None`` if any segment is missing or not a group.
     """
-    group: click.Command = root
+    group: click.Command | None = root
     for segment in path:
         if not isinstance(group, click.Group):
             return None
@@ -70,8 +70,9 @@ def render_command_identity(root: click.Command) -> None:
         if value:
             setattr(root, attr, render_identity_text(value))
     for parameter in root.params:
-        if getattr(parameter, "help", None):
-            parameter.help = render_identity_text(parameter.help)
+        help_text = getattr(parameter, "help", None)
+        if help_text:
+            setattr(parameter, "help", render_identity_text(help_text))  # noqa: B010 - optional custom Parameter attribute
     if isinstance(root, click.Group):
         for child in root.commands.values():
             render_command_identity(child)
@@ -103,16 +104,15 @@ def attach_cli_extensions(root: click.Group) -> None:
         parent.add_command(command)
 
 
-def ensure_cli_extensions(root: click.Group) -> None:
+def ensure_cli_extensions(root: click.Group, *, ctx: click.Context | None = None) -> None:
     """Load external plugins, then attach their registered CLI commands.
 
-    ``init_sparkrun`` imports external plugin modules, which call
-    ``register_cli_command`` at import time; the subsequent attach drains the
-    registry onto *root*.
+    Bind the CLI's application/config before importing plugin modules. Their
+    command registrations are then attached to *root*.
     """
-    from sparkrun.core.bootstrap import init_sparkrun
+    from sparkrun.cli._common import _initialize_application
 
-    init_sparkrun()
+    _initialize_application(ctx)
     attach_cli_extensions(root)
     render_command_identity(root)
 
@@ -123,27 +123,27 @@ class PluggableGroup(click.Group):
     On the first command resolution (``get_command`` / ``list_commands``) it
     runs :func:`ensure_cli_extensions` once, so plugin commands are present
     before Click dispatches — including into nested groups reached through this
-    one.  The load is guarded per-instance and fully defensive: a broken plugin
-    is logged and never breaks the CLI.
+    one. The load is guarded per-instance. Discovery failures are logged so
+    built-in recovery commands remain dispatchable.
     """
 
-    def _ensure_cli_extensions_loaded(self) -> None:
+    def _ensure_cli_extensions_loaded(self, ctx: click.Context) -> None:
         if getattr(self, "_cli_ext_loaded", False):
             return
         # Set before running so the attach pass (which touches .commands, not
         # get_command) can't re-enter this hook.
         self._cli_ext_loaded = True
         try:
-            ensure_cli_extensions(self)
+            ensure_cli_extensions(self, ctx=ctx)
         except Exception:  # noqa: BLE001 - plugin CLI loading must never break the CLI
             logger.exception("Failed to load plugin CLI commands")
 
     def list_commands(self, ctx):
-        self._ensure_cli_extensions_loaded()
+        self._ensure_cli_extensions_loaded(ctx)
         return super().list_commands(ctx)
 
     def get_command(self, ctx, name):
-        self._ensure_cli_extensions_loaded()
+        self._ensure_cli_extensions_loaded(ctx)
         return super().get_command(ctx, name)
 
 
@@ -162,11 +162,11 @@ class ExtensibleCommand(click.Command):
     def _extension_options(self, ctx):
         key = ("extension_options", id(self))
         if key not in ctx.meta:
-            from sparkrun.core.bootstrap import init_sparkrun
+            from sparkrun.cli._common import _initialize_application
             from sparkrun.core.cli_registry import registered_cli_options
             from sparkrun.core.application_profile import render_identity_text
 
-            init_sparkrun()
+            _initialize_application(ctx)
             base_params = super().get_params(ctx)
             names = {p.name for p in base_params}
             flags = {opt for p in base_params for opt in (*p.opts, *p.secondary_opts)}
