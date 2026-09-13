@@ -70,12 +70,15 @@ class ProxyUpdateFailed(SparkrunError):
     """
 
 
+class ProxyQueryFailed(SparkrunError):
+    """The running gateway could not report its served models."""
+
+
 class ProxyUnsupported(SparkrunError):
     """The running gateway does not offer the requested capability.
 
-    Distinct from a failure: a gateway simply having no admin console, or no
-    way to enumerate its models, is an *answer* rather than an error condition,
-    and callers routinely want to say so rather than treat it as a fault.
+    A gateway can omit an admin console or managed credentials. Callers can
+    distinguish this unsupported capability from an operational failure.
     """
 
 
@@ -85,4 +88,5 @@ __all__ = [
     "ProxyStartFailed",
     "ProxyUnsupported",
     "ProxyUpdateFailed",
+    "ProxyQueryFailed",
 ]

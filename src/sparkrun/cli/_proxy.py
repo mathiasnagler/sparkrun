@@ -373,17 +373,17 @@ def models(refresh, output_json):
     # a refresh has since changed what the gateway serves.
     if refresh:
         proxy_status = api.proxy.status(sctx=sctx)
-    model_list = proxy_status.models
+    try:
+        model_list = proxy_status.require_models()
+    except api.proxy.ProxyQueryFailed as exc:
+        raise click.ClickException(str(exc)) from exc
 
     if output_json:
         print_json([m.to_dict() for m in model_list])
         return
 
     if not model_list:
-        if proxy_status.model_query_error:
-            click.echo("Model list unavailable: %s" % proxy_status.model_query_error, err=True)
-        else:
-            click.echo("No models registered with the proxy.")
+        click.echo("No models registered with the proxy.")
         return
 
     click.echo("Models (%d):" % len(model_list))
@@ -809,7 +809,9 @@ def _resolve_host_filter(
 
 
 @proxy.command("ui")
-@click.option("--issue-token", is_flag=True, help="Show the stored admin token (compatibility alias)")
+@click.option(
+    "--issue-token", is_flag=True, help="Ask the gateway to create or return console credentials (may enable admin authentication)"
+)
 @click.option("--json", "output_json", is_flag=True, help="Output as JSON")
 def ui_cmd(issue_token, output_json):
     """Show the gateway's admin console URL."""

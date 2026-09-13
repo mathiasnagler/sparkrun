@@ -1,6 +1,6 @@
 """Exercise independent application policy without real hardware assumptions."""
 
-from sparkrun.core.application_profile import ApplicationProfile
+from sparkrun.application import ApplicationProfile
 
 PROFILE_TEST_APP = ApplicationProfile(
     id="profile-test-app",

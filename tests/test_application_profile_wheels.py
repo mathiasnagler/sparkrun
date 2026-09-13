@@ -467,3 +467,57 @@ assert pid.read_text() == "invalid PID"
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("application", ["sparkrun", "profile-test-app"])
+def test_installed_typed_gateway_public_api_and_cli(wheels, tmp_path, application):
+    config = tmp_path / "config.yaml"
+    config.write_text("integrations:\n  profile-test-plugin: true\nfeatures:\n  gateway.profile-test: true\n")
+    code = """
+import json, os, sys
+from sparkrun.application import initialize
+from sparkrun import api
+from sparkrun.proxy.contracts import ProxyModel
+context = initialize(config_path=sys.argv[1])
+assert 'sparkrun.cli' not in sys.modules and 'click' not in sys.modules
+assert api.proxy.ProxyModel is ProxyModel
+assert 'profile-test' in api.proxy.list_gateways(sctx=context)
+assert api.proxy.resolve_gateway('profile-test', sctx=context) == 'profile-test'
+# Represent an already running fixture gateway using this test process. No
+# gateway binary, listener, remote host, or workload is created.
+state = context.config.cache_dir / 'proxy' / 'state.yaml'
+state.parent.mkdir(parents=True, exist_ok=True)
+state.write_text(json.dumps({'gateway': 'profile-test', 'pid': os.getpid(), 'distribution': context.application_identity.id}))
+models = api.proxy.models(sctx=context)
+assert models == (ProxyModel('fixture-model', 'http://fixture/v1', 8192),)
+assert api.proxy.status(sctx=context).require_models() == models
+assert not api.proxy.ui(sctx=context).auth_required
+credential = api.proxy.ui(issue_token=True, sctx=context).token
+assert credential and api.proxy.admin_token(sctx=context) == credential
+replacement = api.proxy.admin_token(rotate=True, sctx=context)
+assert replacement != credential
+assert api.proxy.admin_token(clear=True, sctx=context) is None
+assert 'sparkrun.cli' not in sys.modules and 'click' not in sys.modules
+from click.testing import CliRunner
+from sparkrun.cli import main
+result = CliRunner().invoke(main, ['proxy', 'models', '--json'])
+assert result.exit_code == 0, result.output
+assert json.loads(result.stdout) == [model.to_dict() for model in models]
+os.environ['PROFILE_TEST_GATEWAY_FAIL'] = '1'
+assert api.proxy.status(sctx=context).model_query_error == 'fixture control plane unavailable'
+try:
+    api.proxy.models(sctx=context)
+except api.proxy.ProxyQueryFailed:
+    pass
+else:
+    raise AssertionError('unavailable model query was treated as empty')
+result = CliRunner().invoke(main, ['proxy', 'models', '--json'])
+assert result.exit_code == 1 and 'unavailable' in result.stderr and not result.stdout, result.output
+print('typed gateway API and CLI: OK')
+"""
+    env = {}
+    if application != "sparkrun":
+        env["SPARKRUN_APPLICATION_PROFILE"] = "profile_test_app.profile:PROFILE_TEST_APP"
+    result = invoke(wheels, tmp_path, "python", "-c", code, str(config), env_extra=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "typed gateway API and CLI: OK" in result.stdout

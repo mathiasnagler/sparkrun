@@ -34,6 +34,7 @@ from typing import Any
 
 import yaml
 
+from sparkrun.proxy.contracts import ProxyModel
 from sparkrun.utils.fs import open_private_write, atomic_private_write
 from sparkrun.core.application_profile import get_application_profile
 from sparkrun.utils.process import process_exists
@@ -381,8 +382,19 @@ class GatewaySupervisor(GatewayState):
         """
         raise NotImplementedError("gateway %r cannot synchronize aliases" % self.gateway_name)
 
+    def query_models(self) -> tuple[ProxyModel, ...]:
+        """Return typed model rows, or raise ``contracts.GatewayQueryError``.
+
+        New gateways override this method and translate their own wire format.
+        The default adapts legacy ``list_models_via_api`` implementations,
+        including the pinned SparkRoute integration, without changing them.
+        """
+        from ._legacy_models import query_models
+
+        return query_models(self)
+
     def list_models_via_api(self) -> list[dict[str, Any]]:
-        """Return the models the running gateway reports."""
+        """Legacy dictionary hook; new plugins implement ``query_models``."""
         raise NotImplementedError("gateway %r cannot report its served models" % self.gateway_name)
 
     def register_loaded_model(

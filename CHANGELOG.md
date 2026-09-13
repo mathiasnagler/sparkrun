@@ -23,6 +23,9 @@ fields, and downstream migration steps.
   snapshots, and resumable state/finalization. Clarified run options, execution
   strategies, destination-aware status/stop, and setup/monitoring API contracts.
 - Moved Kubernetes-specific APIs and configuration into `sparkrun.plugins.k8s`.
+- Added typed gateway model queries and explicit optional console/token contracts.
+  Failed model enumeration now raises `ProxyQueryFailed` and makes `proxy models`
+  exit nonzero, while status retains process diagnostics. Legacy plugins are adapted.
 - Made proxy CLI help and guidance gateway-neutral; LiteLLM and SparkRoute share
   selection and lifecycle APIs, with implementation-specific capabilities.
 - Docker now defaults to a bundled seccomp profile allowing io_uring and stages

@@ -43,6 +43,21 @@ Requires [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/inst
 
 All tests are self-contained — no real hosts, SSH, or Docker needed. SSH/Docker operations are mocked via `conftest.py` fixtures.
 
+## Documentation contracts
+
+The normal pytest suite also checks local Markdown links/anchors, Python example
+syntax and Sparkrun imports, and documented command help. Run them directly with:
+
+```bash
+pytest -q tests/test_documentation_contracts.py
+```
+
+These checks are collected by the existing Python CI workflow. They perform no
+network requests and do not execute example workloads. Historical release notes
+are excluded from current-import checks; immutable vendor documentation is
+verified by the vendor manifest. Keep the migration/import map and specialized
+API guides authoritative, and link to them from overview documents.
+
 ## Linting
 
 ```bash

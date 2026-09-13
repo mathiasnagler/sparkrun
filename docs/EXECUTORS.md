@@ -360,6 +360,12 @@ Unknown liveness or surviving workers fail teardown and retain recovery records
 and job metadata. Public observation errors and stop result types carry these
 outcomes. A successful stale-record cleanup counts zero stopped workloads.
 
+Native PID/owner record writes execute in a writer subshell. A failed write,
+including a writer killed by `SIGXFSZ`, leaves the owning launch shell able to
+remove its pending record and invoke process-group rollback. Only a complete
+atomic replacement becomes a committed PID claim. This is a record-write failure
+contract, not a guarantee of recovery if the owning launcher itself is killed.
+
 #### Legacy relative-path recovery
 
 Retain the old job metadata. Use low-level `LocalExecutor.status_cmd()`,

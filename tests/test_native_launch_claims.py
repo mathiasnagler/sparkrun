@@ -168,8 +168,8 @@ def test_saved_relative_destination_key_cannot_fall_back_to_default_stop(bench_e
 
 
 @pytest.mark.parametrize("stale", [False, True])
-@pytest.mark.parametrize("failure", ["write", "rename", "temporary"])
-def test_pid_commit_failure_rolls_back_child_and_allows_retry(tmp_path, failure, stale):
+@pytest.mark.parametrize("failure,ignore_xfsz", [("write", False), ("write", True), ("rename", False), ("temporary", False)])
+def test_pid_commit_failure_rolls_back_child_and_allows_retry(tmp_path, failure, ignore_xfsz, stale):
     from sparkrun.core.application_profile import ApplicationProfile, select_application_profile
 
     select_application_profile(ApplicationProfile(id="s", display_name="Test", command="s", package="s"))
@@ -196,10 +196,11 @@ def test_pid_commit_failure_rolls_back_child_and_allows_retry(tmp_path, failure,
 
     def limit():
         resource.setrlimit(resource.RLIMIT_FSIZE, (1, 1))
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
     pid = None
     try:
-        script = "trap '' XFSZ\n" + executor.run_cmd("", "exec sleep 300", name)
+        script = ("trap '' XFSZ\n" if ignore_xfsz else "") + executor.run_cmd("", "exec sleep 300", name)
         result = subprocess.run(
             ["bash", "-c", script],
             env=environment,
@@ -210,10 +211,10 @@ def test_pid_commit_failure_rolls_back_child_and_allows_retry(tmp_path, failure,
         )
         assert result.returncode != 0 and "Launched" not in result.stdout
         pid = int(re.search(r"Cannot persist native PID (\d+)", result.stderr)[1])
-        assert "Rolled back native launch" in result.stderr
+        assert re.search(r"^Rolled back native launch: PID/group %d$" % pid, result.stderr, re.MULTILINE)
         assert not alive(pid)
         if failure == "write":
-            assert "File too large" in result.stderr
+            assert ("File too large" if ignore_xfsz else "File size limit exceeded") in result.stderr
         assert record.read_text() == "999999999" if stale else not record.exists()
         assert not list(directory.glob("*.pending.*"))
         ready = tmp_path / "ready"
@@ -228,7 +229,8 @@ def test_pid_commit_failure_rolls_back_child_and_allows_retry(tmp_path, failure,
         cleanup_group(pid)
 
 
-def test_owner_write_failure_prevents_spawn_and_preserves_stale_claim(tmp_path):
+@pytest.mark.parametrize("ignore_xfsz", [False, True])
+def test_owner_write_failure_prevents_spawn_and_preserves_stale_claim(tmp_path, ignore_xfsz):
     executor = LocalExecutor(ExecutorConfig(pid_dir=str(tmp_path), log_dir=str(tmp_path)))
     record = tmp_path / (NAME + ".pid")
     record.write_text("999999999")
@@ -237,8 +239,9 @@ def test_owner_write_failure_prevents_spawn_and_preserves_stale_claim(tmp_path):
 
     def limit():
         resource.setrlimit(resource.RLIMIT_FSIZE, (1, 1))
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
-    script = "trap '' XFSZ\n" + executor.run_cmd("", "touch %s" % shlex.quote(str(ready)), NAME)
+    script = ("trap '' XFSZ\n" if ignore_xfsz else "") + executor.run_cmd("", "touch %s" % shlex.quote(str(ready)), NAME)
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, preexec_fn=limit, timeout=5)
     assert result.returncode != 0 and "Launched" not in result.stdout
     assert "Cannot persist native PID" not in result.stderr

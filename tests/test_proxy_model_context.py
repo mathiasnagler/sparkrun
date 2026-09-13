@@ -194,22 +194,24 @@ def test_proxy_model_to_dict_omits_max_model_len_when_none():
 
 def test_models_via_api_reads_model_info():
     """``proxy models --json`` surfaces the window LiteLLM reports back."""
-    from sparkrun.api.proxy._ops import _models_via_api
+    from sparkrun.proxy.engine import ProxyEngine
 
-    engine = MagicMock()
-    engine.list_models_via_api.return_value = [
-        {
-            "model_name": "m",
-            "litellm_params": {"api_base": "http://10.0.0.1:8000/v1"},
-            "model_info": {"max_input_tokens": 524288},
-        },
-        {
-            "model_name": "n",
-            "litellm_params": {"api_base": "http://10.0.0.2:8000/v1"},
-            "model_info": {"max_input_tokens": None},
-        },
-    ]
+    engine = ProxyEngine()
+    engine.list_models_via_api = MagicMock(
+        return_value=[
+            {
+                "model_name": "m",
+                "litellm_params": {"api_base": "http://10.0.0.1:8000/v1"},
+                "model_info": {"max_input_tokens": 524288},
+            },
+            {
+                "model_name": "n",
+                "litellm_params": {"api_base": "http://10.0.0.2:8000/v1"},
+                "model_info": {"max_input_tokens": None},
+            },
+        ]
+    )
 
-    models = _models_via_api(engine)
+    models = engine.query_models()
 
     assert [(m.model_name, m.max_model_len) for m in models] == [("m", 524288), ("n", None)]

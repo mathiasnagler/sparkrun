@@ -24,8 +24,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from sparkrun.api._context import resolve_sctx
+from sparkrun.proxy.contracts import ProxyModel, GatewayQueryError, GatewayConsole, GatewayConsoleCredentials, GatewayAdminToken
 
-from ._errors import GatewayUnavailable, ProxyAlreadyRunning, ProxyStartFailed, ProxyUnsupported, ProxyUpdateFailed
+from ._errors import GatewayUnavailable, ProxyAlreadyRunning, ProxyStartFailed, ProxyUnsupported, ProxyUpdateFailed, ProxyQueryFailed
 
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
@@ -41,23 +42,6 @@ RESTART_WAIT_SECONDS = 10.0
 # --------------------------------------------------------------------------
 # Data models
 # --------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ProxyModel:
-    """One model entry served by the gateway."""
-
-    model_name: str
-    api_base: str = ""
-    #: Max context length (tokens) of the served model, when known (from the
-    #: backend's ``max_model_len``). ``None`` when unavailable.
-    max_model_len: int | None = None
-
-    def to_dict(self) -> dict[str, object]:
-        d: dict[str, object] = {"model_name": self.model_name, "api_base": self.api_base or "?"}
-        if self.max_model_len is not None:
-            d["max_model_len"] = self.max_model_len
-        return d
 
 
 @dataclass(frozen=True)
@@ -98,6 +82,12 @@ class ProxyStatus:
     model_query_error: str = ""
     #: False when no state file exists at all (never started / cleaned up).
     known: bool = True
+
+    def require_models(self) -> tuple[ProxyModel, ...]:
+        """Return observed models, raising instead of treating failed queries as empty."""
+        if self.model_query_error:
+            raise ProxyQueryFailed("Model list unavailable: %s" % self.model_query_error)
+        return self.models
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -518,7 +508,13 @@ def status(*, sctx: "SparkrunContext | None" = None) -> ProxyStatus:
     except (TypeError, ValueError):
         ad_pid = None
 
-    served_models = _models_via_api(engine) if running else ()
+    served_models: tuple[ProxyModel, ...] = ()
+    model_query_error = ""
+    if running:
+        try:
+            served_models = engine.query_models()
+        except GatewayQueryError as exc:
+            model_query_error = str(exc) or "Gateway model query failed"
     return ProxyStatus(
         running=running,
         gateway=str(state.get("gateway") or engine.gateway_name),
@@ -529,16 +525,13 @@ def status(*, sctx: "SparkrunContext | None" = None) -> ProxyStatus:
         autodiscover_pid=ad_pid,
         autodiscover_running=_pid_alive(ad_pid),
         models=served_models,
-        model_query_error=str(getattr(engine, "model_query_error", "")) if running else "",
+        model_query_error=model_query_error,
     )
 
 
 def models(*, sctx: "SparkrunContext | None" = None) -> tuple[ProxyModel, ...]:
-    """Return the models the running proxy reports (empty when stopped)."""
-    engine = _running_engine(sctx)
-    if not engine.is_running():
-        return ()
-    return _models_via_api(engine)
+    """Return served models (empty when stopped); raise ProxyQueryFailed if unavailable."""
+    return status(sctx=sctx).require_models()
 
 
 def sync(
@@ -822,34 +815,6 @@ def _stop_and_wait(engine) -> bool:
     return True
 
 
-def _models_via_api(engine) -> tuple[ProxyModel, ...]:
-    """Normalize the management API's model rows into :class:`ProxyModel`.
-
-    A gateway that cannot enumerate its models at all reports that through
-    ``engine.model_query_error`` rather than by raising: ``proxy status`` is a
-    diagnostic and must still describe the *process* when the management query
-    is the part that failed.
-    """
-    try:
-        rows = engine.list_models_via_api()
-    except NotImplementedError as exc:
-        engine.model_query_error = str(exc)
-        return ()
-    out: list[ProxyModel] = []
-    for m in rows:
-        params = m.get("litellm_params") or m.get("model_info", {}).get("litellm_params", {})
-        info = m.get("model_info") or {}
-        mml = info.get("max_input_tokens") or info.get("max_tokens") or info.get("max_model_len")
-        out.append(
-            ProxyModel(
-                model_name=m.get("model_name", "?"),
-                api_base=params.get("api_base", ""),
-                max_model_len=mml if isinstance(mml, int) else None,
-            )
-        )
-    return tuple(out)
-
-
 def _to_endpoint(ep: "DiscoveredEndpoint") -> ProxyEndpoint:
     """Flatten a discovery record into the api's endpoint shape."""
     return ProxyEndpoint(
@@ -909,8 +874,7 @@ class ProxyUiResult:
 
     url: str
     running: bool
-    #: Sparkrun-managed operator credential; ``None`` unless requested or auth
-    #: is explicitly disabled. Stored owner-only for later retrieval.
+    #: Console credential when requested; the provider may issue or reuse it.
     token: str | None = None
     #: Address the console's listener is bound to.  Differs from the host in
     #: :attr:`url` for a wildcard bind, which is not connectable as written.
@@ -927,49 +891,51 @@ def ui(*, issue_token: bool = False, sctx: "SparkrunContext | None" = None) -> P
     flag was on stays reachable.
 
     Args:
-        issue_token: Return the single owner-only admin token managed by
-            Sparkrun. Kept for CLI compatibility; ``admin_token`` is the
-            explicit credential-management API.
+        issue_token: Ask the gateway to create or return console credentials.
+            This can enable authentication. Kept for CLI compatibility;
+            ``admin_token`` is the explicit read/rotate/clear API.
 
     Raises:
         ProxyUnsupported: the running gateway serves no admin console.
     """
     engine = _running_engine(sctx)
-    url = getattr(engine, "ui_url", None)
+    if not isinstance(engine, GatewayConsole):
+        raise ProxyUnsupported("The %s gateway does not serve an admin console." % engine.gateway_name)
+    url = engine.ui_url
     if not url:
         raise ProxyUnsupported("The %s gateway does not serve an admin console." % getattr(engine, "gateway_name", "configured"))
 
     token = None
     if issue_token:
-        issue = getattr(engine, "issue_ui_credential", None)
-        if issue is None:
+        if not isinstance(engine, GatewayConsoleCredentials):
             raise ProxyUnsupported("The %s gateway cannot issue console credentials." % engine.gateway_name)
         try:
-            token = issue()
+            token = engine.issue_ui_credential()
         except RuntimeError as exc:
             raise ProxyUpdateFailed(str(exc)) from exc
     return ProxyUiResult(
         url=str(url),
         running=engine.is_running(),
         token=token,
-        bind_host=str(getattr(engine, "admin_bind_host", "")),
-        exposed=bool(getattr(engine, "admin_exposed", False)),
-        auth_required=bool(getattr(engine, "admin_auth_required", True)),
+        bind_host=engine.admin_bind_host,
+        exposed=engine.admin_exposed,
+        auth_required=engine.admin_auth_required,
     )
 
 
 def admin_token(*, rotate: bool = False, clear: bool = False, sctx: "SparkrunContext | None" = None) -> str | None:
-    """Return, rotate, or clear the configured gateway's live admin token.
+    """Return, rotate, or clear the managed gateway's live admin token.
 
     None means admin authentication is currently open. Rotation generates a
     high-entropy bearer token and takes effect immediately; clearing removes
     that requirement immediately.
     """
+    if rotate and clear:
+        raise ValueError("rotate and clear are mutually exclusive")
     engine = _running_engine(sctx)
-    operation = getattr(engine, "admin_token", None)
-    if operation is None:
+    if not isinstance(engine, GatewayAdminToken):
         raise ProxyUnsupported("The %s gateway has no managed admin token." % getattr(engine, "gateway_name", "configured"))
     try:
-        return operation(rotate=rotate, clear=clear)
+        return engine.admin_token(rotate=rotate, clear=clear)
     except RuntimeError as exc:
         raise ProxyUpdateFailed(str(exc)) from exc

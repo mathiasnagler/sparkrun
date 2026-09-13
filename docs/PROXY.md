@@ -86,8 +86,11 @@ sparkrun proxy sync
 ```
 
 Status reports the running implementation, PID, bind address, discovery process,
-and models returned by the gateway. An unavailable model query is distinguished
-from an empty model list in the status result.
+and models returned by the gateway. It preserves `model_query_error` when
+observation fails. `proxy models` returns a nonzero exit status on query failure
+in both text and JSON modes; it never reports a successful empty list for that
+case. `api.proxy.models()` raises `ProxyQueryFailed`; callers already holding a
+`ProxyStatus` can use `require_models()` for the same checked result.
 
 Sync reconciles discovered endpoints and saved settings through the running
 gateway. `models --refresh` syncs before listing. Update behavior depends on the
@@ -140,7 +143,8 @@ supports an admin console and managed admin token. `ui` prints its URL; it does
 not launch a browser. `get` reads the token, `set` generates a replacement, and
 `clear` removes the requirement when gateway policy permits. These operations
 are not an inference API key rotation API. `ui --issue-token` is a compatibility
-alias for displaying the stored token.
+option that asks the gateway to create or return console credentials. It can
+enable admin authentication; use `admin-token get` for a read-only query.
 
 Sparkrun's LiteLLM integration does not provision the database required for its
 admin UI. Its master key provides stateless authentication. SparkRoute has its
@@ -267,3 +271,50 @@ provide configuration, model reconciliation and management capabilities such as
 Start checks availability even for a dry run. Existing processes remain
 manageable after a feature is disabled; when an implementation is unavailable,
 the base supervisor can still inspect state and stop the recorded process.
+
+### Gateway plugin contract
+
+`sparkrun.proxy.contracts` is the supported import for `ProxyModel`,
+`GatewayQueryError`, and optional console/credential protocols. `ProxyModel` is
+the same immutable class exported by `api.proxy`; providers and callers do not
+need separate copies of the model record.
+
+```python
+from sparkrun.proxy._supervisor import GatewaySupervisor
+from sparkrun.proxy.contracts import ProxyModel, GatewayQueryError
+
+class ExampleGateway(GatewaySupervisor):
+    gateway_name = "example"
+
+    def query_models(self) -> tuple[ProxyModel, ...]:
+        # Fetch and validate the provider's response here. Translate a failed
+        # query to GatewayQueryError with a diagnostic containing no secrets.
+        return (ProxyModel("example-model", "http://worker:8000/v1", 32768),)
+```
+
+`query_models()` returns a tuple, with an empty tuple meaning a successful empty
+observation. It raises `GatewayQueryError` when enumeration is unavailable.
+`status()` preserves that diagnostic alongside process state; `models()` exposes
+it as `ProxyQueryFailed`. Provider wire dictionaries stay below the API boundary.
+
+The supervisor retains a compatibility adapter for `list_models_via_api()` plus
+`model_query_error`. It supports LiteLLM's legacy `litellm_params`/`model_info`
+rows and the flat rows returned by the pinned SparkRoute plugin, including their
+`api_base`. New plugins implement the typed method directly. Removing the legacy
+hook requires coordinating compatible provider releases, including the vendored
+SparkRoute update; its immutable snapshot is not edited locally.
+
+Optional capabilities are independent structural protocols:
+
+| Protocol | Contract |
+| --- | --- |
+| `GatewayConsole` | Read-only `ui_url`, `admin_bind_host`, `admin_exposed`, and `admin_auth_required` properties describing the live console. |
+| `GatewayConsoleCredentials` | `issue_ui_credential() -> str` creates or returns a console credential; it may enable authentication. |
+| `GatewayAdminToken` | `admin_token(*, rotate=False, clear=False) -> str | None`: read, replace, or disable authentication when provider policy permits. `None` means open access. |
+
+A gateway can offer a read-only console without credential issuance, or token
+management independently of a console. Missing capabilities raise
+`ProxyUnsupported`. Credential-operation `RuntimeError` diagnostics become
+`ProxyUpdateFailed` and must not include secrets. Passing both `rotate=True` and
+`clear=True` is invalid and raises `ValueError` before dispatch. Admin-token
+operations do not rotate the inference API key.

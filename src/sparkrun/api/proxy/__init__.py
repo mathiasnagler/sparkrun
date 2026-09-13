@@ -32,6 +32,7 @@ from ._errors import (
     ProxyStartFailed,
     ProxyUnsupported,
     ProxyUpdateFailed,
+    ProxyQueryFailed,
 )
 from ._ops import (
     ProxyAliasResult,
@@ -91,4 +92,5 @@ __all__ = [
     "ProxyStartFailed",
     "ProxyUnsupported",
     "ProxyUpdateFailed",
+    "ProxyQueryFailed",
 ]

@@ -204,7 +204,9 @@ _sr_local_stop() {
 _sr_local_write_record() {
     local temporary
     temporary=$(mktemp -- "$2.pending.XXXXXX") || return 1
-    if printf %s "$1" > "$temporary" && mv -fT -- "$temporary" "$2"; then
+    # Keep the owning shell alive if the write receives SIGXFSZ. It retains
+    # the temporary path for cleanup and the child PID for launch rollback.
+    if (printf %s "$1" > "$temporary") && mv -fT -- "$temporary" "$2"; then
         return 0
     fi
     rm -f -- "$temporary" || printf 'Cannot remove pending native record: %s\n' "$temporary" >&2

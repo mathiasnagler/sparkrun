@@ -736,3 +736,13 @@ meaning as the declared-input hash. `raw_container` preserves the declaration.
 A missing historical image remains unknown during processing-only recovery.
 Publication-only retry payloads remain the integration's responsibility in
 `context.data`, as described above.
+
+
+## Gateway extensions
+
+Use `sparkrun.proxy.gateway.register_gateway` for deferred engine registration.
+New engines implement the typed model-query contract in
+[`sparkrun.proxy.contracts`](PROXY.md#gateway-plugin-contract), using the same
+`ProxyModel` class returned by the public API. Console, console-credential
+issuance, and admin-token management are separate optional protocols. Existing
+legacy dictionary providers are adapted by the shared supervisor.
