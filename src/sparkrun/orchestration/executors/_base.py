@@ -561,10 +561,11 @@ class Executor(Plugin):
         container, which ``status_cmd``'s ``docker ps`` cannot see and
         ``docker rm -f`` must still delete.
 
-        The default is :meth:`status_cmd`, correct for every substrate where
-        a workload's only state *is* its liveness (the ``local`` executor: a
-        pidfile whose process is gone leaves nothing to remove).  Executors
-        with a separate dead-but-present state override.
+        The default is :meth:`status_cmd` for substrates where presence
+        follows process liveness. Executors with a separate dead-but-present
+        state override. A non-zero status can also mean failed acquisition;
+        :meth:`teardown_script` must preserve that distinction before treating
+        a workload as absent.
         """
         return self.status_cmd(container_name)
 
@@ -590,16 +591,13 @@ class Executor(Plugin):
           with the number of workloads that were **actually present** before
           the removal — not the number of names attempted.
 
-        The default composes :meth:`exists_cmd` and :meth:`stop_cmd`, so an
-        executor gets a correct teardown from the primitives it already
-        defines (this is the whole of the ``local`` and ``k8s`` implementations).
-
-        Executors whose substrate can be *unavailable* rather than merely empty
-        — a daemon or CLI that may be down, where "not present" and "cannot
-        tell" are different answers — must override to check substrate health
-        first, or an unreachable backend reads as a successful teardown.  That
-        is exactly why :class:`~sparkrun.orchestration.executors.docker.DockerExecutor`
-        overrides it.
+        The default composes :meth:`exists_cmd` and :meth:`stop_cmd`.
+        Executors must override when those binary checks cannot distinguish
+        confirmed absence from an unavailable substrate or unreadable state.
+        Docker checks daemon availability; local execution acquires PID/owner
+        state and verifies the captured process under its lock before unlinking
+        recovery records. Failed acquisition must fail teardown, not count as
+        successful removal.
         """
         from sparkrun.orchestration.teardown import format_teardown_removed
 

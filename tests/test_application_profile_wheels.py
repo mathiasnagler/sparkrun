@@ -403,3 +403,35 @@ assert profile == upstream
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_wheel_native_state_helpers_fail_closed(wheels, tmp_path):
+    _, _, python = wheels
+    result = subprocess.run(
+        [
+            str(python),
+            "-I",
+            "-c",
+            """
+import subprocess
+from pathlib import Path
+from sparkrun.orchestration.executors._base import ExecutorConfig
+from sparkrun.orchestration.executors.local import LocalExecutor
+root = Path.cwd()
+name = "sparkrun_" + "a" * 16 + "_" + "b" * 12 + "_solo"
+executor = LocalExecutor(ExecutorConfig(pid_dir=str(root / "pids")))
+script = executor.teardown_script([name])
+assert subprocess.run(["bash", "-c", script], capture_output=True).returncode == 0
+pid = root / "pids" / (name + ".pid")
+pid.write_text("invalid PID")
+result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+assert result.returncode != 0 and "invalid" in result.stderr
+assert pid.read_text() == "invalid PID"
+""",
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

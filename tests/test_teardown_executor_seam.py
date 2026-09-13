@@ -166,13 +166,12 @@ def test_local_teardown_fails_when_the_workload_survives(tmp_path):
         script = _local_executor(tmp_path).teardown_script([NAME])
         script = script.replace("kill -TERM", "true kill -TERM").replace("kill -KILL", "true kill -KILL")
         script = script.replace("sleep 1", "true")
-        # ...and keep the pidfile, so the verification can still find it.
-        script = script.replace("rm -f", "true rm -f")
 
         rc, _out, err = _run(script)
 
         assert rc == 1
         assert NAME in err
+        assert (tmp_path / "pids" / ("%s.pid" % NAME)).exists(), "failed teardown must preserve recovery state"
         assert _group_members(pid) != []
     finally:
         _reap(pid)

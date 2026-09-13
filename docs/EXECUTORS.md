@@ -110,9 +110,14 @@ lists. Falsy values fall through to the dataclass defaults.
 
 Local PID and log paths share the same remote path normalization and shell
 rendering. A leading `~/`, `$HOME/`, or `${HOME}/` expands on the workload host;
-spaces and other shell metacharacters remain literal. Equivalent home prefixes
-and redundant path separators resolve to the same destination. Resolution never
-uses the controller's home directory or follows remote symlinks.
+spaces and other shell metacharacters remain literal. Equivalent home prefixes,
+redundant separators, and redundant current-directory components share a spelling.
+Parent (`..`) components are retained: `/base/link/../pids` can differ from
+`/base/pids` when `link` is a symlink. Destination identity preserves that
+distinction. Normalization never uses the controller's home directory or resolves
+remote symlinks; the workload host performs filesystem traversal. An explicit
+file path ending in `/` or `/.` retains its directory requirement rather than
+silently becoming a valid file path.
 
 Managed local workloads require `pid_dir`, with one PID file per workload/rank.
 A singular `pid_file` cannot identify multiple workloads during metadata-free
@@ -408,6 +413,26 @@ are released by the OS when the operation exits. Lock files stay in place so
 concurrent operations continue to lock the same inode. Explicitly shared PID
 paths reject another application's owner even if its claim appeared after solo
 preflight. A launch also refuses to replace a PID that is still running.
+
+Local discovery, liveness, launch, and stop share state-reading helpers that
+distinguish present, confirmed absent, and failed acquisition. Unreadable
+directories, unreadable or invalid PID/owner records, and failed liveness checks
+produce errors. Discovery then reports incomplete observation rather than free
+capacity or confirmed absence, so it cannot authorize automatic metadata pruning.
+An absent entry in a readable parent namespace establishes absence; a failed
+stat alone cannot.
+
+A legacy workload may omit its owner marker only when that marker is confirmed
+missing and its name belongs to the application's legacy namespace. Present empty,
+malformed, or unreadable markers never authorize replacement or deletion. Valid
+foreign markers continue to prevent mutation.
+
+`LocalExecutor.status_cmd()` exits 0 for a live process, 1 for confirmed absence
+or a dead process, and 2 when state cannot be established. Teardown counts and
+verifies the captured PID under the same lock before removing PID/owner records.
+Exited zombies count as stopped; unknown liveness and surviving processes fail
+teardown and retain recovery records and job metadata. The existing public
+observation errors and stop results carry these failures.
 
 
 ## Docker seccomp profiles (0.4)

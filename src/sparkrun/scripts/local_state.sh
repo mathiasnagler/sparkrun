@@ -1,0 +1,132 @@
+# LocalExecutor state acquisition. 0 = present/alive, 1 = confirmed absent/dead,
+# 2 = failed acquisition or invalid data. Callers must inspect all three values.
+# These functions run in generated subshells; they do not change shell options.
+
+_sr_local_error() {
+    printf 'Cannot inspect native state: %s\n' "$*" >&2
+    return 2
+}
+
+_sr_local_directory() {
+    if [ -d "$1" ]; then
+        [ -r "$1" ] && [ -x "$1" ] && ls -A -- "$1" >/dev/null && return 0
+        _sr_local_error "directory $1 is not readable/searchable"
+        return 2
+    fi
+    # A failed stat alone cannot prove absence: inspect the parent namespace.
+    local rc
+    if _sr_local_entry "$1"; then
+        _sr_local_error "$1 is not an accessible directory"
+        return 2
+    else
+        rc=$?
+        return "$rc"
+    fi
+}
+
+_sr_local_entry() (
+    local parent leaf entry rc
+    parent=$(dirname -- "$1") || return 2
+    leaf=$(basename -- "$1") || return 2
+    if [ "$parent" = "$1" ] || [ "$leaf" = . ] || [ "$leaf" = .. ]; then
+        _sr_local_error "cannot traverse $1"
+        return 2
+    fi
+    if _sr_local_directory "$parent"; then :; else
+        rc=$?
+        return "$rc"
+    fi
+    # Include dangling links and entries whose stat failed. Confirm absence by
+    # enumerating a readable parent, not by interpreting a failed file read.
+    shopt -s nullglob dotglob
+    for entry in "$parent"/*; do
+        [ "${entry##*/}" = "$leaf" ] && return 0
+    done
+    return 1
+)
+
+_sr_local_read() {
+    local rc pattern
+    _sr_value=
+    if [ ! -f "$1" ]; then
+        if _sr_local_entry "$1"; then
+            _sr_local_error "$1 is not a regular readable file"
+            return 2
+        else
+            rc=$?
+            return "$rc"
+        fi
+    fi
+    case "$2" in
+        pid) pattern='[1-9][0-9]{0,9}' ;;
+        owner) pattern='[a-z][a-z0-9-]{0,47}' ;;
+    esac
+    # Check bytes before command substitution (which strips NULs). A damaged
+    # record must not become a valid PID or owner after shell text conversion.
+    if LC_ALL=C grep -a -q -v -x -E "$pattern" -- "$1"; then
+        _sr_local_error "invalid $2 record in $1"
+        return 2
+    else
+        rc=$?
+        [ "$rc" -eq 1 ] || { _sr_local_error "cannot read $1"; return 2; }
+    fi
+    if ! _sr_value=$(cat -- "$1"); then
+        _sr_local_error "cannot read $1"
+        return 2
+    fi
+    if [[ ! $_sr_value =~ ^$pattern$ ]]; then
+        _sr_local_error "invalid $2 record in $1"
+        return 2
+    fi
+    if [ "$2" = pid ] && (( _sr_value > 2147483647 )); then
+        _sr_local_error "invalid PID in $1"
+        return 2
+    fi
+    return 0
+}
+
+_sr_local_state() {
+    local rc
+    _sr_pid= _sr_owner= _sr_pid_present=0 _sr_owner_present=0
+    if _sr_local_read "$1" pid; then
+        _sr_pid=$_sr_value
+        _sr_pid_present=1
+    else
+        rc=$?
+        [ "$rc" -eq 1 ] || return "$rc"
+    fi
+    if _sr_local_read "$1.owner" owner; then
+        _sr_owner=$_sr_value
+        _sr_owner_present=1
+    else
+        rc=$?
+        [ "$rc" -eq 1 ] || return "$rc"
+    fi
+    return 0
+}
+
+_sr_local_alive() {
+    [ -n "$1" ] || return 1
+    local detail state
+    if detail=$(LC_ALL=C kill -0 -- "$1" 2>&1); then
+        # An exited child may remain a zombie until its parent reaps it.
+        if state=$(LC_ALL=C ps -o stat= -p "$1") && [ -n "$state" ]; then
+            state=${state//[[:space:]]/}
+            [[ $state == Z* ]] && return 1
+            return 0
+        fi
+        # ps may race process exit. Only ESRCH establishes absence; a failed
+        # inspection while the process exists is an unknown, not an empty slot.
+        if detail=$(LC_ALL=C kill -0 -- "$1" 2>&1); then
+            _sr_local_error "cannot read process status for PID $1"
+            return 2
+        fi
+    fi
+    # Bash's C-locale ESRCH diagnostic distinguishes dead processes from EPERM
+    # and other failures. Unrecognized diagnostics remain failures.
+    if [[ $detail == *'No such process' ]]; then
+        return 1
+    fi
+    _sr_local_error "cannot establish liveness for PID $1: $detail"
+    return 2
+}

@@ -500,3 +500,25 @@ sources retain their fallback behavior. Conflicting nonempty references fail bef
 new measurement commands; existing artifacts and historical provenance remain
 unchanged. Equivalent digest aliases are accepted. This adds no public result or
 context type and preserves complete-artifact recovery and publication-only retries.
+
+
+### Native filesystem state and recovery
+
+Local path normalization retains every parent (`..`) component so that remote
+symlink traversal still reaches the configured PID/log path. It does not resolve
+the path on the controller. Equivalent home-prefix spelling remains supported;
+distinct traversals retain distinct destination identities.
+
+Native state reads now distinguish confirmed absence from failure. Unreadable or
+invalid PID/owner files and unreadable directories produce observation errors;
+they cannot authorize free capacity or automatic metadata pruning. A missing
+legacy owner remains supported only when absence is confirmed and the workload's
+name belongs to the application's legacy namespace. A present empty or unreadable
+owner is an error, not a legacy record.
+
+Stop verifies the captured process before deleting its recovery records.
+Unverifiable or surviving processes produce a failed stop and retain job metadata.
+Low-level `LocalExecutor.status_cmd()` returns 0 for live, 1 for absent/dead,
+and 2 for acquisition failure; consumers must not interpret every non-zero result
+as absence. Public status and stop result types are unchanged. The managed
+`pid_file` rejection and documented command-level legacy recovery remain in place.

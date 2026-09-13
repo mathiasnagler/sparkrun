@@ -70,18 +70,28 @@ def default_log_dir():
 _GPUS_DEVICE_RE = re.compile(r"device=([0-9,]+)")
 
 
-def _remote_path(path: str) -> str:
-    """Canonical remote spelling shared by destination identity and scripts."""
+def _remote_path(path: str, *, directory: bool = False) -> str:
+    """Normalize spelling without resolving symlinks or cancelling parent steps."""
     if path in ("~", "${HOME}"):
         path = "$HOME"
     for prefix in ("~/", "${HOME}/"):
         if path.startswith(prefix):
             path = "$HOME/" + path[len(prefix) :]
             break
-    if path.startswith("$HOME/"):
-        relative = posixpath.normpath(path[len("$HOME/") :])
-        return "$HOME" if relative == "." else "$HOME/" + relative
-    return posixpath.normpath(path)
+    root = "//" if path.startswith("//") and not path.startswith("///") else "/" if path.startswith("/") else ""
+    result = root + "/".join(part for part in path.split("/") if part and part != ".")
+    result = result or "."
+    # A trailing slash/dot on a file path requires a directory. Do not turn a
+    # bad file path into a different successful read by dropping that constraint.
+    if not directory and path.endswith(("/", "/.")) and not result.endswith("/"):
+        result += "/"
+    return result
+
+
+def _state_helpers() -> str:
+    from sparkrun.scripts import read_script
+
+    return read_script("local_state.sh")
 
 
 def _shell_path(path: str) -> str:
@@ -102,7 +112,7 @@ def _shell_path(path: str) -> str:
         if path.startswith(prefix):
             rest = path[len(prefix) :]
             return '"$HOME"/' + quote(rest) if rest else '"$HOME"'
-    return quote(path)
+    return quote("./" + path if path.startswith("-") else path)
 
 
 class LocalExecutor(Executor):
@@ -133,10 +143,10 @@ class LocalExecutor(Executor):
             )
 
     def _pid_directory(self) -> str:
-        return _remote_path(self.config.pid_dir or default_pid_dir())
+        return _remote_path(self.config.pid_dir or default_pid_dir(), directory=True)
 
     def _log_directory(self) -> str:
-        return _remote_path(self.config.log_dir or default_log_dir())
+        return _remote_path(self.config.log_dir or default_log_dir(), directory=True)
 
     def resolve_target(self, *, dry_run=False) -> ExecutorTarget:
         self._require_pid_directory()
@@ -144,7 +154,7 @@ class LocalExecutor(Executor):
         return ExecutorTarget(
             self.executor_name,
             {"pid_dir": pid_dir, "log_dir": self._log_directory()},
-            destination_key=pid_dir if pid_dir != _remote_path(default_pid_dir()) else "",
+            destination_key=pid_dir if pid_dir != _remote_path(default_pid_dir(), directory=True) else "",
             user_scoped=True,
         )
 
@@ -266,13 +276,14 @@ class LocalExecutor(Executor):
         prelude = self._env_prelude(_hostify_env(env, volumes))
         body = (
             "(\n"
+            "%(helpers)s\n"
             "%(lock)s\n"
+            "_sr_local_state %(pid)s || exit $?\n"
             "%(guard)s\n"
-            "_existing_pid=$(cat %(pid)s 2>/dev/null || true)\n"
-            'if [ -n "$_existing_pid" ] && kill -0 "$_existing_pid" 2>/dev/null; then\n'
+            'if _sr_local_alive "$_sr_pid"; then\n'
             '    echo "Refusing to replace a running native workload" >&2; exit 1\n'
-            "fi\n"
-            "mkdir -p %(log_dir_dq)s || exit 1\n"
+            'else _rc=$?; [ "$_rc" -eq 1 ] || exit "$_rc"; fi\n'
+            "mkdir -p -- %(log_dir_dq)s || exit 1\n"
             "%(prelude)s"
             "printf %%s %(owner)s > %(pid)s.owner || exit 1\n"
             ": > %(pid)s || exit 1\n"
@@ -282,9 +293,10 @@ class LocalExecutor(Executor):
             'printf "Launched %%s (pid=%%s, log=%%s)\\n" %(name)s "$_pid" %(log)s\n'
             ") || exit $?\n"
         ) % {
+            "helpers": _state_helpers(),
             "lock": self._pid_lock(pid_file),
-            "guard": self._owner_guard(container_name, pid_file),
-            "log_dir_dq": '"$(dirname %s)"' % log_file,
+            "guard": self._owner_guard(container_name),
+            "log_dir_dq": '"$(dirname -- %s)"' % log_file,
             "prelude": prelude,
             "b64_cmd": _bash_safe_command(full_cmd),
             "log": log_file,
@@ -314,46 +326,79 @@ class LocalExecutor(Executor):
         return "bash -c %s" % _bash_safe_command(command)
 
     def stop_cmd(self, container_name: str, force: bool = True) -> str:
-        """Signal the process group, wait briefly, SIGKILL, then prune pidfile."""
+        """Stop a verified process; retain recovery records on any unknown outcome."""
+        return self._stop_command(container_name)
+
+    def _stop_command(self, container_name: str, *, report_removed=False) -> str:
         assert_resource_namespace(container_name)
         pid_file = _shell_path(self._resolve_pid_file(container_name))
-        # Send to the negative PID to target the whole process group.
-        # ``kill -0`` precheck avoids spurious "no such process" noise.
-        # 2>/dev/null on the read guards against missing pidfile.
         return (
-            "( "
-            "%(lock)s; "
-            "%(guard)s "
-            "_pid=$(cat %(pid)s 2>/dev/null || true); "
-            'if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then '
-            '  kill -TERM -- -"$_pid" 2>/dev/null || kill -TERM "$_pid" 2>/dev/null || true; '
-            "  for _i in 1 2 3 4 5 6 7 8 9 10; do "
-            '    kill -0 "$_pid" 2>/dev/null || break; '
-            "    sleep 1; "
-            "  done; "
-            '  kill -0 "$_pid" 2>/dev/null && '
-            '    { kill -KILL -- -"$_pid" 2>/dev/null || kill -KILL "$_pid" 2>/dev/null || true; }; '
-            "fi; "
-            "rm -f %(pid)s %(pid)s.owner 2>/dev/null || true; "
+            "(\n"
+            "%(helpers)s\n"
+            "%(lock)s\n"
+            "_sr_local_state %(pid)s || exit $?\n"
+            "%(guard)s\n"
+            "_was_running=0\n"
+            'if _sr_local_alive "$_sr_pid"; then\n'
+            "  _was_running=1\n"
+            '  kill -TERM -- -"$_sr_pid" 2>/dev/null || kill -TERM "$_sr_pid" 2>/dev/null || true\n'
+            "  for _i in 1 2 3 4 5 6 7 8 9 10; do\n"
+            '    if _sr_local_alive "$_sr_pid"; then :; else\n'
+            '      _rc=$?; [ "$_rc" -eq 1 ] && break; exit "$_rc"\n'
+            "    fi\n"
+            "    sleep 1\n"
+            "  done\n"
+            '  if _sr_local_alive "$_sr_pid"; then\n'
+            '    kill -KILL -- -"$_sr_pid" 2>/dev/null || kill -KILL "$_sr_pid" 2>/dev/null || true\n'
+            "    for _i in 1 2 3 4 5 6 7 8 9 10; do\n"
+            '      if _sr_local_alive "$_sr_pid"; then :; else\n'
+            '        _rc=$?; [ "$_rc" -eq 1 ] && break; exit "$_rc"\n'
+            "      fi\n"
+            "      sleep 0.1\n"
+            "    done\n"
+            '  else _rc=$?; [ "$_rc" -eq 1 ] || exit "$_rc"; fi\n'
+            'else _rc=$?; [ "$_rc" -eq 1 ] || exit "$_rc"; fi\n'
+            'if _sr_local_alive "$_sr_pid"; then\n'
+            "  printf 'Native workload still present: %%s\\n' %(name)s >&2; exit 1\n"
+            'else _rc=$?; [ "$_rc" -eq 1 ] || exit "$_rc"; fi\n'
+            "rm -f -- %(pid)s %(pid)s.owner || exit 1\n"
+            "%(report)s\n"
             ") || exit $?"
-        ) % {"pid": pid_file, "guard": self._owner_guard(container_name, pid_file), "lock": self._pid_lock(pid_file)}
+        ) % {
+            "helpers": _state_helpers(),
+            "pid": pid_file,
+            "name": quote(container_name),
+            "guard": self._owner_guard(container_name),
+            "lock": self._pid_lock(pid_file),
+            "report": 'printf "%s\\n" "$_was_running"' if report_removed else "",
+        }
+
+    def teardown_script(self, container_names: list[str] | tuple[str, ...]) -> str:
+        """Count and verify each stop under its PID lock; unknowns fail teardown."""
+        from sparkrun.orchestration.teardown import TEARDOWN_REMOVED_MARKER
+
+        lines = ["_sr_removed=0"]
+        for name in container_names:
+            lines.append("_sr_count=$( %s\n) || exit $?" % self._stop_command(name, report_removed=True))
+            lines.append("_sr_removed=$((_sr_removed + _sr_count))")
+        lines.append('printf "%%s%%s\\n" %s "$_sr_removed"' % quote(TEARDOWN_REMOVED_MARKER))
+        return "\n".join(lines) + "\n"
 
     @staticmethod
     def _pid_lock(pid_file):
-        # Never unlink the lock file: competing processes must lock the same
-        # inode. The workload closes fd 9 so it cannot retain the launch lock.
-        return 'mkdir -p "$(dirname %s)" && exec 9>%s.lock && flock -x 9 || exit 1' % (pid_file, pid_file)
+        # Keep the inode stable, and close fd 9 in the workload child.
+        return 'mkdir -p -- "$(dirname -- %s)" && exec 9>%s.lock && flock -x 9 || exit 1' % (pid_file, pid_file)
 
-    def _owner_guard(self, name, pid_file):
-        legacy = owns_resource(name)
-        condition = '[ "$_owner" = %s ]' % quote(get_application_profile().id)
-        if legacy:
-            condition += ' || [ -z "$_owner" ]'
-        return (
-            "_owner=$(cat %(pid)s.owner 2>/dev/null || true); "
-            "{ { [ ! -e %(pid)s ] && [ ! -e %(pid)s.owner ]; } || %(condition)s; } || "
-            '{ echo "Refusing to modify a native workload owned by another application" >&2; exit 1; };'
-        ) % {"pid": pid_file, "condition": condition}
+    def _owner_guard(self, name):
+        # _sr_local_state has already distinguished missing and invalid markers.
+        condition = '[ "$_sr_owner_present" -eq 1 ] && [ "$_sr_owner" = %s ]' % quote(get_application_profile().id)
+        absent_owner = '[ "$_sr_owner_present" -eq 0 ]'
+        if not owns_resource(name):
+            absent_owner += ' && [ "$_sr_pid_present" -eq 0 ]'
+        return ('{ { %s; } || { %s; }; } || { echo "Refusing to modify a native workload owned by another application" >&2; exit 1; };') % (
+            condition,
+            absent_owner,
+        )
 
     def logs_cmd(
         self,
@@ -372,9 +417,9 @@ class LocalExecutor(Executor):
         return " ".join(parts)
 
     def status_cmd(self, container_name: str) -> str:
-        """Exit 0 iff the workload's PID is still alive."""
+        """Exit 0 for live, 1 for absent/dead, and 2 for failed state acquisition."""
         pid_file = _shell_path(self._resolve_pid_file(container_name))
-        return ('{ _pid=$(cat %(pid)s 2>/dev/null || true); [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; }') % {"pid": pid_file}
+        return '(\n%s\n_sr_local_state %s || exit $?\n_sr_local_alive "$_sr_pid"\n)' % (_state_helpers(), pid_file)
 
     def describe_terminated(
         self,
@@ -608,10 +653,10 @@ class LocalExecutor(Executor):
     ) -> "ClusterStatus":
         """Snapshot sparkrun-launched native subprocesses across *hosts*.
 
-        Reads pidfiles under :data:`default_pid_dir()` over SSH and
-        ``kill -0``-checks each PID.  Workloads whose pidfile name
-        matches the canonical ``sparkrun_<digest>_<role>`` convention
-        are surfaced.  Unreachable hosts are omitted.
+        Reads the configured PID directory and validates process and owner
+        records on each host. Canonically named workloads belonging to the
+        application are surfaced. Unreachable hosts and failed state acquisition
+        are reported as errors without claiming complete coverage for that host.
         """
         from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy
         from sparkrun.core.hardware import resolve_fallback_hardware
@@ -622,19 +667,20 @@ class LocalExecutor(Executor):
             return ClusterStatus(hosts=(), queried_at=time.time(), executor=self.executor_name)
 
         pid_dir = _shell_path(self._pid_directory())
-        # Print "<name>\t<pid>" for each pidfile whose PID is alive.
-        script = (
+        # A glob miss is meaningful only after acquiring a readable namespace.
+        script = _state_helpers() + (
+            "\nif _sr_local_directory %s; then :; else\n"
+            '  _rc=$?; [ "$_rc" -eq 1 ] && exit 0; exit "$_rc"\n'
+            "fi\n"
             "shopt -s nullglob\n"
             "for f in %s/*.pid; do\n"
-            '  [ -f "$f" ] || continue\n'
-            '  name=$(basename "$f" .pid)\n'
-            '  pid=$(cat "$f" 2>/dev/null || true)\n'
-            '  [ -n "$pid" ] || continue\n'
-            '  kill -0 "$pid" 2>/dev/null || continue\n'
-            '  owner=$(cat "$f.owner" 2>/dev/null || true)\n'
-            '  printf "%%s\\t%%s\\t%%s\\n" "$name" "$pid" "$owner"\n'
+            '  name=$(basename -- "$f" .pid) || exit 2\n'
+            '  _sr_local_state "$f" || exit $?\n'
+            '  if _sr_local_alive "$_sr_pid"; then\n'
+            '    printf "%%s\\t%%s\\t%%s\\n" "$name" "$_sr_pid" "$_sr_owner"\n'
+            '  else _rc=$?; [ "$_rc" -eq 1 ] || exit "$_rc"; fi\n'
             "done\n"
-        ) % pid_dir
+        ) % (pid_dir, pid_dir)
 
         ssh_kwargs = ssh_kwargs or {}
         # ``allow_local=True`` for the same reason as the docker executor:
