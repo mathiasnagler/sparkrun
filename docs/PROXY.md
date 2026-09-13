@@ -336,10 +336,10 @@ it as `ProxyQueryFailed`. Provider wire dictionaries stay below the API boundary
 
 The supervisor retains a compatibility adapter for `list_models_via_api()` plus
 `model_query_error`. It supports LiteLLM's legacy `litellm_params`/`model_info`
-rows and the flat rows returned by the pinned SparkRoute plugin, including their
-`api_base`. New plugins implement the typed method directly. Removing the legacy
-hook requires coordinating compatible provider releases, including the vendored
-SparkRoute update; its immutable snapshot is not edited locally.
+rows and flat legacy rows, including their `api_base`. New plugins implement the
+typed method directly. The bundled SparkRoute plugin implements `query_models()`
+and the shared operational errors in its upstream source. Removing the legacy
+hook still requires migrating LiteLLM and coordinating other legacy providers.
 
 Optional capabilities are independent structural protocols:
 
@@ -359,13 +359,12 @@ Diagnostics must not include secrets. Other exceptions, including a bare
 `RuntimeError` or provider-thrown `NotImplementedError`, propagate as provider
 bugs. Stop hooks also use `GatewayOperationError` and become `ProxyUpdateFailed`.
 
-The host adapts the pinned SparkRoute 0.1.1 class when resolving it through the
-gateway registry. Its transport/authentication/retry errors gain the shared
-operational contract while retaining their upstream error metadata and causes.
-The snapshot itself is unchanged, and its startup and model-query behavior is
-preserved. Direct imports of the vendored class retain its upstream behavior;
-applications should use `api.proxy`, and provider resolution should use the
-registry. The legacy `_supervisor` imports remain aliases for the shared classes.
-Passing both `rotate=True` and
-`clear=True` is invalid and raises `ValueError` before dispatch. Admin-token
-operations do not rotate the inference API key.
+The bundled SparkRoute plugin implements these contracts directly in its upstream
+source. Registry resolution returns that same class; no host adapter changes its
+errors or behavior. Transport/authentication/retry failures retain their upstream
+metadata and causes. Applications should use `api.proxy`; providers import the
+supported `supervisor` and `contracts` modules. Legacy `_supervisor` imports remain
+aliases for the shared classes.
+
+Passing both `rotate=True` and `clear=True` is invalid and raises `ValueError`
+before dispatch. Admin-token operations do not rotate the inference API key.

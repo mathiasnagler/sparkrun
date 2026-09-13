@@ -149,7 +149,7 @@ def test_invalid_legacy_rows_are_query_failures(tmp_path, monkeypatch, rows):
         engine.query_models()
 
 
-def test_vendored_sparkroute_rows_and_capabilities_work_without_vendor_changes(tmp_path, monkeypatch):
+def test_vendored_sparkroute_implements_typed_models_and_capabilities(tmp_path, monkeypatch):
     from sparkrun.plugins.sparkroute.engine import SparkrouteEngine
 
     engine = SparkrouteEngine(state_dir=tmp_path)

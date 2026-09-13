@@ -607,10 +607,10 @@ cause. Gateway availability errors retain their separate API type. Providers
 should not rely on callers catching their private configuration exception classes.
 
 Gateway updates (including alias changes) now translate declared operational
-failures consistently to `ProxyUpdateFailed`. The pinned SparkRoute provider's
-transport/authentication failures are adapted at registry resolution, without
-modifying the vendor snapshot. Preserve the cause when reporting these errors;
-callers should catch public API types rather than import provider exceptions.
+failures consistently to `ProxyUpdateFailed`. SparkRoute now declares its
+transport/authentication failures through that contract in the upstream plugin.
+Preserve the cause when reporting these errors; callers should catch public API
+types rather than import provider exceptions.
 
 Recovery-only supervisors refuse model/alias updates with `GatewayUnavailable`
 before discovery. Alias changes still persist before attempting to update a
@@ -618,3 +618,15 @@ running gateway, so this error can mean the local edit succeeded. CLI alias
 commands report that distinction. Stopped `sync(require_running=True)` and
 registration operations retain their no-op behavior; process status/stop remain
 available after plugin loss or declared provider-construction failure.
+
+## SparkRoute provider update
+
+The bundled plugin now implements the 0.4 gateway contracts in its canonical
+repository. `AdminError` derives from `GatewayOperationError`, preserving its
+status, code, retryability, and transport cause. `SparkrouteEngine.query_models()`
+returns `tuple[ProxyModel, ...]` and raises `GatewayQueryError` for an unavailable
+or malformed status response; it no longer exposes provider rows through
+`list_models_via_api()`. Callers should use `api.proxy.models()` or the supported
+typed gateway method. Gateway registration returns the upstream class directly;
+the host has no SparkRoute-specific adaptation. Other legacy gateways retain the
+shared model-query fallback while they migrate.

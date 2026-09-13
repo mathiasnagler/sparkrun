@@ -100,6 +100,15 @@ an alternate application profile. Cache roots follow the active profile;
 and historical override names are not supported. Gateway and worker children
 preserve the profile's installed reference and
 same-controller config file. An alternate callback must exist in the current
-Python environment. Older hosts without the profile API keep Sparkrun behavior.
+Python environment. This branch requires Sparkrun `>=0.4,<0.5`.
 The `sparkrun` protocol/provider identifiers and `sparkroute` extension IDs remain
 shared. See the repository README for integration and testing details.
+
+## Gateway API contract
+
+`AdminError` implements `sparkrun.proxy.contracts.GatewayOperationError` directly,
+including transport, authentication and exhausted revision-conflict failures.
+Its status, code, retryability and exception causes remain available to callers.
+`query_models()` returns a tuple of `ProxyModel` records. Failed or malformed
+status responses raise `GatewayQueryError`; a successful empty response returns
+an empty tuple. No provider-specific host adapter is required.

@@ -28,6 +28,8 @@ from sparkrun.plugins.sparkroute import credentials as cred_mod
 from sparkrun.plugins.sparkroute.admin import AdminClient, AdminError, RevisionConflict
 from sparkrun.plugins.sparkroute.credentials import CredentialError, ReconcilerCredential
 
+from sparkrun.proxy.contracts import GatewayOperationError
+
 REV_A = "a" * 64
 REV_B = "b" * 64
 
@@ -101,8 +103,11 @@ def test_oversized_document_is_refused_before_the_request():
 
 def test_revision_conflict_is_typed_and_retryable():
     with mock.patch.object(admin_mod.urllib.request, "urlopen", side_effect=_http_error(409, "revision_conflict", "moved")):
-        with pytest.raises(RevisionConflict) as exc_info:
+        with pytest.raises(GatewayOperationError) as exc_info:
             _client().replace({}, REV_A)
+    assert isinstance(exc_info.value, RevisionConflict)
+    assert exc_info.value.status == 409
+    assert exc_info.value.code == "revision_conflict"
     assert exc_info.value.retryable is True
 
 
@@ -111,7 +116,7 @@ def test_invalid_configuration_preserves_the_gateways_own_message():
     sparkrun can explain a collision with a set it cannot read."""
     detail = 'alias "fast" owned by "sparkrun" conflicts with virtual model "fast" owned by "operator"'
     with mock.patch.object(admin_mod.urllib.request, "urlopen", side_effect=_http_error(400, "invalid_configuration", detail)):
-        with pytest.raises(AdminError) as exc_info:
+        with pytest.raises(GatewayOperationError) as exc_info:
             _client().replace({}, REV_A)
     assert detail in str(exc_info.value)
     assert exc_info.value.retryable is False
@@ -119,16 +124,20 @@ def test_invalid_configuration_preserves_the_gateways_own_message():
 
 def test_auth_failure_does_not_echo_the_response_body():
     with mock.patch.object(admin_mod.urllib.request, "urlopen", side_effect=_http_error(403, "forbidden", "sk-reconciler-secret")):
-        with pytest.raises(AdminError) as exc_info:
+        with pytest.raises(GatewayOperationError) as exc_info:
             _client().active_revision()
+    assert isinstance(exc_info.value, AdminError)
+    assert exc_info.value.status == 403 and exc_info.value.code == "forbidden"
     assert "sk-reconciler-secret" not in str(exc_info.value)
     assert exc_info.value.retryable is False
 
 
 def test_transport_failure_is_retryable_and_hides_request_context():
     with mock.patch.object(admin_mod.urllib.request, "urlopen", side_effect=urllib.error.URLError("refused")):
-        with pytest.raises(AdminError) as exc_info:
+        with pytest.raises(GatewayOperationError) as exc_info:
             _client().active_revision()
+    assert isinstance(exc_info.value, AdminError)
+    assert isinstance(exc_info.value.__cause__, urllib.error.URLError)
     assert exc_info.value.retryable is True
     assert "sk-reconciler-secret" not in str(exc_info.value)
 

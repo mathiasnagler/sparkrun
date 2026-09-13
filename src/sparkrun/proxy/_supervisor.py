@@ -377,8 +377,8 @@ class GatewaySupervisor(GatewayState):
         """Return typed model rows, or raise ``contracts.GatewayQueryError``.
 
         New gateways override this method and translate their own wire format.
-        The default adapts legacy ``list_models_via_api`` implementations,
-        including the pinned SparkRoute integration, without changing them.
+        The default adapts legacy ``list_models_via_api`` implementations.
+        Providers that implement the typed contract bypass that fallback.
         """
         from ._legacy_models import query_models
 

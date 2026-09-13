@@ -71,8 +71,8 @@ system, gateway registry, and execution-strategy extension points shipped in
 ### Fixed
 
 - Gateway updates and stop hooks consistently translate declared provider errors,
-  including alias reconciliation. A host adapter translates the pinned SparkRoute
-  provider's transport/authentication failures without changing the vendor snapshot.
+  including alias reconciliation. The updated upstream SparkRoute plugin implements
+  the shared error and typed model-query contracts directly, without a host adapter.
 - Process-only gateway recovery refuses model mutations before discovery with
   `GatewayUnavailable`. Alias commands report persisted edits separately from
   failed live application; stopped follow/sync operations retain their no-op behavior.

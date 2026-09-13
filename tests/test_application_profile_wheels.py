@@ -704,7 +704,7 @@ assert state.read_bytes() == before
 
 
 @pytest.mark.parametrize("application", ["sparkrun", "profile-test-app"])
-def test_installed_sparkroute_operational_adapter(wheels, tmp_path, application):
+def test_installed_sparkroute_operational_contract(wheels, tmp_path, application):
     config = tmp_path / "custom-config" / "config.yaml"
     config.parent.mkdir()
     config.write_text("features:\n  gateway.sparkroute: true\n")
@@ -725,7 +725,8 @@ with patch('urllib.request.urlopen', side_effect=URLError('fixture failure')):
         api.proxy.sync(endpoints=[], require_running=True, sctx=context)
     except api.proxy.ProxyUpdateFailed as error:
         assert isinstance(error.__cause__, GatewayOperationError)
-        assert isinstance(error.__cause__.__cause__, AdminError)
+        assert isinstance(error.__cause__, AdminError)
+        assert isinstance(error.__cause__.__cause__, URLError)
     else:
         raise AssertionError('provider failure was not translated')
     assert api.proxy.status(sctx=context).model_query_error

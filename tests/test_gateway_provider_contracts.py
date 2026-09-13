@@ -1,4 +1,4 @@
-"""Actual pinned provider errors follow the host contract without vendor edits."""
+"""The upstream provider implements the shared contracts without host adaptation."""
 
 import io
 from pathlib import Path
@@ -70,12 +70,12 @@ def test_real_admin_client_failure_is_public(provider, monkeypatch, failure, fro
                 api.proxy.register_loaded_model("fixture", sctx=provider)
             else:
                 api.proxy.unregister_loaded_model("fixture", sctx=provider)
-        adapted = caught.value.__cause__
-        assert isinstance(adapted, AdminError) and isinstance(adapted, GatewayOperationError)
-        assert isinstance(adapted.__cause__, AdminError)
-        assert adapted.status == (401 if failure == "auth" else 0)
-        assert adapted.retryable == (failure == "transport")
-        assert str(caught.value) == str(adapted.__cause__)
+        provider_error = caught.value.__cause__
+        assert isinstance(provider_error, AdminError) and isinstance(provider_error, GatewayOperationError)
+        assert provider_error.__cause__ is (error if failure == "transport" else None)
+        assert provider_error.status == (401 if failure == "auth" else 0)
+        assert provider_error.retryable == (failure == "transport")
+        assert str(caught.value) == str(provider_error)
         assert "private request context" not in str(caught.value)
     else:
         args = ["proxy", "sync"] if frontend == "cli_sync" else ["proxy", "models", "--refresh"]
@@ -99,16 +99,16 @@ def test_exhausted_revision_conflicts_are_operational(provider, monkeypatch):
     monkeypatch.setattr("sparkrun.plugins.sparkroute.engine.time.sleep", lambda delay: None)
     with pytest.raises(api.proxy.ProxyUpdateFailed, match="kept changing") as caught:
         api.proxy.sync(endpoints=[], sctx=provider)
-    adapted = caught.value.__cause__
-    assert isinstance(adapted, GatewayOperationError) and isinstance(adapted, AdminError)
-    assert adapted.code == "revision_conflict" and adapted.retryable
-    assert adapted.__cause__.__cause__ is error
+    provider_error = caught.value.__cause__
+    assert isinstance(provider_error, GatewayOperationError) and isinstance(provider_error, AdminError)
+    assert provider_error.code == "revision_conflict" and provider_error.retryable
+    assert provider_error.__cause__ is error
     assert client.replace.call_count > 1
 
 
-def test_adapter_preserves_started_process_when_reconcile_fails(provider, monkeypatch, caplog):
+def test_provider_preserves_started_process_when_reconcile_fails(provider, monkeypatch, caplog):
     # Upstream intentionally leaves the process running after a failed initial
-    # reconcile. Adapted errors must still match its AdminError catch.
+    # reconcile. Shared operational errors must still match its AdminError catch.
     engine_class = gateway_class("sparkroute")
     engine = engine_class(proxy_config=provider.proxy_config, sctx=provider)
     monkeypatch.setattr("sparkrun.plugins.sparkroute.engine.ensure_binary", lambda: Path("fixture"))
@@ -123,14 +123,5 @@ def test_adapter_preserves_started_process_when_reconcile_fails(provider, monkey
     assert "Gateway started but its configuration could not be reconciled" in caplog.text
 
 
-def test_compatibility_is_local_to_registered_pinned_provider(provider):
-    from sparkrun.proxy._gateway_adapters import adapt_gateway_class
-
-    class Derived(SparkrouteEngine):
-        pass
-
-    adapted = gateway_class("sparkroute")
-    assert adapted is gateway_class("sparkroute")
-    assert adapted is not SparkrouteEngine and issubclass(adapted, SparkrouteEngine)
-    assert adapt_gateway_class(Derived) is Derived
-    assert adapt_gateway_class(adapted) is adapted
+def test_registry_returns_upstream_class_directly(provider):
+    assert gateway_class("sparkroute") is SparkrouteEngine

@@ -1,8 +1,8 @@
 """Compatibility for gateway plugins predating the typed model query contract.
 
-The bundled SparkRoute snapshot still returns flat dictionaries. Older LiteLLM
-adapters return wire-format dictionaries. Keep those translations below the API
-boundary while new gateways implement query_models() directly.
+Legacy plugins may return flat dictionaries or LiteLLM wire-format dictionaries.
+Keep those translations below the API boundary while new gateways implement
+query_models() directly.
 """
 
 from collections.abc import Mapping

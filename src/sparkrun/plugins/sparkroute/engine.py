@@ -7,7 +7,7 @@
 
 Peer of :class:`sparkrun.proxy.engine.ProxyEngine`. Both inherit process and
 state-file handling from
-:class:`~sparkrun.proxy._supervisor.GatewaySupervisor`; what differs is how the
+:class:`~sparkrun.proxy.supervisor.GatewaySupervisor`; what differs is how the
 gateway is acquired (a verified GitHub release asset rather than ``uvx``), how
 it is configured, and — uniquely here — that the gateway calls *back* into
 sparkrun through ``sparkrun gateway-bridge`` to activate workloads.
@@ -47,7 +47,9 @@ from pathlib import Path
 from typing import Any
 
 from sparkrun.proxy import DEFAULT_MASTER_KEY, DEFAULT_PROXY_HOST, DEFAULT_PROXY_PORT
-from sparkrun.proxy._supervisor import GatewayOperationError, GatewaySupervisor, _restrict_dir_permissions
+from sparkrun.proxy._supervisor import _restrict_dir_permissions
+from sparkrun.proxy.contracts import GatewayOperationError, GatewayQueryError, ProxyModel
+from sparkrun.proxy.supervisor import GatewaySupervisor
 from sparkrun.proxy.gateway import require_gateway_enabled
 from sparkrun.plugins.sparkroute.admin import AdminClient, AdminError, RevisionConflict
 from sparkrun.plugins.sparkroute.credentials import CredentialError, ReconcilerCredential
@@ -988,7 +990,7 @@ class SparkrouteEngine(GatewaySupervisor):
         # been discovered, and its last warm snapshot must not survive unload.
         return None
 
-    def list_models_via_api(self) -> list[dict[str, Any]]:
+    def query_models(self) -> tuple[ProxyModel, ...]:
         """Every model the gateway serves, aliases included.
 
         Read from ``GET /v1/status``, whose ``served_model_names`` spans *both*
@@ -997,7 +999,6 @@ class SparkrouteEngine(GatewaySupervisor):
         completely. The API base is the gateway's own listener, which is where
         a client actually sends the request.
         """
-        self.model_query_error = ""
         try:
             payload = self.admin_client().status()
             if "served_model_names" not in payload:
@@ -1006,11 +1007,9 @@ class SparkrouteEngine(GatewaySupervisor):
             if not isinstance(names, list) or any(not isinstance(name, str) or not name for name in names):
                 raise AdminError("gateway status response has invalid served_model_names")
         except (AdminError, SparkrouteConfigError) as exc:
-            self.model_query_error = str(exc)
-            logger.debug("Could not read served model names from the gateway", exc_info=True)
-            return []
+            raise GatewayQueryError(str(exc)) from exc
         base = "http://%s/v1" % self.data_address
-        return [{"model_name": str(name), "api_base": base} for name in names]
+        return tuple(ProxyModel(model_name=name, api_base=base) for name in names)
 
     def serving_revision(self) -> str:
         """Revision currently serving requests, for convergence checks.

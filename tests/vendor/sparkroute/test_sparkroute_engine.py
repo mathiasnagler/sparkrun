@@ -30,6 +30,8 @@ from sparkrun.plugins.sparkroute import engine as engine_mod
 from sparkrun.plugins.sparkroute.admin import AdminError, RevisionConflict
 from sparkrun.plugins.sparkroute.engine import SparkrouteConfigError, SparkrouteEngine
 
+from sparkrun.proxy.contracts import GatewayQueryError, ProxyModel
+
 REV_A = "a" * 64
 REV_B = "b" * 64
 
@@ -659,25 +661,52 @@ def test_models_come_from_status_so_operator_entries_are_included(engine):
     client = mock.Mock()
     client.status.return_value = {"served_model_names": ["fast", "operator-model", "qwen3-8b"]}
     with mock.patch.object(engine, "admin_client", return_value=client):
-        models = engine.list_models_via_api()
-    assert [m["model_name"] for m in models] == ["fast", "operator-model", "qwen3-8b"]
-    assert {m["api_base"] for m in models} == {"http://127.0.0.1:4000/v1"}
+        models = engine.query_models()
+    assert models == tuple(ProxyModel(name, "http://127.0.0.1:4000/v1") for name in ("fast", "operator-model", "qwen3-8b"))
 
 
-def test_models_degrade_to_empty_when_the_gateway_is_unreachable(engine):
+def test_models_report_query_failure_when_the_gateway_is_unreachable(engine):
     client = mock.Mock()
     client.status.side_effect = AdminError("unreachable")
     with mock.patch.object(engine, "admin_client", return_value=client):
-        assert engine.list_models_via_api() == []
-    assert engine.model_query_error == "unreachable"
+        with pytest.raises(GatewayQueryError, match="unreachable") as caught:
+            engine.query_models()
+    assert caught.value.__cause__ is client.status.side_effect
 
 
 def test_models_reject_a_status_response_without_the_contract_field(engine):
     client = mock.Mock()
     client.status.return_value = {"config_revision": REV_B}
     with mock.patch.object(engine, "admin_client", return_value=client):
-        assert engine.list_models_via_api() == []
-    assert "missing served_model_names" in engine.model_query_error
+        with pytest.raises(GatewayQueryError, match="missing served_model_names"):
+            engine.query_models()
+
+
+@pytest.mark.parametrize("names", [None, "model", [""], [1]])
+def test_models_reject_invalid_status_names(engine, names):
+    client = mock.Mock()
+    client.status.return_value = {"served_model_names": names}
+    with mock.patch.object(engine, "admin_client", return_value=client):
+        with pytest.raises(GatewayQueryError, match="invalid served_model_names"):
+            engine.query_models()
+
+
+def test_empty_model_query_succeeds_after_failure(engine):
+    client = mock.Mock()
+    client.status.side_effect = [AdminError("unreachable"), {"served_model_names": []}]
+    with mock.patch.object(engine, "admin_client", return_value=client):
+        with pytest.raises(GatewayQueryError):
+            engine.query_models()
+        assert engine.query_models() == ()
+
+
+def test_model_query_propagates_programming_errors(engine):
+    client = mock.Mock()
+    client.status.side_effect = RuntimeError("provider bug")
+    with mock.patch.object(engine, "admin_client", return_value=client):
+        with pytest.raises(RuntimeError, match="provider bug") as caught:
+            engine.query_models()
+    assert caught.value is client.status.side_effect
 
 
 def test_serving_revision_is_read_from_status(engine):

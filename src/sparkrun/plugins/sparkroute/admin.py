@@ -23,6 +23,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from sparkrun.proxy.contracts import GatewayOperationError
+
 logger = logging.getLogger(__name__)
 
 #: The gateway's own request-body bound.
@@ -37,8 +39,8 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 OWNER = "sparkrun"
 
 
-class AdminError(RuntimeError):
-    """An admin API call failed.
+class AdminError(GatewayOperationError):
+    """An admin API call failed under the shared gateway operation contract.
 
     :attr:`code` carries the gateway's error code when it sent one, which is
     what callers branch on — notably ``revision_conflict``.

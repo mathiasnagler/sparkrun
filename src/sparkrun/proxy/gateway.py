@@ -143,9 +143,7 @@ def gateway_class(name: str) -> type:
             gateway=name,
             available=tuple(sorted(_GATEWAY_LOADERS)),
         )
-    from ._gateway_adapters import adapt_gateway_class
-
-    return adapt_gateway_class(loader())
+    return loader()
 
 
 def _load_litellm_engine() -> type:
