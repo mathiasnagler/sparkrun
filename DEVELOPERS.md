@@ -243,3 +243,10 @@ python scripts/update-versions.py --check
 - Keep commits atomic — one logical change per commit
 - Run `pytest` and `ruff check` before pushing
 - Use `--dry-run` to verify CLI changes produce correct Docker commands
+
+Python lint and formatting run in generated CI using the same pinned Ruff version
+as the development environment and pre-commit hooks. Update `versions.yaml`,
+`pyproject.toml`, and the hook revision together, then regenerate the workflows.
+Vendor exclusions are centralized in `pyproject.toml` and apply to explicit
+filenames too. Ruff formatting covers Python files; documentation examples are
+checked by `tests/test_documentation_contracts.py`, which works without Git metadata.

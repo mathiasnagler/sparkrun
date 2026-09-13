@@ -521,3 +521,32 @@ print('typed gateway API and CLI: OK')
     result = invoke(wheels, tmp_path, "python", "-c", code, str(config), env_extra=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "typed gateway API and CLI: OK" in result.stdout
+
+
+@pytest.mark.parametrize("application", ["sparkrun", "profile-test-app"])
+@pytest.mark.parametrize("first_call", ["list_gateways", "resolve_gateway"])
+def test_installed_gateway_selection_initializes_implicitly(wheels, tmp_path, application, first_call):
+    root = tmp_path / ".config" / application
+    root.mkdir(parents=True)
+    (root / "config.yaml").write_text("integrations:\n  profile-test-plugin: true\nfeatures:\n  gateway.profile-test: true\n")
+    (root / "proxy.yaml").write_text("proxy:\n  gateway: profile-test\n")
+    code = """
+import sys
+from sparkrun import api
+from sparkrun.application import initialize
+from sparkrun.proxy.supervisor import GatewaySupervisor
+from sparkrun.proxy.contracts import GatewayOperationError
+first = getattr(api.proxy, sys.argv[1])()
+context = initialize()
+assert api.proxy.resolve_gateway() == api.proxy.resolve_gateway(sctx=context) == 'profile-test'
+assert api.proxy.list_gateways() == api.proxy.list_gateways(sctx=context)
+assert 'profile-test' in first if sys.argv[1] == 'list_gateways' else first == 'profile-test'
+from profile_test_plugin.gateway import ProfileTestGateway
+assert issubclass(ProfileTestGateway, GatewaySupervisor)
+from sparkrun.proxy._supervisor import GatewayOperationError as LegacyError
+assert LegacyError is GatewayOperationError
+assert 'click' not in sys.modules and 'sparkrun.cli' not in sys.modules
+"""
+    env = {"SPARKRUN_APPLICATION_PROFILE": "profile_test_app.profile:PROFILE_TEST_APP"} if application != "sparkrun" else {}
+    result = invoke(wheels, tmp_path, "python", "-c", code, first_call, env_extra=env)
+    assert result.returncode == 0, result.stdout + result.stderr

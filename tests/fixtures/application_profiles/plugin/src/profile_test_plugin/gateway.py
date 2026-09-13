@@ -3,7 +3,7 @@
 import os
 import secrets
 
-from sparkrun.proxy._supervisor import GatewaySupervisor
+from sparkrun.proxy.supervisor import GatewaySupervisor
 from sparkrun.proxy.contracts import GatewayQueryError, ProxyModel
 
 

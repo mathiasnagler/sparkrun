@@ -1525,6 +1525,8 @@ def _export_measurement(execution, *, config, tp, pp, output_file, emitter):
             config.default_benchmark_output_dir
             / ("benchmark_%s_%s_tp%d%s.yaml" % (execution.recipe.name.replace("/", "_"), profile_slug, tp, pp_suffix))
         )
+    # Bind all artifact references before export, callbacks, and persistence.
+    output_file = Path(output_file).expanduser().absolute()
     _write_measurement(execution, tp=tp, output_path=output_file)
     if execution.outputs is None:
         execution.outputs = {}
@@ -1726,11 +1728,17 @@ def _saved_execution(state, cache_dir):
     """One detached result reconstruction for complete and partial resumes."""
     from sparkrun.benchmarking.base import BenchmarkExecution
 
+    outputs = {}
+    for key, value in state.extras.get("benchmark_outputs", {}).items():
+        if Path(value).is_absolute():
+            outputs[key] = value
+        else:
+            logger.warning("Omitting legacy relative benchmark output %r: its original directory is unknown", value)
     return BenchmarkExecution(
         benchmark_id=state.benchmark_id,
         framework_name=state.framework,
         host_list=state.host_list,
-        outputs=state.extras.get("benchmark_outputs", {}),
+        outputs=outputs,
         state_dir=str(state.state_dir(cache_dir)),
         recipe_name=state.recipe_qualified_name,
         cluster_id=state.cluster_id,

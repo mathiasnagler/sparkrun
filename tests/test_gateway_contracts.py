@@ -11,8 +11,15 @@ from click.testing import CliRunner
 from sparkrun import api
 from sparkrun.api.proxy import _ops
 from sparkrun.cli import main
-from sparkrun.proxy._supervisor import GatewaySupervisor
-from sparkrun.proxy.contracts import GatewayAdminToken, GatewayConsole, GatewayConsoleCredentials, GatewayQueryError, ProxyModel
+from sparkrun.proxy.supervisor import GatewaySupervisor
+from sparkrun.proxy.contracts import (
+    GatewayAdminToken,
+    GatewayConsole,
+    GatewayConsoleCredentials,
+    GatewayOperationError,
+    GatewayQueryError,
+    ProxyModel,
+)
 
 
 class TypedGateway(GatewaySupervisor):
@@ -125,7 +132,7 @@ def test_console_credential_issuance_is_independently_optional(tmp_path, monkeyp
 def test_admin_failure_uses_public_error(tmp_path, monkeypatch):
     class RefusingConsole(ConsoleGateway):
         def admin_token(self, **kwargs):
-            raise RuntimeError("credential storage is unavailable")
+            raise GatewayOperationError("credential storage is unavailable")
 
     monkeypatch.setattr(_ops, "_running_engine", lambda sctx=None: RefusingConsole(state_dir=tmp_path))
     with pytest.raises(api.proxy.ProxyUpdateFailed, match="credential storage"):
@@ -175,3 +182,48 @@ def test_token_management_does_not_require_a_console(tmp_path, monkeypatch):
     assert api.proxy.admin_token(clear=True) is None
     with pytest.raises(api.proxy.ProxyUnsupported):
         api.proxy.ui()
+
+
+def test_public_gateway_contracts_preserve_legacy_class_identity():
+    from sparkrun.proxy import _supervisor
+    from sparkrun.plugins.sparkroute.engine import SparkrouteConfigError
+
+    assert GatewaySupervisor is _supervisor.GatewaySupervisor
+    assert GatewayOperationError is _supervisor.GatewayOperationError
+    assert issubclass(GatewayQueryError, GatewayOperationError)
+    assert issubclass(SparkrouteConfigError, GatewayOperationError)
+
+
+@pytest.mark.parametrize("operation", ["token", "credential", "console"])
+@pytest.mark.parametrize("error_type", [GatewayOperationError, RuntimeError])
+def test_optional_management_distinguishes_operational_and_programming_errors(tmp_path, monkeypatch, operation, error_type):
+    cause = error_type("management failure")
+
+    class BrokenConsole(ConsoleGateway):
+        def admin_token(self, **kwargs):
+            raise cause
+
+        @property
+        def ui_url(self):
+            if operation == "console":
+                raise cause
+            return ConsoleGateway.ui_url
+
+    monkeypatch.setattr(_ops, "_running_engine", lambda sctx=None: BrokenConsole(state_dir=tmp_path))
+    error = api.proxy.ProxyUpdateFailed if error_type is GatewayOperationError else RuntimeError
+    with pytest.raises(error, match="management failure") as caught:
+        if operation == "token":
+            api.proxy.admin_token(rotate=True)
+        else:
+            api.proxy.ui(issue_token=operation == "credential")
+    assert (caught.value.__cause__ if error_type is GatewayOperationError else caught.value) is cause
+
+
+def test_vendor_credential_refusal_keeps_public_error(tmp_path, monkeypatch):
+    from sparkrun.plugins.sparkroute.engine import SparkrouteEngine, SparkrouteConfigError
+
+    engine = SparkrouteEngine(state_dir=tmp_path, master_key="fixture-key")
+    monkeypatch.setattr(_ops, "_running_engine", lambda sctx=None: engine)
+    with pytest.raises(api.proxy.ProxyUpdateFailed, match="master key") as caught:
+        api.proxy.admin_token(clear=True)
+    assert isinstance(caught.value.__cause__, SparkrouteConfigError)

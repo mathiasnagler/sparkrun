@@ -16,3 +16,6 @@ it under both built-in Sparkrun and the alternate application, exercise model
 results/errors and optional console/token capabilities through the public API
 and CLI, and verify that API use does not import Click. The test process supplies
 a local state record; no real gateway, host, or inference workload is started.
+
+Gateway fixtures also cover first-call selection without an explicit context,
+the public supervisor facade, and operational error class compatibility.

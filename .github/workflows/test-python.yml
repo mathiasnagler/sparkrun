@@ -55,6 +55,13 @@ jobs:
           df -h /
         working-directory: .
 
+      - name: Lint with ruff
+        run: |
+          pip install ruff==0.16.6
+          ruff check .
+          ruff format --check .
+        working-directory: .
+
       - name: Install
         run: pip install -e ".[dev]"
         working-directory: .

@@ -248,6 +248,11 @@ enabled = api.proxy.list_gateways(sctx=context)
 selected = api.proxy.resolve_gateway(sctx=context)
 ```
 
+Omitting `sctx` initializes the default application context, including installed
+plugins, and uses the same saved gateway pin. An explicit gateway name overrides
+that pin. Low-level registry selection in `sparkrun.proxy.gateway` does not
+initialize the application and remains usable during plugin bootstrap.
+
 Gateway plugins register a deferred class loader with
 `register_gateway(name, feature_flag=..., loader=...)` in
 `sparkrun.proxy.gateway`. Repeated registration of the same provider is
@@ -265,7 +270,8 @@ Select installed plugins through [the plugin contract](PLUGINS.md).
 | `plugins/sparkroute/` | Vendored SparkRoute integration |
 | `proxy/autodiscover.py` | Optional reconciliation sidecar |
 
-`GatewaySupervisor` supplies the common process contract. Implementations
+`sparkrun.proxy.supervisor.GatewaySupervisor` is the supported lifecycle base.
+It supplies the common process contract. Implementations
 provide configuration, model reconciliation and management capabilities such as
 `supports_autodiscover`, `wants_proxy_config`, and `data_plane_authenticated`.
 Start checks availability even for a dry run. Existing processes remain
@@ -275,12 +281,12 @@ the base supervisor can still inspect state and stop the recorded process.
 ### Gateway plugin contract
 
 `sparkrun.proxy.contracts` is the supported import for `ProxyModel`,
-`GatewayQueryError`, and optional console/credential protocols. `ProxyModel` is
+`GatewayOperationError`, `GatewayQueryError`, and optional console/credential protocols. `ProxyModel` is
 the same immutable class exported by `api.proxy`; providers and callers do not
 need separate copies of the model record.
 
 ```python
-from sparkrun.proxy._supervisor import GatewaySupervisor
+from sparkrun.proxy.supervisor import GatewaySupervisor
 from sparkrun.proxy.contracts import ProxyModel, GatewayQueryError
 
 class ExampleGateway(GatewaySupervisor):
@@ -310,11 +316,17 @@ Optional capabilities are independent structural protocols:
 | --- | --- |
 | `GatewayConsole` | Read-only `ui_url`, `admin_bind_host`, `admin_exposed`, and `admin_auth_required` properties describing the live console. |
 | `GatewayConsoleCredentials` | `issue_ui_credential() -> str` creates or returns a console credential; it may enable authentication. |
-| `GatewayAdminToken` | `admin_token(*, rotate=False, clear=False) -> str | None`: read, replace, or disable authentication when provider policy permits. `None` means open access. |
+| `GatewayAdminToken` | `admin_token(*, rotate=False, clear=False) -> str \| None`: read, replace, or disable authentication when provider policy permits. `None` means open access. |
 
 A gateway can offer a read-only console without credential issuance, or token
 management independently of a console. Missing capabilities raise
-`ProxyUnsupported`. Credential-operation `RuntimeError` diagnostics become
-`ProxyUpdateFailed` and must not include secrets. Passing both `rotate=True` and
+`ProxyUnsupported`. Reconciliation, credential operations, and console properties
+raise `GatewayOperationError` for expected failures; the API translates management
+failures to `ProxyUpdateFailed`. Model enumeration raises its subtype
+`GatewayQueryError`, which becomes `ProxyQueryFailed` for model-list callers.
+Diagnostics must not include secrets. Other exceptions, including a bare
+`RuntimeError`, propagate as provider bugs. The pinned SparkRoute adapter already
+uses this operational error family; its legacy `_supervisor` import remains an
+alias for the same class. Passing both `rotate=True` and
 `clear=True` is invalid and raises `ValueError` before dispatch. Admin-token
 operations do not rotate the inference API key.

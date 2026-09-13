@@ -112,6 +112,14 @@ metadata comes from the recorded measurement, including `profile=None` and empty
 benchmark arguments; publication retry defaults cannot relabel it. Success and
 attached failure results use the same detached conversion.
 
+Export paths in `outputs` are absolute, including when `output_file` or the
+configured output directory is relative. YAML/JSON/CSV writers, integration
+snapshots, and saved state share the same base path, so completed-result recovery
+from another working directory still references the original files. Legacy saved
+relative references have no recorded base directory: recovery omits those entries
+with a log warning, retains absolute references and measurements, and does not
+regenerate optional exports.
+
 Framework results use string-keyed mappings, lists, and primitive scalar values.
 Tuples become lists; Python dates/datetimes become ISO strings, and pathlib paths
 become strings. This normalization happens before export, state persistence, and

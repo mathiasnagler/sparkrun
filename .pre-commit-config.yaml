@@ -4,13 +4,11 @@ repos:
     hooks:
       - id: uv-lock
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.9
+    rev: v0.16.6
     hooks:
       - id: ruff-check
         args: [ --fix ]
-        exclude: '^(src/sparkrun/plugins/sparkroute/|tests/vendor/sparkroute/)'
       - id: ruff-format
-        exclude: '^(src/sparkrun/plugins/sparkroute/|tests/vendor/sparkroute/)'
   - repo: local
     hooks:
       - id: verify-sparkroute-vendor

@@ -24,12 +24,18 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from sparkrun.api._context import resolve_sctx
-from sparkrun.proxy.contracts import ProxyModel, GatewayQueryError, GatewayConsole, GatewayConsoleCredentials, GatewayAdminToken
+from sparkrun.proxy.contracts import (
+    ProxyModel,
+    GatewayQueryError,
+    GatewayOperationError,
+    GatewayConsole,
+    GatewayConsoleCredentials,
+    GatewayAdminToken,
+)
 
 from ._errors import GatewayUnavailable, ProxyAlreadyRunning, ProxyStartFailed, ProxyUnsupported, ProxyUpdateFailed, ProxyQueryFailed
 
 if TYPE_CHECKING:
-    from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.context import SparkrunContext
     from sparkrun.proxy.discovery import DiscoveredEndpoint
 
@@ -207,7 +213,7 @@ def list_gateways(*, sctx: "SparkrunContext | None" = None) -> list[str]:
     """Return the gateway names whose feature flag resolves on."""
     from sparkrun.proxy.gateway import list_gateways as _list
 
-    return _list(config=_config(sctx))
+    return _list(config=resolve_sctx(sctx).config)
 
 
 def resolve_gateway(name: str | None = None, *, sctx: "SparkrunContext | None" = None) -> str:
@@ -222,18 +228,14 @@ def resolve_gateway(name: str | None = None, *, sctx: "SparkrunContext | None" =
     """
     from sparkrun.proxy.gateway import GatewayError, resolve_gateway as _resolve
 
-    if not name and sctx is not None:
+    sctx = resolve_sctx(sctx)
+    if not name:
         name = sctx.proxy_config.gateway
 
     try:
-        return _resolve(name, config=_config(sctx))
+        return _resolve(name, config=sctx.config)
     except GatewayError as exc:
         raise _as_gateway_unavailable(exc) from exc
-
-
-def _config(sctx: "SparkrunContext | None") -> "SparkrunConfig | None":
-    """The SparkrunConfig backing feature-flag resolution, when we have one."""
-    return sctx.config if sctx is not None else None
 
 
 def _as_gateway_unavailable(exc: Exception) -> GatewayUnavailable:
@@ -411,8 +413,6 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
     # from the same code that renders the real config is what keeps the
     # preview honest.
     if not options.dry_run:
-        from sparkrun.proxy._supervisor import GatewayOperationError
-
         try:
             engine.claim_state_directory()
         except GatewayOperationError as exc:
@@ -560,8 +560,6 @@ def sync(
     Raises:
         ProxyUpdateFailed: the running gateway could not adopt the change.
     """
-    from sparkrun.proxy._supervisor import GatewayOperationError
-
     engine = _running_engine(sctx)
     running = engine.is_running()
 
@@ -597,8 +595,6 @@ def register_loaded_model(
     A catalog-driven gateway persists an activatable binding instead, so the
     same workload can be brought back after it goes cold.
     """
-    from sparkrun.proxy._supervisor import GatewayOperationError
-
     engine = _running_engine(sctx)
     if not engine.is_running():
         return ProxySyncResult(proxy_running=False)
@@ -622,8 +618,6 @@ def unregister_loaded_model(
     ``None`` from the engine has the same discovery-driven meaning as in
     :func:`register_loaded_model`.
     """
-    from sparkrun.proxy._supervisor import GatewayOperationError
-
     engine = _running_engine(sctx)
     if not engine.is_running():
         return ProxySyncResult(proxy_running=False)
@@ -901,26 +895,25 @@ def ui(*, issue_token: bool = False, sctx: "SparkrunContext | None" = None) -> P
     engine = _running_engine(sctx)
     if not isinstance(engine, GatewayConsole):
         raise ProxyUnsupported("The %s gateway does not serve an admin console." % engine.gateway_name)
-    url = engine.ui_url
-    if not url:
-        raise ProxyUnsupported("The %s gateway does not serve an admin console." % getattr(engine, "gateway_name", "configured"))
-
-    token = None
-    if issue_token:
-        if not isinstance(engine, GatewayConsoleCredentials):
-            raise ProxyUnsupported("The %s gateway cannot issue console credentials." % engine.gateway_name)
-        try:
+    try:
+        url = engine.ui_url
+        if not url:
+            raise ProxyUnsupported("The %s gateway does not serve an admin console." % engine.gateway_name)
+        token = None
+        if issue_token:
+            if not isinstance(engine, GatewayConsoleCredentials):
+                raise ProxyUnsupported("The %s gateway cannot issue console credentials." % engine.gateway_name)
             token = engine.issue_ui_credential()
-        except RuntimeError as exc:
-            raise ProxyUpdateFailed(str(exc)) from exc
-    return ProxyUiResult(
-        url=str(url),
-        running=engine.is_running(),
-        token=token,
-        bind_host=engine.admin_bind_host,
-        exposed=engine.admin_exposed,
-        auth_required=engine.admin_auth_required,
-    )
+        return ProxyUiResult(
+            url=str(url),
+            running=engine.is_running(),
+            token=token,
+            bind_host=engine.admin_bind_host,
+            exposed=engine.admin_exposed,
+            auth_required=engine.admin_auth_required,
+        )
+    except GatewayOperationError as exc:
+        raise ProxyUpdateFailed(str(exc)) from exc
 
 
 def admin_token(*, rotate: bool = False, clear: bool = False, sctx: "SparkrunContext | None" = None) -> str | None:
@@ -937,5 +930,5 @@ def admin_token(*, rotate: bool = False, clear: bool = False, sctx: "SparkrunCon
         raise ProxyUnsupported("The %s gateway has no managed admin token." % getattr(engine, "gateway_name", "configured"))
     try:
         return engine.admin_token(rotate=rotate, clear=clear)
-    except RuntimeError as exc:
+    except GatewayOperationError as exc:
         raise ProxyUpdateFailed(str(exc)) from exc

@@ -34,7 +34,7 @@ from typing import Any
 
 import yaml
 
-from sparkrun.proxy.contracts import ProxyModel
+from sparkrun.proxy.contracts import ProxyModel, GatewayOperationError
 from sparkrun.utils.fs import open_private_write, atomic_private_write
 from sparkrun.core.application_profile import get_application_profile
 from sparkrun.utils.process import process_exists
@@ -46,18 +46,6 @@ RESTART_EXIT_TIMEOUT = 15.0
 
 #: Grace period after spawn before deciding the process survived startup.
 RESTART_STARTUP_GRACE = 2.0
-
-
-class GatewayOperationError(RuntimeError):
-    """A running gateway could not adopt a requested model/config change.
-
-    The base class every gateway raises for a *management* failure, so
-    :func:`sparkrun.api.proxy.sync` can translate one exception type instead of
-    catching bare ``RuntimeError`` — which would report an unrelated engine bug
-    as a routine "the proxy could not be updated".
-
-    ``sparkrun.proxy.engine.ProxyRestartError`` is the LiteLLM member.
-    """
 
 
 def _restrict_file_permissions(path: Path) -> None:

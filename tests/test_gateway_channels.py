@@ -70,3 +70,75 @@ print(json.dumps({
         "plugin_loaded": expected == "sparkroute",
         "bridge_registered": expected == "sparkroute",
     }
+
+
+@pytest.mark.parametrize("first_call", ["list", "resolve"])
+@pytest.mark.parametrize(
+    "channel,pin,expected", [("alpha", None, "sparkroute"), ("stable", "sparkroute", "sparkroute"), ("stable", None, "litellm")]
+)
+def test_public_selection_initializes_and_uses_saved_pin(tmp_path, channel, pin, expected, first_call):
+    config_dir = tmp_path / ".config" / "sparkrun"
+    config_dir.mkdir(parents=True)
+    features = {"gateway.sparkroute": True, "gateway.litellm": True} if pin else {}
+    (config_dir / "config.yaml").write_text(yaml.safe_dump({"self_update": {"channel": channel}, "features": features}))
+    (config_dir / "proxy.yaml").write_text(yaml.safe_dump({"proxy": {"gateway": pin}}))
+    code = """
+import json, sys
+from pathlib import Path
+import sparkrun.core.config as config
+config.DEFAULT_CONFIG_DIR = Path(sys.argv[1])
+config.DEFAULT_CACHE_DIR = Path(sys.argv[2])
+import sparkrun.core.registry as registry
+registry.BOOTSTRAP_REGISTRY_URLS = []
+from sparkrun import api
+from sparkrun.application import initialize
+first = api.proxy.list_gateways() if sys.argv[3] == 'list' else api.proxy.resolve_gateway()
+context = initialize()
+assert api.proxy.list_gateways() == api.proxy.list_gateways(sctx=context)
+assert api.proxy.resolve_gateway() == api.proxy.resolve_gateway(sctx=context)
+if context.config.is_feature_enabled('gateway.litellm'):
+    assert api.proxy.resolve_gateway('litellm') == 'litellm'
+else:
+    try:
+        api.proxy.resolve_gateway('litellm')
+    except api.proxy.GatewayUnavailable:
+        pass
+    else:
+        raise AssertionError('Disabled provider accepted')
+try:
+    api.proxy.resolve_gateway('unknown-provider')
+except api.proxy.GatewayUnavailable:
+    pass
+else:
+    raise AssertionError('Unknown provider accepted')
+assert 'click' not in sys.modules and 'sparkrun.cli' not in sys.modules
+print(json.dumps({'first': first, 'selected': api.proxy.resolve_gateway()}))
+"""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SPARKRUN_") and k not in {"STATEFUL_ROOT", "RUN_ID", "RUN_SERIAL"}}
+    env.update(STATEFUL_ROOT=str(tmp_path), RUN_ID=".config", RUN_SERIAL="", SPARKRUN_NO_TELEMETRY="1", SPARKRUN_NO_EXTERNAL_PLUGINS="1")
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(config_dir), str(tmp_path / "cache"), first_call],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    observed = json.loads(result.stdout)
+    assert observed["selected"] == expected
+    assert expected in observed["first"] if first_call == "list" else observed["first"] == expected
+
+
+@pytest.mark.parametrize("operation", ["list_gateways", "resolve_gateway"])
+def test_public_gateway_selection_wraps_bootstrap_failures(monkeypatch, operation):
+    from sparkrun import api
+
+    cause = RuntimeError("bootstrap failed")
+
+    def fail():
+        raise cause
+
+    monkeypatch.setattr("sparkrun.application.initialize", fail)
+    with pytest.raises(api.SparkrunError, match="Application initialization failed") as caught:
+        getattr(api.proxy, operation)()
+    assert caught.value.__cause__ is cause

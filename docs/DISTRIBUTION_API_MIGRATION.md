@@ -15,7 +15,7 @@ shared unless noted below. The tables also cover pre-release plugin contracts.
 | Benchmark integration authors | `sparkrun.core.benchmark_integrations`: registration, `BenchmarkIntegration`, `BenchmarkDefaults`, context and immutable measurement/state snapshots. |
 | Setup extension authors | `sparkrun.core.setup_steps`: step/constraint registration; caller-facing types are also exported by `api.setup`. |
 | Other extension authors | Documented registries such as `core.cli_registry`, `core.run_handlers`, `core.hardware_probe_extensions`, and `core.features`; shared transactions and `PLUGIN_API_VERSION` in `core.registration`. |
-| Gateway plugin authors | `sparkrun.proxy.contracts`: shared `ProxyModel`, `GatewayQueryError`, and optional console/credential protocols; `proxy.gateway` for registration. |
+| Gateway plugin authors | `sparkrun.proxy.contracts`: shared `ProxyModel`, `GatewayOperationError`, `GatewayQueryError`, and optional console/credential protocols; `proxy.supervisor.GatewaySupervisor` for lifecycle and `proxy.gateway` for registration. |
 | Kubernetes callers | `sparkrun.plugins.k8s.api`, `plugins.k8s.config`, and `plugins.k8s.executor`. |
 
 Documented core extension modules remain supported imports. Private API/CLI
@@ -545,6 +545,13 @@ workload execution before generating a script. Use detached mode for serving;
 `exec_cmd` remains the separate foreground-hook operation.
 
 
+## Benchmark artifact paths
+
+New benchmark export references are absolute in API results, plugin snapshots,
+and saved state. Recovery omits legacy relative output references because their
+original working directory was not recorded; it still returns saved measurements.
+See [benchmark artifact recovery](BENCHMARK_API.md#results-and-publication-retries).
+
 ## Gateway model queries and optional management
 
 `api.proxy.models()` retains its tuple result on success and when the gateway is
@@ -564,3 +571,11 @@ Console and credential support are optional structural protocols in that module.
 See [the gateway contract](PROXY.md#gateway-plugin-contract). `ui(issue_token=True)`
 can create credentials and enable authentication; `admin_token()` without flags
 only reads. Passing both `rotate=True` and `clear=True` raises `ValueError`.
+
+Gateway selection helpers now initialize the default context when `sctx` is
+omitted and honor the saved gateway pin, just like start. Plugins should import
+`GatewaySupervisor` from `sparkrun.proxy.supervisor` and operational errors from
+`sparkrun.proxy.contracts`. The older `_supervisor` imports preserve class identity
+for existing providers. Optional credential and console operations must raise
+`GatewayOperationError` for expected failures; arbitrary `RuntimeError` is no
+longer treated as a routine management refusal.

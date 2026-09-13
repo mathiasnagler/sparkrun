@@ -16,6 +16,7 @@ preferred_versions:
     "pyyaml": "6.0.3"
     "huggingface_hub": "1.14.0"
     "textual": "8.2.5"
+    "ruff": "0.16.6"
 
 # GitHub Actions generation. Run: generate-ci-gha [--check|--force]
 ci:
@@ -37,13 +38,9 @@ ci:
     install: 'pip install -e ".[dev]"'
     # Matches what publish.yml ran: fail fast, long tracebacks.
     test_command: 'pytest -v --tb=long -x'
-    # Disabled for now: ruff reports 3063 findings here, because [tool.ruff] in
-    # pyproject.toml sets line-length and target-version but never pins
-    # `select`, so the linter inherits whatever defaults its current release
-    # ships — and 0.16 widened them substantially. Enable this once `select` is
-    # pinned in pyproject.toml and a `ruff` entry is added to
-    # preferred_versions.python. Turning it on before then makes every PR red.
-    lint: none
+    # Match the development environment and hooks; exclusions live in pyproject.toml.
+    lint: ruff
+    format_check: true
     setup_steps:
       - name: Verify SparkRoute vendor snapshot
         run: python scripts/vendor-sparkroute.py verify

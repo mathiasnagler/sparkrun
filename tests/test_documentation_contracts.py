@@ -7,7 +7,6 @@ from collections import Counter
 import importlib
 from pathlib import Path
 import re
-import subprocess
 from textwrap import dedent
 from urllib.parse import unquote, urlsplit
 
@@ -19,10 +18,30 @@ VENDOR = "src/sparkrun/plugins/sparkroute/"
 HISTORICAL = {"CHANGELOG.md", "docs/RELEASE_NOTES.md"}
 
 
-def _documents():
-    # Do not scan environments, ignored reports, or copied build directories.
-    paths = subprocess.check_output(["git", "ls-files", "*.md"], cwd=ROOT, text=True).splitlines()
-    return [ROOT / name for name in paths if not name.startswith(VENDOR)]
+def _documents(root=ROOT):
+    # Bounded source paths work in checkouts and archives without borrowing a
+    # parent repository's index or scanning environments/builds/ignored reports.
+    patterns = (
+        "*.md",
+        "docs/**/*.md",
+        ".github/ISSUE_TEMPLATE/*.md",
+        "sparkrun-cc-plugin/*.md",
+        "sparkrun-cc-plugin/commands/*.md",
+        "sparkrun-cc-plugin/skills/*/*.md",
+        "sparkrun-openclaw-plugin/*.md",
+        "sparkrun-openclaw-plugin/skills/*/*.md",
+        "src/sparkrun/plugins/*/README.md",
+        "src/sparkrun/orchestration/executors/seccomp/README.md",
+        "tests/fixtures/application_profiles/*.md",
+    )
+    return sorted(
+        {
+            path
+            for pattern in patterns
+            for path in root.glob(pattern)
+            if path.is_file() and not path.relative_to(root).as_posix().startswith(VENDOR)
+        }
+    )
 
 
 def _without_fences(text):
@@ -114,3 +133,22 @@ def test_documented_commands_have_help(command):
     result = CliRunner().invoke(main, [*command.split(), "--help"])
     assert result.exit_code == 0, result.output
     assert "Usage:" in result.output
+
+
+def test_document_inventory_without_git_metadata(tmp_path):
+    expected = ["README.md", "docs/API.md", "src/sparkrun/plugins/k8s/README.md", "tests/fixtures/application_profiles/README.md"]
+    excluded = [
+        ".slop/report.md",
+        "build/README.md",
+        ".venv/README.md",
+        "src/sparkrun/plugins/sparkroute/README.md",
+        "node_modules/README.md",
+    ]
+    # An enclosing repository must not change the inventory of an archive.
+    (tmp_path / ".git").mkdir()
+    source = tmp_path / "archive"
+    for name in expected + excluded:
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# Documentation\n")
+    assert [path.relative_to(source).as_posix() for path in _documents(source)] == sorted(expected)

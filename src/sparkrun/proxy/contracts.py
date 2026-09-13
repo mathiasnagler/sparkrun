@@ -26,13 +26,22 @@ class ProxyModel:
         return data
 
 
-class GatewayQueryError(RuntimeError):
+class GatewayOperationError(RuntimeError):
+    """An expected gateway management failure with a diagnostic safe to display.
+
+    Use for reconciliation, configuration, console state, and credentials.
+    Model enumeration uses GatewayQueryError. Unrelated programming exceptions
+    should propagate; callers do not treat arbitrary RuntimeError as operational.
+    """
+
+
+class GatewayQueryError(GatewayOperationError):
     """Model enumeration is unavailable; the message must contain no secrets."""
 
 
 @runtime_checkable
 class GatewayConsole(Protocol):
-    """An admin console and its live listener/authentication state."""
+    """Live console state; unavailable properties raise GatewayOperationError."""
 
     @property
     def ui_url(self) -> str: ...
@@ -49,7 +58,7 @@ class GatewayConsole(Protocol):
 
 @runtime_checkable
 class GatewayConsoleCredentials(Protocol):
-    """Optional creation/retrieval of console credentials (may enable auth)."""
+    """Create/retrieve credentials (may enable auth); GatewayOperationError on refusal."""
 
     def issue_ui_credential(self) -> str: ...
 
@@ -59,10 +68,10 @@ class GatewayAdminToken(Protocol):
     """Live admin token management, independent of inference authentication.
 
     No flags reads; ``rotate`` replaces; ``clear`` disables when policy permits.
-    None means authentication is open. RuntimeError reports a safe diagnostic.
+    None means authentication is open. GatewayOperationError reports a safe diagnostic.
     """
 
     def admin_token(self, *, rotate: bool = False, clear: bool = False) -> str | None: ...
 
 
-__all__ = ["ProxyModel", "GatewayQueryError", "GatewayConsole", "GatewayConsoleCredentials", "GatewayAdminToken"]
+__all__ = ["ProxyModel", "GatewayOperationError", "GatewayQueryError", "GatewayConsole", "GatewayConsoleCredentials", "GatewayAdminToken"]

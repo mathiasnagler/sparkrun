@@ -5,6 +5,8 @@ All notable changes to sparkrun are documented in this file. The format follows
 follows semantic versioning.
 
 For the long-form 0.3.0 narrative, see [`docs/RELEASE_NOTES.md`](docs/RELEASE_NOTES.md).
+The 0.3.x entries below follow release-tag ancestry: changes are listed in the
+first tagged release containing them, regardless of their original commit date.
 
 ## [Unreleased]
 
@@ -12,221 +14,293 @@ For the long-form 0.3.0 narrative, see [`docs/RELEASE_NOTES.md`](docs/RELEASE_NO
 
 This is a breaking Python API release. See the
 [0.4.0 migration guide](docs/DISTRIBUTION_API_MIGRATION.md) for removed imports,
-fields, and downstream migration steps.
+fields, and downstream migration steps. The existing library API, in-tree plugin
+system, gateway registry, and execution-strategy extension points shipped in
+0.3.x; the changes below build on those foundations.
 
-- Added immutable application profiles and console-free initialization for CLI,
-  daemon, desktop, and other Python frontends. Plugins can read application and
-  controller identities; one controller represents an application/config directory.
+- Added immutable application profiles and profile-aware, console-free
+  initialization for CLI, daemon, desktop, and other Python frontends. Plugins
+  can read application and controller identities; one controller represents an
+  application/config directory.
 - Unified installed plugin discovery under `sparkrun.plugins`, with API version
   checks, explicit contribution ownership, and registration rollback on failure.
 - Separated benchmark frameworks, publication integrations, immutable measurement
-  snapshots, and resumable state/finalization. Clarified run options, execution
-  strategies, destination-aware status/stop, and setup/monitoring API contracts.
+  snapshots, and resumable state/finalization. Completed measurements can retry
+  publication without relaunching inference; execution provenance and credentials
+  have separate persistence rules. Exported artifact references are absolute and
+  remain usable when recovery runs from another working directory.
 - Moved Kubernetes-specific APIs and configuration into `sparkrun.plugins.k8s`.
-- Added typed gateway model queries and explicit optional console/token contracts.
-  Failed model enumeration now raises `ProxyQueryFailed` and makes `proxy models`
-  exit nonzero, while status retains process diagnostics. Legacy plugins are adapted.
-- Made proxy CLI help and guidance gateway-neutral; LiteLLM and SparkRoute share
-  selection and lifecycle APIs, with implementation-specific capabilities.
-- Docker now defaults to a bundled seccomp profile allowing io_uring and stages
-  controller-local custom profiles on all launch nodes. Explicit seccomp choices
-  remain supported. vLLM no longer supplies `OMP_NUM_THREADS=4` by default.
-- Hardened native executor path, ownership, process-group, and PID persistence
-  contracts. Managed native launch requires detached mode and anchored control paths.
-
+  Hardened destination-aware run/status/stop, setup, and monitoring contracts.
+- Added typed gateway model queries, a public supervisor import, and optional
+  console/token protocols with specific operational errors. Failed enumeration
+  raises `ProxyQueryFailed` and makes `proxy models` exit nonzero, while status
+  retains process diagnostics. Legacy providers are adapted. Gateway selection
+  without an explicit context initializes plugins and honors the saved pin.
 
 ### Added
 
-- `sparkrun setup rdma-test` verifies the high-speed fabric that `setup cx7`
-  configures — RDMA latency and bandwidth per link, plus an NCCL collective
-  across the cluster. Until now this was a manual copy-paste procedure, and
-  nothing in sparkrun exercised the fabric at all: `validate_ib_connectivity`
-  only proves an IB IP answers SSH, which a link silently running over the
-  management NIC would also do.
-
-  Host pairs are **derived from the configured CX-7 subnets**, so only links
-  that physically exist are tested (a switched segment is chained, not meshed,
-  keeping coverage O(N)). Each link is measured on its own and then **every
-  link between a host pair is driven concurrently**: a DGX Spark QSFP112 cable
-  presents as two RDMA devices, so a per-device figure is about half the
-  cable's real throughput.
-
-  The **`perftest` suite is the default** — host-native where `ib_write_bw`
-  exists, no image pull, seconds to run. `--suite all` adds the NCCL
-  collective, which fetches the image onto every host and takes minutes.
-
-  **Devices that share a physical port are detected, not assumed additive.**
-  DGX Spark exposes two PCIe functions of one adapter on a single 200 Gb/s
-  port, so summing their rates claims a ceiling the wire cannot carry — a
-  measured 195.7 Gb/s, ~98% of the cable, was reported as "of 400 Gb/s" and
-  each healthy ~112 Gb/s device warned for being under 75% of 200. Devices
-  reporting the same `sys_image_guid` *and* `phys_port_name` are treated as
-  sharing one wire: the aggregate expectation sums distinct ports, and each
-  device is compared against its fair share of its port. Both fields come from
-  sysfs, so a conventional dual-port card with two cables remains additive
-  without special-casing any platform.
-
-  Progress is reported through the shared `sparkrun.progress` logger (visible
-  at default verbosity, and not a console write, so the api layer stays
-  console-free): previously the command sat silent through an image pull and
-  minutes of transfers.
-
-  Severity follows the `setup check` convention — underperformance is a
-  warning and exits 0; only a test that could not run at all fails. The
-  bandwidth expectation is derived from the link's own reported rate rather
-  than hardcoded, so the verdict is meaningful on hardware that is not a DGX
-  Spark. Parsers return no measurement rather than a fabricated number when a
-  run is refused or times out.
-
-  The `perftest` suite runs host-native where `ib_write_bw` exists (DGX OS
-  ships it), so the common "did my cable work?" check pulls no image. The
-  `nccl` suite uses a new maintained image, `ghcr.io/spark-arena/sparkrun-rdma-test`
-  (built from `docker/rdma-test/`), because building NCCL and nccl-tests takes
-  ~10 minutes per node. Its tag tracks the NCCL release it was built from —
-  that is the image's rebuild cadence — and the default is pinned to that tag
-  rather than `:latest` so two runs a month apart stay comparable. Override
-  with `--image` or `rdma_test.image` in `config.yaml`.
-
-  Experimental, gated behind `cli.setup.rdma_test` (off on `stable`, on for
-  `beta`/`alpha`) because it pulls a multi-GB image and starts containers.
-
-  Each architecture of the image is built on a **native** machine and the
-  results are combined into one multi-arch manifest, rather than
-  cross-building under QEMU: the image compiles NCCL and nccl-tests with nvcc
-  across four GPU architectures, which emulation turns from a ~20 minute build
-  into hours. CI builds on native arm64 and amd64 runners in parallel and
-  pushes by digest, then merges; `docker/rdma-test/build.sh --push` /
-  `--merge` is the same flow by hand across two machines.
-
-  The runtime stage is plain Ubuntu rather than the NGC CUDA runtime image —
-  only the builder needs the toolchain. Measured on arm64: **4.3 GB → 739 MB**
-  for identical contents, because the CUDA base carries ~1.9 GB of cuBLAS /
-  cuFFT / cuSPARSE / cuSolver / cuRAND while the only CUDA library anything
-  here links is `libcudart` (768 KB). `libnccl_static.a` and nccl-tests' `.o`
-  objects are dropped in the builder, where they never reach a runtime layer.
-  The full nccl-tests binary set is kept so `rdma_test(nccl_binary=…)` accepts
-  any collective it names. Leaving the CUDA base means the image now declares
-  `NVIDIA_DRIVER_CAPABILITIES=compute,utility` itself; without it the
-  container runtime defaults to `utility`, CUDA is absent, and the collective
-  fails with nothing explaining why.
-
-  Both NCCL and nccl-tests are pinned by git ref, and the build args are named
-  `NCCL_GIT_REF` / `NCCL_TESTS_GIT_REF` rather than `NCCL_VERSION`: the NGC
-  CUDA images set `ENV NCCL_VERSION` to the libnccl2 they bundle, and an
-  inherited `ENV` outranks a same-named `ARG` under the legacy builder though
-  not under BuildKit — so the obvious name built our pinned NCCL under `buildx`
-  and NVIDIA's bundled one under `docker build`, from the same Dockerfile. The
-  build now verifies the ref it cloned and that `all_gather_perf` exists, so a
-  mis-resolved pin fails loudly instead of shipping a version nobody asked for.
-
-- `sparkrun setup check` gained an `rdma` check reporting whether RDMA devices
-  are present and `ACTIVE`, from the same probe `setup rdma-test` uses so the
-  two cannot disagree about what hardware is there. It sends nothing over the
-  fabric — "the link is configured" and "the link performs" are different
-  questions — and points at `setup rdma-test` for the second. Absent
-  `perftest` is reported as a note rather than a warning: it is one command
-  away and the test has a container fallback, so flagging it would fire on
-  hosts where nothing is wrong.
+- Bundled the SparkRoute gateway integration, pinned to the verified 0.1.1
+  snapshot. Alpha defaults to SparkRoute; stable/beta retain LiteLLM. An explicit
+  enabled gateway pin takes precedence. The integration includes an admin
+  console, managed credentials, recipe catalogs, and durable on-demand activation.
+- Added cached recipe catalogs, registry/capacity operations, and richer proxy
+  endpoint metadata for controller clients, including named clusters, recipe
+  revisions, and native runtime APIs. Recipe plugins can register passive items.
+- Added `setup plugins list` and JSON output for plugin/feature inventory.
 
 ### Changed
 
-- The `mpirun`-across-containers rsh agent moved from
-  `TrtllmRuntime._generate_rsh_wrapper` to
-  `sparkrun.orchestration.mpi.build_rsh_wrapper`, shared with the new RDMA
-  NCCL suite. Output is byte-identical; the values it interpolates are now
-  validated (they are emitted bare or double-quoted, so they cannot be
-  shell-quoted without changing what bash sees).
+- Made proxy CLI help and documentation gateway-neutral. Load/unload use the
+  shared run/stop APIs, preserve cluster targeting, and update recipe bindings;
+  restart waits for the preceding process to exit.
+- Docker defaults to a bundled seccomp profile allowing io_uring. Controller-local
+  custom profiles travel with generated launch commands to every node; explicit
+  policy choices remain supported. vLLM no longer supplies `OMP_NUM_THREADS=4`.
+- RDMA `perftest` is enabled on every feature channel. NCCL and `all` suites now
+  have their own `cli.setup.rdma_test.nccl` gate, enabled by default only on alpha;
+  help and API refusal follow the same suite-availability rules.
+- Hardened native executor ownership, process-group, and PID persistence
+  contracts, including rollback after failed record writes. Managed native
+  launch requires detached mode and anchored control paths.
+- Added offline documentation/import/help checks and installed downstream
+  application/plugin compatibility tests. Documentation tests also collect from
+  source archives. Generated CI runs pinned Ruff lint and Python formatting checks.
+
+### Fixed
+
+- Repaired tab-broken shell continuations, including recipe hook commands.
+
+## [0.3.8] — 2026-09-07
+
+### Added
+
+- Added rank-local Docker-start readiness measurements: port-open and HTTP-ready
+  time-to-ready plus first-token time. Runtime styles and executor observation
+  capabilities determine when these measurements are applicable; recipes can
+  override readiness policy.
+- Benchmarks collect and export the measured startup timings. End-of-launch
+  summaries repeat Docker-start TTR/TTFT and avoid duplicating those spans in the
+  timing tree.
+- Added experimental `setup rdma-test` for per-link latency/bandwidth and an NCCL
+  collective. Host pairs derive from configured CX-7 subnets; links are tested
+  separately and concurrently. Shared physical ports are detected from sysfs so
+  two PCIe functions on one cable do not double the bandwidth expectation.
+- RDMA tests default to host-native `perftest` where available. NCCL uses a
+  maintained image with pinned NCCL/nccl-tests refs, built natively for arm64 and
+  amd64. Its slim runtime keeps the required CUDA library and collective binaries.
+  Underperformance warns; inability to run fails. In this release the entire
+  command is gated off on stable and enabled on beta/alpha.
+- `setup check` reports RDMA device presence and ACTIVE state, using the same
+  hardware probe as the performance test. The MPI rsh-wrapper helper is shared
+  by TRT-LLM and RDMA testing, with validation of interpolated values.
+
+### Fixed
+
+- Remote Hugging Face cache checks inspect the actual configured cache directory
+  and honor the requested model revision.
+- Pinned the uv version installed on cluster hosts for repeatable tooling setup.
+- Eugr's successful pull-first image path no longer reports failure.
+- Runtime metadata reports the NCCL library that executes collectives.
+- Pure data-parallel vLLM no longer waits for a port that no process binds.
 
 ### Security
 
-- Registry names and asset subpaths are now contained to the registry cache.
-  Both arrive from `.sparkrun/registry.yaml` manifests in **remote**
-  repositories (`sparkrun registry add <url>`, bootstrap discovery) and both
-  become real filesystem paths, with no charset validation anywhere before this:
-  `_cache_dir` is `cache_root / name`, so an escaping name resolved outside the
-  cache root and `_link_registry_to_shared` would then `shutil.rmtree` it (a
-  delete primitive), while `asset_dir` is `_cache_dir(name) / subpath`, so an
-  escaping subpath had `iter_asset_files` `rglob` a directory outside the clone
-  and `find_recipe` offer whatever YAML it found there as a runnable recipe (a
-  read primitive feeding the recipe loader). New
-  `assert_safe_registry_name` / `assert_safe_registry_subpath` /
-  `assert_safe_registry_entry` enforce this at every entry point: `add_registry`
-  and `validate_registry_name` raise, `_discover_manifest_entries` drops the
-  offending entry and keeps the rest (raising only when nothing survives, so a
-  wholly hostile manifest is never reported as a successful no-op add), and
-  `_load_registries_from_file` skips-with-warning — narrower than the enclosing
-  `except`, which reverts to the shipped defaults and would let one hand-edited
-  entry discard every registry the user has. Requiring each path component to
-  start alphanumeric also rules out `.`/`..`, dotfiles, a leading `-` (git would
-  read it as an option) and the `_url_<hash>` shared-clone prefix, whose
-  collision would have deleted the checkout every registry on that URL shares.
-  See `docs/SECURITY.md`.
+- Quoted and validated recipe-controlled values in generated shell scripts so
+  they are passed as data instead of executable shell fragments.
 
-### Changed
-
-- The `atlas` registry now points at `Atlas-Inf/sparkrun-recipes`; the recipes
-  moved there from `Avarok-Cybersecurity/atlas-recipes` along with the project
-  itself (source now at <https://github.com/Atlas-Inf/atlas>). Existing installs
-  follow the move via `MIGRATED_REGISTRY_URLS`, which rewrites the URL in place
-  and keeps each user's `enabled`/`visible`/trust state — the stale clone is
-  re-fetched by `_drop_cache_if_url_changed` on the next sync. The layout is
-  identical on both sides (a `recipes` subpath), so nothing else changes.
-  Correspondingly, `atlas-inf` replaces `avarok-cybersecurity` in
-  `EXTERNAL_RESERVED_NAMES`: the reserved `atlas` registry name now belongs to
-  the org that publishes the recipes, and a registry claiming it from the former
-  org is rejected like any other impersonation.
-- The default Atlas container image is now `azeezish/atlas-gb10:latest`
-  (previously `avarok/atlas-gb10:latest`), matching what every recipe in the
-  new Atlas-Inf registry pins. Only affects `atlas` recipes that do not set
-  `container:` themselves.
-
-- Manifest discovery clones blob-filtered and sparse (`--filter=blob:none
-  --sparse` + `sparse-checkout set .sparkrun`) instead of pulling the whole
-  repository: only `.sparkrun/registry.yaml` is ever read, so the recipe trees
-  were wasted transfer on every bootstrap URL. A failed sparse-checkout raises
-  rather than falling through to "No `.sparkrun/registry.yaml` manifest found",
-  so a clone whose manifest directory was never materialized is not mistaken for
-  a repo that declares nothing.
+## [0.3.7] — 2026-09-04
 
 ### Added
 
-- `run-recipe.sh` shim: `-v/--volume LOCAL:CONTAINER` (repeatable), matching
-  spark-vllm-docker upstream. It maps to `--executor-args "-v ..."`, which the
-  docker executor shlex-splits back into the `docker run` argv. As upstream, it
-  applies to both solo and multi-node runs (unlike `-p/--publish`, solo-only).
-- `tests/test_run_recipe_shim.py` — argv-mapping coverage for the shim, driven
-  through its `RUN_RECIPE_DEBUG=1` hook.
-- eugr builder: support for `build-and-copy.sh`'s `--exp-b12x` /
-  `--experimental-b12x` preset. As upstream, it does not set
-  `CUSTOM_BUILD_REQUESTED`, so on its own it only changes *which* prebuilt image
-  is pulled: a nightly `:latest` sentinel (or a missing non-pullable eugr image)
-  resolves to `ghcr.io/spark-arena/dgx-vllm-eugr-nightly-b12x:latest` — sparkrun's
-  mirror of upstream's `eugr/spark-vllm-b12x:latest` — instead of the standard
-  nightly. Naming a b12x prebuilt image selects the variant the same way. With a
-  custom build flag alongside it the build runs under the `sparkrun-eugr-vllm-b12x`
-  local tag (upstream tags `vllm-node-b12x`) and the flag is forwarded verbatim.
-  Long-term image pinning resolves against the `nightly-b12x` variant.
-
-### Added
-
-- `sparkrun tune vllm` / `sparkrun tune sglang`: `--timeout SECONDS`, a per-TP
-  ceiling on the tuning job itself. `0` (the default) means no ceiling.
+- Made the inference gateway an implementable plugin extension point, with native
+  protocol and recipe-capability declarations. This is the gateway foundation;
+  the bundled SparkRoute implementation follows in 0.4.0.
+- Added executable host sessions for transports, per-machine container images,
+  shared image preparation, recipe-local execution strategies, and the
+  `api.materialize()` view of resolved launch units. Plugins can own top-level
+  recipe items and declare default registries; clusters can carry local plugin policy.
+- Added per-node pull distribution. Model transfers retain each model's own
+  revision, and tuning configs follow the same transfer preferences as models.
+- Added structured launch-stage timing, time-to-first-inference observation
+  alongside log streaming, serving intervals, and verbosity-aware timing detail.
+  Progress supports heartbeats and dynamic labels for long-running host scripts.
+- Added three-tier recipe validation with launch-time mount checks, deprecation
+  and advisory reporting, unused override diagnostics, and warnings for inline
+  patching, pinned launch flags, and model revisions that do not reach the engine.
+  V2 recipe top-level `name` is deprecated. Arena validates recipes and requests
+  confirmation before submission.
+- Accelerator driver versions are detected and persisted; `cluster inspect`
+  shows head-node hardware. VRAM estimation recognizes EXL2/EXL3 weight formats.
 
 ### Changed
 
-- Tuning jobs are **unbounded by default**, replacing the fixed 8-hour cap on
-  both the vLLM and SGLang paths. A tuning run that is killed at the wire loses
-  all of its work, and the normal runtime is measured in hours (vllm-tune's MoE
-  phase alone is 1.5-3h), so completion now outranks bounded runtime. Pass
-  `--timeout` to get a ceiling back.
-- `run-recipe.sh` shim: `--ray`/`--no-ray` combined with `--solo` now warn and
-  are ignored instead of erroring, matching upstream's
-  `use_ray = args.ray and not is_solo`. The flags are recorded during parsing
-  and resolved afterwards, so a trailing `--solo` suppresses them too.
-- `run-recipe.sh` shim: `--earlyoom` / `--earlyoom-args` are now rejected with
-  the standard "not supported" pointer rather than a bare "unknown option"
-  error. sparkrun runs the server as the container foreground process, so there
-  is no earlyoom supervisor to substitute.
+- Docker defaults to `ipc=shareable` instead of host IPC. More permissive IPC
+  choices are trust-gated according to their value.
+- SGLang expresses data parallelism through its runtime configuration. Runtime
+  cache coverage includes torch and TVM-FFI; SGLang draft-model revisions are pinned.
+- Enforced the selected Ruff bugbear rules after fixing the existing violations.
+
+### Fixed
+
+- Concurrent proxy/auto-discovery writes merge their changes to `proxy.yaml`
+  instead of overwriting one another.
+- Launch records the recipe fingerprint before execution and preserves it when
+  injecting resolved revisions. Strict replacement refuses to proceed when the
+  prior workload cannot be stopped as required.
+- Stop/log operations retain the launching cluster and connection context;
+  status preserves the default cluster and attributes pending operations to hosts.
+- Successful rsync transfers no longer report failure. Attribute-related errors
+  retry once with relaxed attributes; destructive tuning synchronization is
+  guarded, and remote tuning directories are created before Docker can own them.
+- CX-7 address persistence follows the service managing it; missing default routes
+  no longer fall back to a nonexistent `eth0`.
+- Hugging Face metadata lookup is bounded so launch cannot hang indefinitely.
+  Rootless write failures get useful log diagnostics and transport sessions can
+  perform ownership repair.
+- Atlas forwards recipe options not enumerated by its flag map. Eugr recognizes
+  Docker Hub short references as pullable. vLLM preserves served model names when
+  rewriting model references to local paths.
+
+## [0.3.6] — 2026-08-24
+
+### Added
+
+- Proxy discovery advertises each served model's context window and preserves it
+  across config rewrites.
+- vLLM, SGLang, and TRT-LLM receive the `SYS_PTRACE` capability by default.
+
+### Changed
+
+- Migrated the Atlas registry to `Atlas-Inf/sparkrun-recipes`, preserving user
+  enabled/visible/trust settings. Updated the reserved organization and fallback
+  image to `azeezish/atlas-gb10:latest`.
+- Manifest-only discovery uses blob-filtered sparse clones of `.sparkrun`.
+  Sparse-checkout failures are reported rather than mistaken for missing manifests.
+- Benchmark identity and state ownership include the measured node set. Hid the
+  `--exit-on-first-fail` CLI option pending further policy work.
+
+### Fixed
+
+- Port readiness checks require a LISTEN socket, including their fallback path,
+  instead of treating other TCP states as a ready inference service.
+- FlashInfer JIT and CuTeDSL caches persist across launches.
+- Self-update determines whether an upgrade occurred from installation identity,
+  rather than treating every successful uv exit as an upgrade.
+
+### Security
+
+- Confined manifest-derived registry names and asset subpaths to the registry
+  cache. Rejects traversal, reserved-prefix collisions, and option-like names
+  before clone/link/delete or recipe discovery; invalid persisted entries are
+  skipped without discarding the remaining registry configuration.
+
+## [0.3.5] — 2026-08-18
+
+### Added
+
+- Introduced the in-tree plugin system for cross-cutting integrations and the
+  gated `uv-venv` environment builder.
+- Added cluster GPU SM-clock reporting/capping and per-architecture KV-cache
+  sizing extensions. MLA estimates use compressed latent dimensions, including
+  DeepSeek V4 and `nvfp4_ds_mla`; command-template KV dtype is recognized.
+- Added live workload completion and stale-job detection for `logs`/`stop`,
+  readable completion targets, launch timestamps, and bounded metadata retention.
+- Added `--timeout SECONDS` to vLLM/SGLang tuning. The default is now `0`
+  (unbounded), replacing the eight-hour cap; tunable recipes are selected by
+  runtime family.
+- Persisted runtime compile/autotune caches, including SGLang's own cache root.
+  Added `run --rebuild` support for a fresh pull of registry images and expanded
+  vLLM/SGLang flag maps so more recipes can omit custom commands.
+
+### Changed
+
+- Registry configuration has explicit two-way trust and a versioned migration
+  marker. Git URLs are canonicalized without mutating shared default settings.
+- FE system updates run hosts in parallel, update the control node last, and
+  report progress while the system updater works.
+
+### Fixed
+
+- Benchmark runs honor host targeting, serving overrides such as `--tp`, and
+  hook trust on Arena runs. `--skip-run` targets the running workload rather than
+  every configured cluster host.
+- Finalized benchmark arguments before schedule creation; omit unsupported
+  SGLang streaming `return_token_ids` and fail measurements that produce no data.
+- Stop and log post-mortems dispatch through the executor that launched the job.
+  NOPASSWD sudo runs noninteractively over SSH; failed remote scripts surface
+  stdout when stderr is empty.
+- Recipe served-model-name is resolved from command templates. MLA estimates are
+  idempotent and handle compressed-cache edge cases correctly.
+
+## [0.3.4] — 2026-08-09
+
+### Added
+
+- Detect and refuse image ENTRYPOINT configurations that would swallow the
+  requested serving command.
+
+### Fixed
+
+- Plan placement once, delay eviction until the replacement is ready to launch,
+  and include the container image in workload intent identity.
+- `proxy load` waits for the inference endpoint to answer before synchronizing it
+  into the gateway.
+- Telemetry dimensions use scalar values instead of object representations and
+  fail closed for invalid configuration objects. Tests detect collector access.
+
+## [0.3.3] — 2026-08-06
+
+### Added
+
+- Added `run -e/--env KEY=VALUE` for container environment overrides.
+- Platforms can supply executor configuration and container environment defaults.
+- Added `fp4` model dtype support.
+
+### Changed
+
+- Moved the Eugr registry to the Sparkrun mirror with migration of existing
+  configurations. Renamed the registry `Visible` column to `Stemless` to explain
+  its effect on unqualified recipe lookup.
+
+### Fixed
+
+- Resolved scheduler placement onto the configured initialization network.
+- CDI setup diagnostics use the cluster's GPU access mode to choose severity.
+- Self-update commit messages no longer carry a bare `g` prefix.
+- Isolated tests from live user state and network access.
+
+## [0.3.2] — 2026-08-05
+
+### Added
+
+- The `run-recipe.sh` compatibility shim accepts repeatable `-v/--volume`
+  mappings for solo and multi-node launches.
+- Eugr supports `--exp-b12x` / `--experimental-b12x`, including the B12x nightly
+  mirror, explicit variant images, custom-build tags, and long-term image pinning.
+
+### Changed
+
+- The compatibility shim warns and ignores Ray flags in solo mode, regardless of
+  argument order. Unsupported earlyoom flags use the normal migration guidance.
+- Pinned the repository CI tooling revision.
+
+### Fixed
+
+- Recipe substitution handles placeholders inside legacy brace escapes and
+  literal JSON braces in V2 commands/hooks. Escape conventions are detected from
+  templates rather than inferred from the recipe version.
+- Cancelling a launch no longer leaves its remote SSH work orphaned.
+
+## [0.3.1] — 2026-07-30
+
+### Added
+
+- Detect stale NVIDIA CDI specifications and explain CDI-related launch failures.
+- Version tags create GitHub releases with built distribution artifacts.
+
+### Fixed
+
+- Quoted remote log-reading commands so SSH preserves the intended shell command.
 
 ## [0.3.0] — 2026-07-30
 
@@ -492,3 +566,13 @@ the post-launch lifecycle are unchanged for existing recipes.
   routes through it.
 
 [0.3.0]: https://github.com/spark-arena/sparkrun/releases/tag/v0.3.0
+
+[Unreleased]: https://github.com/spark-arena/sparkrun/compare/v0.3.8...develop-next
+[0.3.1]: https://github.com/spark-arena/sparkrun/releases/tag/v0.3.1
+[0.3.2]: https://github.com/spark-arena/sparkrun/releases/tag/v0.3.2
+[0.3.3]: https://github.com/spark-arena/sparkrun/releases/tag/v0.3.3
+[0.3.4]: https://github.com/spark-arena/sparkrun/releases/tag/v0.3.4
+[0.3.5]: https://github.com/spark-arena/sparkrun/releases/tag/v0.3.5
+[0.3.6]: https://github.com/spark-arena/sparkrun/releases/tag/v0.3.6
+[0.3.7]: https://github.com/spark-arena/sparkrun/releases/tag/v0.3.7
+[0.3.8]: https://github.com/spark-arena/sparkrun/releases/tag/v0.3.8
