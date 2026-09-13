@@ -1,5 +1,8 @@
 # sparkrun 0.3.0 — Release Notes
 
+Historical release notes. For current 0.4.0 development, see the
+[migration guide](DISTRIBUTION_API_MIGRATION.md) and [unreleased changelog](../CHANGELOG.md#unreleased).
+
 Multiplatform foundations, unified executor resolution, and the B-workstream
 security tightening land in this release. The shipped DGX Spark path is
 unchanged byte-for-byte (NCCL output, container launch, post-launch lifecycle);

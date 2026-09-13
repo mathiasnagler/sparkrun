@@ -179,7 +179,7 @@ def _shared_run_options(f):
             default=True,
             # hide this option for now, added for historical reasons, landscape has changed; it needs reconsideration (relates to #266)
             hidden=True,
-            help="Abort benchmark on first failure and skip saving results (default: enabled)",
+            help="Abort benchmark on first failure; scheduled task progress remains resumable (default: enabled)",
         ),
         click.option("--no-stop", is_flag=True, help="Don't stop inference after benchmarking"),
         click.option("--skip-run", is_flag=True, help="Skip launching inference (benchmark existing instance)"),

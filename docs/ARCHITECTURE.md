@@ -43,7 +43,7 @@ with `MULTIPLATFORM.md`, `EXECUTORS.md`, and `SECURITY.md` for the deeper dives.
    | core/layout.py        |         |  _base.py (Executor ABC)        |
    +-----------------------+         |  docker.py (default)            |
                                      |  local.py  (experimental)       |
-                                     |  k8s.py    (experimental)       |
+                                     |  plugins/k8s (experimental)    |
                                      +---------------------------------+
                                                   ^
                                                   |
@@ -105,23 +105,15 @@ See the [plugin guide](../src/sparkrun/plugins/k8s/README.md).
 
 ### Executor
 
-`orchestration/executor.py:resolve_executor()` walks (highest priority first):
+`orchestration/executor.py:resolve_executor()` resolves the selector and builds
+one executor per launch. See the [executor resolution chain](EXECUTORS.md#resolution-chain)
+for precedence, including cluster settings, builder activation, runtime defaults,
+and hardware-platform defaults. Application defaults enter through `SparkrunConfig`.
 
-1. `cli_overrides` (e.g. `-o executor=local`, `-o k8s_namespace=...`).
-2. `recipe.executor` + `recipe.executor_config`.
-3. `runtime.default_executor()`.
-4. `executor_cls.apply_runtime_adjustments(rootless=, auto_user=)` — Docker reads
-   these here; Local/K8s ignore.
-5. `config.default_executor` + `config.executor_config` (`SparkrunConfig`).
-6. `executor_cls.default_config()` (e.g. `DOCKER_DEFAULTS`).
-7. `ExecutorConfig` dataclass field defaults.
-
-The selected class comes from `get_executor(name)` which queries the SAF plugin
-registry (`EXT_EXECUTOR = "sparkrun.executor"`) and falls back to a static
-`{docker, local, k8s}` map for test paths that bypass `init_sparkrun()`.
-
-Unknown selectors log a warning and degrade to `"docker"` (see
-`ExecutorConfig.from_chain` and `_resolve_executor_name`).
+Explicit unknown or disabled selectors raise `ExecutorUnavailableError`; they do
+not silently select Docker. SAF discovers executor classes. Only Docker and Local
+have a static fallback for bootstrap-free test harnesses; Kubernetes is supplied
+by its plugin.
 
 ### Collective backend
 

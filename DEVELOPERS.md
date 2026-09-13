@@ -70,11 +70,18 @@ src/sparkrun/
 tests/                # pytest tests (mirrors src/ structure)
 ```
 
+## Public API
+
+Use `sparkrun.application.initialize()` for embedding and `sparkrun.api` for
+operations. See the [0.4.0 migration guide](docs/DISTRIBUTION_API_MIGRATION.md)
+for supported imports and the [benchmark guide](docs/BENCHMARK_API.md) for
+measurement, integrations, and resume/finalization contracts.
+
 ## Key Patterns
 
 ### Plugin System (SAF)
 
-Runtimes, builders, and benchmarking frameworks are SAF multi-extension plugins discovered via Python entry points in `pyproject.toml`. Bootstrap flow:
+Runtimes, builders, and benchmarking frameworks are SAF multi-extension plugins. Core implementations are scanned from bundled modules. Installed packages expose a module through the `sparkrun.plugins` entry-point group, declare `SPARKRUN_PLUGIN_API_VERSION = 1`, and are selected by the application profile or config. Per-kind Python entry-point groups are not consumed. See [plugin registration](docs/PLUGINS.md#installing-a-benchmark-framework). Bootstrap flow:
 
 ```
 cli/__init__.py → core/bootstrap.py → SAF init → find_types_in_modules() → register_plugin()
@@ -98,7 +105,7 @@ Priority: CLI → user config → recipe defaults. `Recipe.build_config_chain()`
 
 ### Executor Abstraction
 
-Container engine operations go through the `Executor` ABC (`orchestration/executor.py`). `DockerExecutor` is the current implementation. Runtimes use `self.executor.*` instead of importing `docker.py` directly:
+Workload operations go through the `Executor` ABC (`orchestration/executor.py`). Docker, native Local, and provider plugins implement the supported capabilities. Runtimes use `self.executor.*` instead of importing `docker.py` directly:
 
 ```python
 # In a runtime:
@@ -109,11 +116,11 @@ self.executor.container_name(cluster_id, "solo")
 self.executor.node_container_name(cluster_id, rank)
 ```
 
-`ExecutorConfig` is built from a vpd chain (CLI flags → recipe `executor_config` → `EXECUTOR_DEFAULTS`) in `launcher.py` and passed to the executor.
+`resolve_executor()` builds the per-launch config through the [canonical precedence chain](docs/EXECUTORS.md#resolution-chain). Use that resolver so cluster, builder, runtime, application, and platform defaults remain consistent.
 
 ### SSH Execution Model
 
-All remote operations use **SSH stdin piping** — scripts are generated as Python strings and piped to `ssh host bash -s`. No files are ever copied to remote hosts for execution.
+SSH-based execution uses **SSH stdin piping** — scripts are generated as Python strings and piped to `ssh host bash -s`. Supporting assets can be staged separately: Docker seccomp policies, for example, are distributed to every launch node before use.
 
 ```python
 from sparkrun.orchestration.ssh import run_remote_script
@@ -192,11 +199,7 @@ All runtimes extend `RuntimePlugin` (`runtimes/base.py`):
 2. Set `runtime_name = "my-runtime"` and `default_image_prefix`
 3. Implement `generate_command()` and optionally `resolve_container()`
 4. For multi-node: implement `_run_cluster()` and `_stop_cluster()`
-5. Register the entry point in `pyproject.toml`:
-   ```toml
-   [project.entry-points."sparkrun.runtimes"]
-   my_runtime = "sparkrun.runtimes.my_runtime:MyRuntime"
-   ```
+5. Bundled runtime classes are discovered by the core module scan. For an installed plugin, export the class from a module declared under `[project.entry-points."sparkrun.plugins"]`, declare `SPARKRUN_PLUGIN_API_VERSION = 1`, and enable that plugin ID; see [the plugin guide](docs/PLUGINS.md).
 6. Add tests in `tests/test_my_runtime.py`
 
 ## Adding a New Builder
@@ -204,7 +207,7 @@ All runtimes extend `RuntimePlugin` (`runtimes/base.py`):
 1. Create `src/sparkrun/builders/my_builder.py` extending `BuilderPlugin`
 2. Set `builder_name = "my-builder"`
 3. Implement `prepare_image()` — must return the final image name
-4. Register in `pyproject.toml` under `sparkrun.builders`
+4. Bundled builders are scanned automatically. Installed builder packages use `sparkrun.plugins`, as described above
 5. Recipes reference it as `builder: my-builder`
 
 ## Version Management

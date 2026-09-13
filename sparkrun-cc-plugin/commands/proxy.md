@@ -1,6 +1,6 @@
 # /sparkrun:proxy
 
-Manage the LiteLLM-based inference proxy gateway.
+Manage the inference proxy through a pluggable gateway, such as LiteLLM or SparkRoute.
 
 ## Usage
 
@@ -28,6 +28,7 @@ The proxy provides a single unified OpenAI-compatible API in front of multiple i
 sparkrun proxy start
 sparkrun proxy start --cluster mylab --port 4000
 sparkrun proxy start --foreground
+sparkrun proxy start --gateway sparkroute --host 127.0.0.1
 ```
 
 Auto-discovers running inference endpoints and registers them.
@@ -78,7 +79,11 @@ sparkrun proxy stop
 
 ## Notes
 
-- The proxy uses LiteLLM under the hood (installed via `uvx litellm`)
+- `--gateway <name>` selects and persists an enabled implementation. Built-in Sparkrun defaults to LiteLLM on stable/beta and SparkRoute on alpha; a saved gateway pin takes precedence.
+- Inspect availability with `sparkrun setup features list`; enable a gateway with `sparkrun setup features enable gateway.<name>`. Enabling alone does not change an existing selection.
+- `sparkrun proxy ui` and `sparkrun proxy admin-token get|set|clear` require gateway support (currently SparkRoute).
+- Model and alias updates use the running gateway; a restart is implementation-specific.
+- See [the proxy guide](../../docs/PROXY.md) for configuration, authentication, and gateway selection.
 - Auto-discover periodically scans for new/removed endpoints (configurable interval)
 - The proxy API is available at `http://localhost:<port>/v1` (default port: 4000)
 - Aliases let clients use friendly names instead of full model paths

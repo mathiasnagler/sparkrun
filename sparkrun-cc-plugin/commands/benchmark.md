@@ -12,7 +12,7 @@ Run benchmarks against an inference workload.
 
 ```
 /sparkrun:benchmark qwen3-1.7b-sglang --tp 1
-/sparkrun:benchmark qwen3-1.7b-sglang --tp 2 --profile spark-arena-v1
+/sparkrun:benchmark qwen3-1.7b-sglang --tp 2 --profile @official/spark-arena-v2
 /sparkrun:benchmark qwen3-1.7b-sglang --skip-run --tp 1
 /sparkrun:benchmark qwen3-1.7b-sglang --no-stop --cluster mylab
 /sparkrun:benchmark qwen3-1.7b-sglang -b depth=0,2048,4096 -b tg=32,128
@@ -28,15 +28,21 @@ When this command is invoked:
 
 ```bash
 # Full flow: launch inference -> benchmark -> stop
-sparkrun benchmark <recipe> [options]
+sparkrun benchmark perf <recipe> [options]
 ```
 
-The benchmark command handles the complete lifecycle:
-- **Step 1/3**: Launches the inference server (unless `--skip-run`)
-- **Step 2/3**: Runs the benchmark against the server
-- **Step 3/3**: Stops the inference server (unless `--no-stop`)
+The benchmark command launches or reuses inference, waits for readiness, then
+runs measurement. It stops inference it launched unless `--no-stop` is set;
+`--skip-run` benchmarks an existing instance without taking ownership of it.
 
-4. Results are saved to YAML, JSON, and CSV files.
+4. Results are exported in the formats supported by the framework. Scheduled
+   frameworks save task progress for resume; failed invocations can retain a
+   checkpoint without producing a final report.
+5. Use `--resume` to reuse matching state, `--fresh` to replace it, or
+   `sparkrun benchmark resume <benchmark-id>` to resume saved work. Completed
+   states can retry pending publication without launching inference again.
+
+See [benchmark API and state contracts](../../docs/BENCHMARK_API.md).
 
 ## Common Options
 
@@ -44,22 +50,21 @@ The benchmark command handles the complete lifecycle:
 |--------|-------------|
 | `--hosts, -H` | Comma-separated host list |
 | `--cluster` | Use a saved cluster |
-| `--tp N` | Tensor parallelism (= number of nodes) |
+| `--tp N` | Tensor-parallel ranks (one per DGX Spark GPU) |
 | `--pp N` | Pipeline parallelism |
 | `--port N` | Override serve port |
 | `--gpu-mem F` | GPU memory utilization (0.0-1.0) |
 | `--max-model-len N` | Override max context length |
 | `--image` | Override container image |
 | `--profile` | Benchmark profile name or file path |
-| `--framework` | Override benchmarking framework (default: llama-benchy) |
+| `--framework` | Select measurement framework (performance defaults to llama-benchy) |
 | `-o KEY=VALUE` | Override recipe default (repeatable) |
 | `-b KEY=VALUE` | Override benchmark arg (repeatable) |
-| `--exit-on-first-fail` | Abort on first failure, skip saving results (default: on) |
 | `--no-stop` | Keep inference running after benchmarking |
 | `--skip-run` | Skip launching inference (benchmark existing instance) |
 | `--sync-tuning` | Sync tuning configs from registries before benchmarking |
 | `--timeout` | Benchmark timeout in seconds (default: 14400) |
-| `--out, --output` | Output file for results YAML |
+| `--output` | Output file for results YAML |
 | `--dry-run` | Show what would be done |
 
 ## Benchmark Profiles

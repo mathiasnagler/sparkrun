@@ -1,152 +1,118 @@
 # sparkrun proxy
 
-A unified OpenAI-compatible gateway that discovers running sparkrun inference endpoints and exposes them through a
-single API powered by [LiteLLM](https://docs.litellm.ai/).
+`sparkrun proxy` manages an OpenAI-compatible inference gateway. Gateway
+implementations are pluggable: Sparkrun includes LiteLLM and the SparkRoute
+integration, and installed plugins can register others. The selected gateway
+owns its model configuration, update mechanism, and supported management features.
 
-## Overview
+## Choose a gateway
 
-The proxy sits in front of one or more inference workloads launched by sparkrun and provides:
+For built-in Sparkrun, the channel defaults are:
 
-- **Live endpoint discovery** using same mechanism as `sparkrun cluster status` and `sparkrun cluster monitor`
-- **Auto-discovery** background process that periodically re-scans and syncs models (in case of drift)
-- **Health checking** via `GET /v1/models` on each discovered endpoint
-- **Deduplication** of endpoints reachable on multiple network interfaces (e.g. management IP vs ConnectX-7 IP)
-- **Model aliases** so clients can address a model by a friendly name
-- **Load/unload** models through `sparkrun proxy load` or `sparkrun proxy unload` to keep the proxy in sync (although
-  autodiscovery should also ensure models are available)
+| Feature channel | Default gateway |
+| --- | --- |
+| stable / beta | LiteLLM |
+| alpha | SparkRoute |
 
-The proxy runs LiteLLM via `uvx --from 'litellm[proxy]==1.82.6' litellm` — no permanent installation required.
-
-> **How changes are applied.** The generated config file is the single source of truth for the model list. LiteLLM's
-> runtime mutation endpoints (`/model/new`, `/model/delete`) require a DB-backed model store — PostgreSQL plus a
-> generated prisma client — which sparkrun does not provision, so against a sparkrun-launched proxy they answer
-> `500 No DB Connected`. Applying a change therefore means **rewriting the config and restarting the process**
-> (`ProxyEngine.apply_desired_state`). The restart is skipped entirely when the desired model set already matches
-> what is on disk, so a steady-state auto-discover sweep costs nothing. The management API is still used read-only,
-> to report what the proxy is currently serving.
-
-## Quick Start
+An existing `proxy.gateway` pin takes precedence over channel defaults. Enable a
+gateway before selecting it; enabling a second gateway alone does not switch the
+selection. When both bundled gateways are enabled and there is no pin, LiteLLM
+wins. Alternate application profiles can supply their own feature defaults.
 
 ```bash
-# Launch some inference workloads first
-sparkrun run qwen3-1.7b-vllm --cluster mylab
+sparkrun setup features list
+sparkrun setup features enable gateway.sparkroute
+sparkrun proxy start --gateway sparkroute --host 127.0.0.1
+```
 
-# Start the proxy (discovers endpoints automatically)
-sparkrun proxy start --cluster mylab
+`--gateway <name>` persists the selection in `proxy.yaml`. Use `--restart` to
+replace a running gateway with new settings or another enabled implementation.
+Management commands bind to the gateway recorded in running state, so editing
+the pin or disabling a feature does not redirect `stop`, `status`, or updates to
+a different implementation. See [SparkRoute channel and update details](SPARKROUTE.md).
 
-# Query models through the unified API
+## Quick start
+
+Start the gateway, then load a model through it:
+
+```bash
+sparkrun proxy start --host 127.0.0.1 --cluster mylab
+sparkrun proxy load qwen3-1.7b-vllm --cluster mylab
+sparkrun proxy models
 curl http://localhost:4000/v1/models
 ```
 
---- OR ---
-
-```bash
-# Start the proxy (discovers endpoints automatically if relevant)
-sparkrun proxy start
-
-# Load a new model
-sparkrun proxy load qwen3.5-0.8b-bf16-sglang
-
-# Query models through the unified API
-curl http://localhost:4000/v1/models
-```
+You can also start the gateway after launching workloads with `sparkrun run`;
+discovery finds healthy endpoints. By default the gateway runs in the background.
+Use `--foreground` to keep its process attached to the terminal.
 
 ## Commands
 
-### `sparkrun proxy start`
-
-Discovers running endpoints, generates a LiteLLM config, and launches the proxy. A background auto-discover process
-periodically re-scans and syncs models with the proxy. Starting when a proxy is already running is an error; pass
-`--restart` to replace it with one carrying the new settings.
+### Start and stop
 
 ```bash
-sparkrun proxy start --host 127.0.0.1         # recommended bind (unset keeps legacy 0.0.0.0 + warning)
-sparkrun proxy start --port 8080              # custom port
-sparkrun proxy start --cluster mylab          # discover from cluster hosts (live SSH)
-sparkrun proxy start --hosts 10.0.0.1,10.0.0.2  # explicit host list
-sparkrun proxy start --foreground             # run in foreground (blocking)
-sparkrun proxy start --master-key sk-mykey    # enable LiteLLM auth
-sparkrun proxy start --no-auto-discover       # disable periodic re-scanning
-sparkrun proxy start --discover-interval 60   # re-scan every 60s (default: 30)
-sparkrun proxy start --discover-removal-grace-sweeps 1  # remove on first miss (default: 2)
-sparkrun proxy start --gateway litellm        # pin the gateway implementation
-sparkrun proxy start --dry-run                # show what would be done
-```
-
-By default, the proxy daemonizes in the background. Logs are written to `~/.cache/sparkrun/proxy/litellm.log`.
-
-### `sparkrun proxy stop`
-
-Sends SIGTERM to the running proxy and its auto-discover process using the stored PIDs.
-
-```bash
+sparkrun proxy start --host 127.0.0.1 --port 8080
+sparkrun proxy start --hosts 10.0.0.1,10.0.0.2
+sparkrun proxy start --gateway litellm --restart
+sparkrun proxy start --master-key sk-mykey
+sparkrun proxy start --no-auto-discover
+sparkrun proxy start --discover-interval 60
+sparkrun proxy start --discover-removal-grace-sweeps 1
+sparkrun proxy start --dry-run
 sparkrun proxy stop
 ```
 
-### `sparkrun proxy status`
+Start discovers endpoints, asks the selected gateway to prepare configuration,
+and launches its process. An already-running proxy is an error unless `--restart`
+is set. Explicit settings are saved even when an existing process prevents the
+start; the dry run computes a preview without persisting settings.
 
-Shows whether the proxy is running, its PID, bind address, gateway, auto-discover status, and the models it is
-currently serving (read via the LiteLLM management API).
+`--master-key` configures an inference API bearer token. Both bundled gateways
+support it; their admin authentication differs. With a key configured, clients
+send `Authorization: Bearer <key>`. See [authentication](#authentication-and-admin-console).
+
+The unconfigured legacy bind is `0.0.0.0` and emits a warning. Set the bind address
+explicitly for the intended access scope. Stop sends SIGTERM to the recorded
+proxy and auto-discover processes.
+
+### Status, models, and sync
 
 ```bash
 sparkrun proxy status
-```
-
-### `sparkrun proxy sync`
-
-Reconciles the proxy's model list with the workloads actually running. Equivalent to the reconciliation an
-auto-discover sweep performs, on demand.
-
-```bash
+sparkrun proxy status --json
+sparkrun proxy models
+sparkrun proxy models --refresh
 sparkrun proxy sync
 ```
 
-### `sparkrun proxy models`
+Status reports the running implementation, PID, bind address, discovery process,
+and models returned by the gateway. An unavailable model query is distinguished
+from an empty model list in the status result.
 
-Lists models currently registered with the running proxy. With `--refresh`, re-discovers endpoints and syncs the proxy —
-adding newly available models and removing stale entries whose backends are no longer healthy.
+Sync reconciles discovered endpoints and saved settings through the running
+gateway. `models --refresh` syncs before listing. Update behavior depends on the
+implementation: LiteLLM regenerates a file and restarts when it changes;
+SparkRoute reconciles its control plane. Saved activation bindings and model
+aliases are interpreted by the selected gateway.
 
-```bash
-sparkrun proxy models
-sparkrun proxy models --refresh
-```
-
-### `sparkrun proxy load <recipe>`
-
-Launches an inference workload via `sparkrun run` (detached) and registers it with the running proxy.
-
-Unlike plain `sparkrun run`, `proxy load` automatically avoids port conflicts. When no `--port` is specified, it loads
-the recipe to determine the desired port (e.g. 8000), then checks the head host over SSH (using `nc -z`, the same
-mechanism as `sparkrun benchmark`) to find the first available port. If the desired port is occupied, it increments
-until a free port is found:
-
-```
-$ sparkrun proxy load qwen3-1.7b-vllm
-# Uses port 8000
-
-$ sparkrun proxy load qwen3.5-35b-a3b-fp8-sglang
-# Note: port 8000 in use on 10.24.11.13, using 8001 instead
-```
-
-This is intentionally different from `sparkrun run`, which uses exactly the port specified (or the recipe default) and
-fails if it's occupied — preserving the user's explicit intent. The proxy's `load` command is designed for managing
-multiple concurrent models where automatic port assignment is expected.
-
-### `sparkrun proxy unload <recipe>`
-
-Stops the inference workload containers directly (same logic as `sparkrun stop`) and syncs the proxy to remove the
-now-stale model entry.
+### Load and unload
 
 ```bash
+sparkrun proxy load qwen3-1.7b-vllm --cluster mylab
 sparkrun proxy unload qwen3-1.7b-vllm --cluster mylab
 ```
 
-### `sparkrun proxy alias`
+Load uses the ordinary workload planning/run API in detached mode. It selects an
+available port when the recipe's default is occupied, waits for serving readiness,
+and registers with the running gateway. A gateway can save an activation binding;
+a discovery-driven implementation can simply sync the new endpoint. If readiness
+fails, the workload may still be running, but registration has not completed.
 
-Manage model aliases so clients can reference models by friendly names. An alias is saved to `proxy.yaml`
-immediately; if a proxy is running, the config is regenerated and the proxy restarted so the alias takes effect. An
-alias whose target has no healthy backend is saved but skipped in the generated config, and starts working as soon as
-the target is loaded.
+Unload uses the shared stop API. Failed or ambiguous stops retain the proxy
+registration. Successful stops remove the registration and sync models when the
+proxy is running; if it is stopped, its saved registration remains unchanged.
+
+### Aliases
 
 ```bash
 sparkrun proxy alias add qwen3-small "Qwen/Qwen3-1.7B"
@@ -154,168 +120,150 @@ sparkrun proxy alias remove qwen3-small
 sparkrun proxy alias list
 ```
 
-## How Discovery Works
+Aliases are saved to `proxy.yaml` and applied through the running gateway. An
+alias whose target is unavailable can remain pending. Persistence can succeed
+while applying to the running gateway fails; the command reports that failure
+so a later sync can retry. A restart is specific to the implementation.
 
-1. `api.list_jobs` enumerates persisted job metadata (`~/.cache/sparkrun/jobs/*.yaml`) — every cluster_id, recipe,
-   runtime, hosts, port, served_model_name, api_key
-2. `api.status` produces the live snapshot; its `running_cluster_ids` is the authoritative liveness filter. This is
-   the cross-executor status source, so native (`local`) workloads are visible too — not only docker containers.
-   When no host list is available the liveness step is skipped (metadata-only mode)
-3. Normalises host IPs to management IPs (prefers management IPs over InfiniBand IPs)
-4. Performs parallel health checks via `GET /v1/models` (3-second timeout)
-5. Returns only healthy endpoints
+### Authentication and admin console
 
-### Auto-discovery
+```bash
+sparkrun proxy ui
+sparkrun proxy ui --json
+sparkrun proxy admin-token get
+sparkrun proxy admin-token set
+sparkrun proxy admin-token clear
+```
 
-When the proxy starts with auto-discover enabled (the default), a background process runs alongside the proxy:
+These commands require the corresponding gateway capabilities. SparkRoute
+supports an admin console and managed admin token. `ui` prints its URL; it does
+not launch a browser. `get` reads the token, `set` generates a replacement, and
+`clear` removes the requirement when gateway policy permits. These operations
+are not an inference API key rotation API. `ui --issue-token` is a compatibility
+alias for displaying the stored token.
 
-- Periodically calls `discover_endpoints` at the configured interval (default: 30 seconds)
-- Reconciles models **and** aliases in one gateway-neutral `api.proxy.sync` call — for a config-file gateway they
-  share a single file, so applying them separately would rewrite and restart the proxy twice per sweep
-- Applies the change only when the desired model set differs. *How* is the gateway's business: LiteLLM rewrites its
-  config and restarts; another implementation may update its control plane in place
-- Keeps a previously healthy endpoint through `discover_removal_grace_sweeps - 1` consecutive misses (default 2). One
-  timed-out health probe is not evidence a workload is gone, and evicting it costs a restart plus a window of 404s for
-  a model that is serving fine. Set it to `1` for the historical remove-on-first-miss behaviour
-- Re-reads the proxy PID from the state file each sweep, so it follows a restart instead of mistaking it for a
-  shutdown, and exits automatically when the proxy is really gone
-- Re-resolves the gateway from the state file every sweep, so a `proxy start --restart` that swaps implementations is
-  followed rather than fought. It is handed `{gateway, state_dir, interval, removal_grace_sweeps}` and therefore never
-  carries the master key — the credential belongs to whichever engine the state file names
-- Runs as a detached subprocess (`python -m sparkrun.proxy.autodiscover`)
+Sparkrun's LiteLLM integration does not provision the database required for its
+admin UI. Its master key provides stateless authentication. SparkRoute has its
+own admin listener and credential policy; a master key also requires admin
+authentication there. Consult the
+[SparkRoute integration reference](../src/sparkrun/plugins/sparkroute/README.md)
+for implementation-specific configuration. Unsupported capabilities report an
+error instead of pretending a console or token exists.
 
-Disable with `--no-auto-discover` or set `auto_discover: false` in `proxy.yaml`. A gateway that owns its own desired
-state declares `supports_autodiscover = False`; `proxy start` then warns and disables it rather than letting two
-components fight over the same endpoints.
+## Discovery
 
-## Configuration
+Discovery reads saved jobs through `api.list_jobs`, obtains live cross-executor
+status through `api.status` when hosts are available, normalizes endpoint
+addresses, and checks `/v1/models`. Healthy native workloads can participate
+alongside Docker workloads. Metadata-only discovery is possible without a host
+list; it does not establish live executor coverage.
 
-Persistent proxy settings are stored in `~/.config/sparkrun/proxy.yaml`:
+When auto-discovery is enabled and supported, a detached process periodically
+calls `api.proxy.sync`:
+
+- The default interval is 30 seconds.
+- Models and aliases reconcile together.
+- Two consecutive misses are required to remove a previously healthy endpoint
+  by default. `discover_removal_grace_sweeps: 1` removes it on the first miss.
+- Each sweep follows the gateway and PID recorded in state, including restarts.
+- Credentials are resolved by the gateway; the sidecar configuration does not
+  carry the master key.
+
+A plugin can declare `supports_autodiscover = False` if it manages desired state
+itself. Start then warns and disables this sidecar. Both currently bundled
+implementations support Sparkrun auto-discovery.
+
+## Configuration and state
+
+For built-in Sparkrun, settings live in `~/.config/sparkrun/proxy.yaml`:
 
 ```yaml
 proxy:
   port: 4000
-  host: 127.0.0.1         # recommended; unset keeps the legacy 0.0.0.0 + warning
-  master_key: null        # set to require a bearer token (stateless; no DB)
-  gateway: litellm        # optional; pins the gateway implementation
+  host: 127.0.0.1
+  master_key: null
+  # gateway: sparkroute  # optional pin; the named gateway must be enabled
   auto_discover: true
-  discover_interval: 30   # seconds between re-scans
-  discover_removal_grace_sweeps: 2  # missed sweeps before removing an endpoint (1 = remove on first miss)
+  discover_interval: 30
+  discover_removal_grace_sweeps: 2
 
 aliases:
   my-model: "Qwen/Qwen3-1.7B"
-  gpt-4: "Qwen/Qwen3-30B-A3B"
 ```
 
-CLI flags override config file values for a given invocation, and explicitly
-supplied values are persisted back (`api/proxy/_ops.py:_persist_overrides`).
+CLI overrides persist for subsequent invocations. Writers lock and merge changed
+sections so a discovery sweep does not overwrite a concurrent alias or listener
+change. Gateway-specific settings also belong to `proxy.yaml`; see the relevant
+integration guide.
 
-Two processes write this file — the auto-discover daemon and any `sparkrun
-proxy` command — so `save()` locks a sidecar, re-reads the newest document, and
-merges only the sections that instance changed. A whole-document save would
-silently discard the other writer's alias or listener change.
+Default paths below are relative to `~/.cache/sparkrun/`. Other application
+profiles and cache settings change the root.
 
-## Gateway Selection
+| Path | Purpose |
+| --- | --- |
+| `proxy/state.yaml` | Process identity, gateway selector, listener and discovery state |
+| `proxy/.distribution` | Application ownership of the gateway state directory |
+| `proxy/litellm.log` | LiteLLM process output |
+| `proxy/litellm_config.yaml` | Generated LiteLLM model configuration |
+| `proxy/sparkroute.log` | SparkRoute process output |
+| `proxy/autodiscover.yaml` | Discovery sidecar configuration |
+| `proxy/autodiscover.log` | Discovery sidecar output |
+| `jobs/*.yaml` | Job metadata used for discovery |
 
-The *gateway* is the pluggable family; `proxy` is the user-facing command.
-The distribution includes LiteLLM and the vendored SparkRoute integration.
-LiteLLM is enabled by default on stable/beta; SparkRoute is enabled by default
-on alpha. The active self-update channel supplies these defaults unless
-`features.channel` overrides it. Explicit feature config or environment values
-take precedence. See [SparkRoute integration and updates](SPARKROUTE.md).
+Each state directory manages one gateway process. Different applications must
+use separate managed gateway directories. Application/controller descriptors
+provide groundwork for shared external services; they do not yet make one
+managed SparkRoute instance reconcile multiple application controllers. See
+[application identity](APPLICATION_PROFILES.md#plugin-identity-and-shared-services).
 
-Three mechanisms, deliberately separate (`proxy/gateway.py`):
+## LiteLLM implementation
 
-- **Registration** — `register_gateway(name, feature_flag=, loader=)`, with
-  `gateway_class(name)` the one place a name becomes an implementation. The
-  registry is in-process (an engine is *constructed with arguments*, not
-  resolved as a stateless singleton) and carries a **loader** rather than the
-  class, so registering imports nothing. Idempotent by name, which lets an
-  out-of-tree plugin substitute an in-tree implementation.
-- **Availability** — the `gateway.<name>` feature flag.
-- **Selection** — exactly one gateway at a time, arbitrated by
-  `resolve_gateway()`: an explicit pin (`proxy.gateway`, or `--gateway`) must
-  be known *and* enabled; with no pin the default wins when enabled, else the
-  sole remaining enabled gateway, else `AmbiguousGatewayError`. Enabling a
-  second gateway's flag does **not** switch to it. The flag registry has no
-  notion of mutually-exclusive flags, so resolution refuses to guess rather
-  than picking.
+The LiteLLM engine runs the pinned `litellm[proxy]` package through `uvx`; it does
+not require a permanent LiteLLM installation. The pin and launch command live in
+`src/sparkrun/proxy/engine.py`.
 
-"Unregistered" and "disabled" are distinct errors: a name can be known to the
-flag registry while its plugin failed to load, and telling that user to enable
-a flag that is already on is a dead end.
+Sparkrun uses generated configuration for model mutations, because it does not
+provision LiteLLM's database-backed model store. Changes regenerate the config
+and restart the process; unchanged desired state skips the restart. Management
+queries report what the process is serving. These are LiteLLM implementation
+details, not requirements for other gateway plugins.
 
-An implementation subclasses `GatewaySupervisor` (`proxy/_supervisor.py`),
-which owns the process, state-file and auto-discover machinery every gateway
-shares, and declares its capabilities — `supports_autodiscover`,
-`wants_proxy_config`, `data_plane_authenticated` — rather than being
-special-cased by name anywhere above it.
+## Python API and gateway plugins
 
-**Gate placement.** `ProxyEngine.start()` is the single enforcement point —
-bringing a gateway *up*, checked before the `--dry-run` branch so a dry run
-cannot advertise a start that would be refused. `stop` / `status` / model sync
-/ alias mutation / the auto-discover daemon's `_restart_proxy` path are
-ungated: a proxy started while the flag was on must stay manageable and
-stoppable after it is turned off, and the daemon keeps driving the engine it
-was started with. The state file records `gateway`, so management paths bind to
-what is *running* rather than to what is configured — and when that gateway's
-implementation is not loaded at all, they fall back to the base supervisor
-rather than raising, since state reading and SIGTERM are gateway-independent
-and a live process must not be left undescribable and unkillable.
+`sparkrun.api.proxy` is the frontend-independent API: `start`, `stop`, `status`,
+`models`, `sync`, `register_loaded_model`, `unregister_loaded_model`, alias
+operations, `ui`, `admin_token`, `resolve_gateway`, and `list_gateways`.
+The CLI only renders these results. For example:
 
-`api/proxy/` is the console-free facade (`start`, `stop`, `status`, `models`,
-`sync`, `register_loaded_model` / `unregister_loaded_model`, `add_alias` /
-`remove_alias` / `list_aliases`, `resolve_gateway`, `list_gateways`);
-`cli/_proxy.py` renders it. `register_loaded_model` returning `None` from the
-engine means "discovery-driven, do the ordinary sync", so `proxy load` behaves
-identically under LiteLLM while a catalog-driven gateway can persist an
-activatable binding instead.
+```python
+from sparkrun.application import initialize
+from sparkrun import api
 
-## State & Files
-
-| Path                                          | Purpose                                                        |
-|-----------------------------------------------|----------------------------------------------------------------|
-| `~/.config/sparkrun/proxy.yaml`               | Persistent proxy settings and aliases                          |
-| `~/.cache/sparkrun/proxy/litellm_config.yaml` | Generated LiteLLM config                                       |
-| `~/.cache/sparkrun/proxy/state.yaml`          | Running proxy state (PID, port, auto-discover PID, start time) |
-| `~/.cache/sparkrun/proxy/litellm.log`         | Proxy process stdout/stderr                                    |
-| `~/.cache/sparkrun/proxy/autodiscover.yaml`   | Auto-discover process config (written by engine)               |
-| `~/.cache/sparkrun/proxy/autodiscover.log`    | Auto-discover process stdout/stderr                            |
-| `~/.cache/sparkrun/jobs/*.yaml`               | Job metadata used for endpoint discovery                       |
-
-## Architecture
-
-```
-sparkrun proxy start
-        │
-        ▼
-┌──────────────┐     ┌──────────────────┐
-│  Discovery   │────▶│  Health Check    │
-│  (SSH/meta)  │     │  (GET /v1/models)│
-└──────────────┘     └────────┬─────────┘
-                              │
-                              ▼
-                    ┌──────────────────┐
-                    │ LiteLLM Config   │
-                    │   Generation     │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐     ┌──────────────────┐
-                    │  uvx litellm     │     │  Auto-discover   │
-                    │  (subprocess)    │◀───▶│  (background)    │
-                    └──────────────────┘     └──────────────────┘
-                             │
-                             ▼
-                    OpenAI-compatible API
-                    on localhost:4000
-
-Clients ──▶ localhost:4000/v1/... ──▶ LiteLLM ──▶ backend endpoints
+context = initialize()
+enabled = api.proxy.list_gateways(sctx=context)
+selected = api.proxy.resolve_gateway(sctx=context)
 ```
 
-The proxy package consists of four modules:
+Gateway plugins register a deferred class loader with
+`register_gateway(name, feature_flag=..., loader=...)` in
+`sparkrun.proxy.gateway`. Repeated registration of the same provider is
+idempotent; distinct providers claiming the same name raise `PluginConflictError`.
+Select installed plugins through [the plugin contract](PLUGINS.md).
 
-- **`discovery.py`** — Live (SSH) and metadata-based endpoint discovery, health checks, deduplication
-- **`config.py`** — `ProxyConfig` class for reading/writing `proxy.yaml` (settings and aliases)
-- **`engine.py`** — `ProxyEngine` class managing the LiteLLM subprocess lifecycle, auto-discover, and management API
-- **`autodiscover.py`** — Background auto-discovery loop (runs as `python -m sparkrun.proxy.autodiscover`)
+| Component | Responsibility |
+| --- | --- |
+| `api/proxy/` | Options, results, selection, discovery and gateway dispatch |
+| `proxy/gateway.py` | Registration, availability and selection |
+| `proxy/_supervisor.py` | Shared process/state ownership and discovery lifecycle |
+| `proxy/discovery.py` | Job/status discovery, health checks and deduplication |
+| `proxy/config.py` | Persistent settings and aliases |
+| `proxy/engine.py` | LiteLLM implementation |
+| `plugins/sparkroute/` | Vendored SparkRoute integration |
+| `proxy/autodiscover.py` | Optional reconciliation sidecar |
+
+`GatewaySupervisor` supplies the common process contract. Implementations
+provide configuration, model reconciliation and management capabilities such as
+`supports_autodiscover`, `wants_proxy_config`, and `data_plane_authenticated`.
+Start checks availability even for a dry run. Existing processes remain
+manageable after a feature is disabled; when an implementation is unavailable,
+the base supervisor can still inspect state and stop the recorded process.

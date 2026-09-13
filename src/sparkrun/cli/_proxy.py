@@ -26,7 +26,7 @@ from ._common import (
 
 @click.group()
 def proxy():
-    """Manage the LiteLLM-based inference proxy.
+    """Manage the inference proxy through a pluggable gateway.
 
     The proxy discovers running {app_command} inference endpoints and
     presents them through a single unified OpenAI-compatible API.
@@ -49,7 +49,7 @@ def proxy():
 @click.option(
     "--master-key",
     default=None,
-    help="Bearer token for stateless LiteLLM auth (no DB required).",
+    help="Inference API bearer token; gateway-specific admin authentication may also apply.",
 )
 @host_options
 @click.option("--foreground", is_flag=True, help="Run in foreground (default: daemonize)")
@@ -61,7 +61,12 @@ def proxy():
     default=None,
     help="Consecutive missed sweeps before a discovered endpoint is removed (default: 2).",
 )
-@click.option("--gateway", "gateway_name", default=None, help="Gateway implementation to select and persist.")
+@click.option(
+    "--gateway",
+    "gateway_name",
+    default=None,
+    help="Gateway implementation to select and persist (for example, litellm or sparkroute). Must be enabled.",
+)
 @click.option(
     "--restart",
     is_flag=True,
@@ -86,14 +91,16 @@ def start(
 ):
     """Start the inference proxy.
 
-    Discovers running endpoints, generates LiteLLM config, and launches
-    the proxy via ``uvx litellm``.
+    Discovers running endpoints, prepares the selected gateway, and launches
+    its proxy process. Model updates and auto-discovery depend on the gateway.
 
     Examples:
 
       {app_command} proxy start
 
       {app_command} proxy start --cluster mylab --port 4000
+
+      {app_command} proxy start --gateway sparkroute
 
       {app_command} proxy start --foreground
     """
@@ -186,15 +193,14 @@ def start(
     click.echo("Proxy started on %s:%d. API: http://localhost:%d/v1" % (result.host, result.port, result.port))
     effective_key = sctx.proxy_config.master_key
     if effective_key:
-        click.echo("Management API key: %s" % effective_key)
+        click.echo("Inference API key: %s" % effective_key)
     if result.auto_discover:
         click.echo(
             "Auto-discover enabled (every %ds; remove after %d missed sweep(s))"
             % (result.discover_interval, result.discover_removal_grace_sweeps)
         )
 
-    # Aliases are baked into the config at generation time; report the ones
-    # that actually resolved to a live backend.
+    # Report the alias resolution returned by the selected gateway.
     if result.aliases_applied:
         click.echo("Applied %d alias(es)." % len(result.aliases_applied))
     if result.aliases_pending:
@@ -317,66 +323,6 @@ def sync_cmd(output_json):
         click.echo("Running models already in sync.")
 
 
-# NOTE: not deleting yet, but proxy discover as a CLI command serves no purpose...
-# # ---------------------------------------------------------------------------
-# # proxy discover
-# # ---------------------------------------------------------------------------
-#
-# @proxy.command()
-# @host_options
-# @click.option("--no-health-check", is_flag=True, help="Skip health checks")
-# def discover(hosts, hosts_file, cluster_name, no_health_check):
-#     """One-shot endpoint discovery (debug/inspection).
-#
-#     Queries running containers on cluster hosts and health-checks each
-#     endpoint.  Does not start the proxy.
-#
-#     Examples:
-#
-#       sparkrun proxy discover
-#
-#       sparkrun proxy discover --cluster mylab
-#
-#       sparkrun proxy discover --no-health-check
-#     """
-#     from sparkrun.proxy.discovery import discover_endpoints
-#
-#     host_filter = _resolve_host_filter(cluster_name, hosts, hosts_file)
-#
-#     # Resolve hosts and SSH config for live discovery
-#     live_hosts, ssh_kwargs = _resolve_live_discovery_args(
-#         cluster_name, hosts, hosts_file, host_filter,
-#     )
-#
-#     endpoints = discover_endpoints(
-#         host_filter=host_filter,
-#         check_health=not no_health_check,
-#         host_list=live_hosts,
-#         ssh_kwargs=ssh_kwargs,
-#     )
-#
-#     if not endpoints:
-#         click.echo("No inference endpoints found in job metadata.")
-#         return
-#
-#     click.echo("Discovered %d endpoint(s):" % len(endpoints))
-#     click.echo("")
-#     for ep in endpoints:
-#         health = "healthy" if ep.healthy else "unreachable"
-#         if no_health_check:
-#             health = "unchecked"
-#         models_str = ", ".join(ep.actual_models) if ep.actual_models else ep.model
-#         click.echo("  %-20s %s:%d" % (ep.cluster_id, ep.host, ep.port))
-#         click.echo("    Recipe:   %s" % ep.recipe_name)
-#         click.echo("    Model:    %s" % models_str)
-#         click.echo("    Runtime:  %s" % ep.runtime)
-#         click.echo("    TP:       %d" % ep.tensor_parallel)
-#         click.echo("    Status:   %s" % health)
-#         if ep.served_model_name:
-#             click.echo("    Served:   %s" % ep.served_model_name)
-#         click.echo("")
-#
-
 # ---------------------------------------------------------------------------
 # proxy models
 # ---------------------------------------------------------------------------
@@ -388,8 +334,8 @@ def sync_cmd(output_json):
 def models(refresh, output_json):
     """List models registered with the proxy.
 
-    Uses the management API to query the running proxy.
-    With --refresh, re-discovers endpoints and adds new models.
+    Queries the running gateway for its models.
+    With --refresh, reconciles discovery and saved bindings through that gateway.
     """
     from sparkrun import api
 
@@ -486,7 +432,7 @@ def alias_add(alias_name, target_model):
         return
 
     if result.applied:
-        click.echo("Alias applied to running proxy (restarted).")
+        click.echo("Alias applied to running proxy.")
     else:
         click.echo("Note: target model '%s' is not currently served by the proxy." % target_model)
         click.echo("The alias is saved and will apply when the target model is loaded.")
@@ -523,7 +469,7 @@ def alias_remove(alias_name):
         return
 
     if result.removed:
-        click.echo("Removed %d alias entry/entries from running proxy (restarted)." % result.removed)
+        click.echo("Removed %d alias entry/entries from running proxy." % result.removed)
     else:
         click.echo("Alias was not active in the running proxy.")
 
@@ -585,7 +531,7 @@ def load_cmd(
     """Load a model via {app_command} run and register with proxy.
 
     Launches inference and registers the new endpoint with the running
-    proxy via the management API.
+    proxy through the selected gateway.
 
     Example:
 
@@ -907,7 +853,7 @@ def ui_cmd(issue_token, output_json):
         click.echo(render_identity_text("Note: the gateway is not running — start it with '{app_command} proxy start'."))
     if result.token:
         click.echo("")
-        click.echo("Sparkrun-managed admin token:")
+        click.echo("Managed admin token:")
         click.echo("  %s" % result.token)
         click.echo("")
         click.echo("Paste it into the console's token field to sign in.")
@@ -919,7 +865,7 @@ def ui_cmd(issue_token, output_json):
 
 @proxy.group("admin-token")
 def admin_token_group():
-    """Get or replace the single SparkRoute admin token."""
+    """Manage the gateway admin token, where supported."""
 
 
 @admin_token_group.command("get")
@@ -935,7 +881,7 @@ def admin_token_get(output_json):
     if output_json:
         print_json({"enabled": token is not None, "token": token})
     elif token is None:
-        click.echo("Admin authentication is disabled (the default); no token is required.")
+        click.echo("Admin authentication is disabled; no token is required.")
         click.echo(render_identity_text("Require one immediately with: {app_command} proxy admin-token set"))
     else:
         click.echo(token)

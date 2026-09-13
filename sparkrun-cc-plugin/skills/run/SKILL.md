@@ -171,26 +171,31 @@ Use `sparkrun recipe search` as the first attempt when looking for a particular 
 
 ## Benchmark
 
+Performance measurement is separate from publication integrations such as Arena.
+Use `--resume` for matching saved progress or `benchmark resume <id>` for saved
+work; completed states can retry publication without re-running measurement.
+See [the benchmark guide](../../../docs/BENCHMARK_API.md) for lifecycle details.
+
 ```bash
 # Full flow: launch inference -> benchmark -> stop
-sparkrun benchmark <recipe> --tp 1
-sparkrun benchmark <recipe> --cluster <name>
-sparkrun benchmark <recipe> --tp 2 --profile <profile_name>
+sparkrun benchmark perf <recipe> --tp 1
+sparkrun benchmark perf <recipe> --cluster <name>
+sparkrun benchmark perf <recipe> --tp 2 --profile <profile_name>
 
 # Benchmark an already-running instance (skip launch)
-sparkrun benchmark <recipe> --skip-run --tp 1
+sparkrun benchmark perf <recipe> --skip-run --tp 1
 
 # Keep inference running after benchmark completes
-sparkrun benchmark <recipe> --no-stop --tp 1
+sparkrun benchmark perf <recipe> --no-stop --tp 1
 
 # Override benchmark args (use -b for benchmark args, -o for recipe overrides)
-sparkrun benchmark <recipe> -b depth=0,2048,4096 -b tg=32,128
+sparkrun benchmark perf <recipe> -b depth=0,2048,4096 -b tg=32,128
 
 # Specify framework and timeout
-sparkrun benchmark <recipe> --framework llama-benchy --timeout 3600
+sparkrun benchmark perf <recipe> --framework llama-benchy --timeout 3600
 
 # Dry-run
-sparkrun benchmark <recipe> --dry-run
+sparkrun benchmark perf <recipe> --dry-run
 ```
 
 ## Kernel Tuning
@@ -207,6 +212,11 @@ sparkrun tune vllm <recipe> --cluster <name> --tp 4
 ```
 
 ## Inference Proxy
+
+The proxy uses a selected gateway implementation. Built-in Sparkrun defaults to
+LiteLLM on stable/beta and SparkRoute on alpha; `--gateway <name>` persists an
+enabled selection. See [the proxy guide](../../../docs/PROXY.md). Model updates,
+admin consoles, and authentication capabilities depend on the gateway.
 
 ```bash
 # Start the unified OpenAI-compatible proxy

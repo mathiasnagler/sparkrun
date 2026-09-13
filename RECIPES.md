@@ -271,7 +271,8 @@ benchmark:
     concurrency: [ 1, 2, 5 ]
 ```
 
-Used by `sparkrun benchmark <recipe>`. CLI `-o` overrides apply on top.
+Used by `sparkrun benchmark perf <recipe>`. CLI `-b KEY=VALUE` overrides
+measurement arguments; `-o KEY=VALUE` changes serving recipe defaults.
 
 **Category subcommands.** `sparkrun benchmark` accepts a category positional
 that pins the kind of benchmark (and the default framework for it):
@@ -298,27 +299,24 @@ plugin registers them (`BenchmarkingPlugin.categories`).
 
 When neither flag is set and stdin is a TTY, the CLI prompts. Non-TTY
 defaults to resume. The library API (`sparkrun.api.benchmark`) exposes the
-full `ResumeMode` enum (`AUTO`, `IF_EXISTS`, `FRESH`, `REQUIRED`); pass
-`on_prompt_required=...` to inject a callback in lieu of the prompt.
+full `ResumeMode` enum (`AUTO`, `IF_EXISTS`, `FRESH`, `REQUIRED`) through
+`BenchmarkOptions.resume`; use `decision_callback(BenchmarkDecision) -> bool`
+for interactive choices with `AUTO`. The API defaults to `IF_EXISTS`. See
+[progress and decisions](docs/BENCHMARK_API.md#progress-and-decisions).
 
-**Container image pinning.** On the first successful launch of a resumable
-run, sparkrun captures two distinct references and persists them in
-`state.extras`:
+**Measurement provenance.** Resumable checkpoints preserve the effective
+credential-free recipe, serving overrides, hosts, runtime, and image evidence.
+Resume validates those inputs against the running job. Completed results can
+retry pending publication without relaunching or remeasuring. See
+[effective measurement provenance](docs/BENCHMARK_API.md#effective-measurement-provenance)
+for image pinning, legacy state, and native executor behavior.
 
-- `container_image_sha` — content-addressable image ID resolved via
-  `docker image inspect` on a target host. On resume the orchestration
-  overrides `overrides["image"]` with this SHA so a re-pushed tag or rebuilt
-  local image cannot silently change the bits between sessions.
-- `container_image_longterm_ref` — output of the builder's
-  `resolve_long_term_image()`. Used only for archival provenance in the
-  result YAML; it is not used at launch time. Persisted so resumed sessions
-  emit identical archive references.
-
-**Spark Arena.** `--arena` on any category subcommand runs the opinionated
-Spark Arena flow (auth check, hardcoded profile `@official/spark-arena-v2`,
-post-run upload). `sparkrun arena benchmark` continues to work as a sibling
-entry point that calls into the same shared helpers (`preflight_arena` and
-`finalize_arena`).
+**Spark Arena.** The bundled `arena` benchmark integration selects the
+`@official/spark-arena-v2` profile and handles publication separately from the
+measurement framework. With that integration enabled, category commands accept
+`--arena`; `sparkrun arena benchmark` remains a companion entry point. Python
+callers use `BenchmarkOptions(integrations={"arena": {}})`. See
+[the integration guide](src/sparkrun/plugins/sparkarena/README.md).
 
 ### Version
 

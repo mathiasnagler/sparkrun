@@ -1,6 +1,6 @@
 # SparkRoute integration and vendoring
 
-`develop-next` includes the first-party SparkRoute plugin as a vendored source
+Sparkrun includes the first-party SparkRoute plugin as a vendored source
 snapshot. Installing or building Sparkrun does not fetch plugin code. At first
 gateway start, the plugin acquires the pinned SparkRoute executable and verifies
 its release archive against the embedded SHA-256 for the controller platform.
@@ -23,8 +23,8 @@ features:
   channel: alpha
 ```
 
-Then `sparkrun proxy start` selects SparkRoute and `sparkrun proxy ui` opens its
-console. `sparkrun setup features list` shows the resolved flag values.
+Then `sparkrun proxy start` selects SparkRoute and `sparkrun proxy ui` prints its
+console URL. `sparkrun setup features list` shows the resolved flag values.
 The plugin is gated before import on stable/beta, so its bridge and recipe
 extension are not registered there unless explicitly enabled.
 

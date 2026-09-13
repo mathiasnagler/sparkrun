@@ -16,21 +16,23 @@ point. It layers (highest priority first):
 1. **CLI overrides** — `cli_overrides` dict (`-o executor=local`, `-o
    k8s_namespace=...`, etc.).
 2. **Recipe** — `recipe.executor` (selector) + `recipe.executor_config` (dict).
-3. **Cluster** — `cluster.executor` (selector) + `cluster.executor_config` (dict).
-4. **Runtime executor selector** — `runtime.default_executor()` (`None` by default; runtimes can force a non-Docker executor).
-5. **Per-executor adjustments** — `cls.apply_runtime_adjustments(rootless=,
+3. **Builder activation** — `builder.default_env_file()` supplies only `env_file`,
+   below recipe/CLI overrides and above the cluster environment.
+4. **Cluster** — `cluster.executor` (selector) + `cluster.executor_config` (dict).
+5. **Runtime executor selector** — `runtime.default_executor()` (`None` by default; runtimes can force a non-Docker executor).
+6. **Per-executor adjustments** — `cls.apply_runtime_adjustments(rootless=,
    auto_user=, defaults=)`. Docker reads these here; Local/K8s ignore.
    `defaults` contains the lower-priority configuration layers, allowing Docker
    to retain their security options while adding `no-new-privileges`.
-6. **Runtime executor-config defaults** — `runtime.default_executor_config()` (`{}` by default; runtimes can set overridable executor defaults).
-7. **`SparkrunConfig`** — `config.default_executor` + `config.executor_config`.
-8. **Platform** — `platform.default_executor_config(<name>)` for the platform
+7. **Runtime executor-config defaults** — `runtime.default_executor_config()` (`{}` by default; runtimes can set overridable executor defaults).
+8. **`SparkrunConfig`** — `config.default_executor` + `config.executor_config`.
+9. **Platform** — `platform.default_executor_config(<name>)` for the platform
    resolved from the launching host's hardware (`host_hardware=`, the head
    node's). Hardware-conditional container plumbing that should still lose to
    anything the user wrote — e.g. DGX Spark pins `gpu_access_mode: gpus`.
    Dropped entirely when no hardware is threaded (naming / teardown / log paths).
-9. **Per-executor defaults** — `cls.default_config()` (e.g. `DOCKER_DEFAULTS`).
-10. **Dataclass field defaults** — `ExecutorConfig` declares the floor.
+10. **Per-executor defaults** — `cls.default_config()` (e.g. `DOCKER_DEFAULTS`).
+11. **Dataclass field defaults** — `ExecutorConfig` declares the floor.
 
 A selector that is unknown — or names a real executor whose feature flag is
 off — raises `ExecutorUnavailableError` naming the flag to enable. Resolution
@@ -63,15 +65,19 @@ registers each discovered subclass. Subclasses must set:
 Look-up helpers:
 
 - `get_executor(name, v=None) -> type[Executor]` — returns the class, not an
-  instance. Falls back to a static map (`docker`/`local`/`k8s`) when SAF isn't
-  initialized (test paths).
+  instance. Falls back to a static map (`docker`/`local`) when SAF isn't
+  initialized (test paths). Kubernetes requires plugin registration.
 - `list_executors(v=None) -> list[str]` — sorted selectors.
 
 ## `ExecutorConfig.from_chain` field reference
 
 Every field is parsed from a chain layer with the same name (`chain.get(key)`).
-Bool fields use `ext_parse_bool`. List fields promote bare strings to single-item
-lists. Falsy values fall through to the dataclass defaults.
+Bool fields use `ext_parse_bool` and preserve explicit `False`. Plain string
+fields preserve empty strings; nullable strings fall back when falsy. List fields
+promote bare strings to single-item lists and normalize empty lists to `None`.
+`entrypoint: ""` explicitly clears the image entrypoint. The table describes
+resolved executor defaults; direct `ExecutorConfig()` construction uses its
+dataclass floor (for example, `shm_size="25gb"` versus Docker's `"32gb"`).
 
 ### Common (Docker + K8s read; Local ignores most)
 

@@ -32,8 +32,10 @@ class HostHardware:
   metadata and therefore is not part of the stable hardware fingerprint.
 
 The convenience default is `default_dgx_spark_hardware()` — 1 × GB10, 121 GB,
-capabilities `{cuda, unified-memory, rdma:roce-v2}`. Every code path that lacks
-explicit metadata falls back here so existing DGX clusters keep working.
+capabilities `{cuda, unified-memory, rdma:roce-v2}`. Operational callers use
+`resolve_fallback_hardware()`: built-in Sparkrun keeps this compatibility default,
+while alternate application profiles require explicit metadata by default. See
+[application hardware policy](#application-profiles-and-hardware-integrations).
 
 ### `Capability` tags
 
@@ -174,11 +176,12 @@ Registration order in `platforms/__init__.py` is most-specific first;
        def default_image(self, runtime): return _MI300X_DEFAULTS.get(runtime)
        def validate_host(self, hw): return [...]
    ```
-2. Register either by appending to `_REGISTRY` in `platforms/__init__.py`, or
-   from external packages via `register_platform(MyAmdPlatform(), prepend=True)`
-   when the plugin must match before built-ins.
-3. (Future) An `EXT_PLATFORM` entry-point hookup will replace the manual
-   registration list. The constant is already defined in `platforms/base.py`.
+2. Call `register_platform(MyAmdPlatform(), prepend=True)` from your plugin
+   registration hook when it must match before built-ins. Use the registrar so
+   provider conflicts and transaction rollback remain enforced.
+3. Installed packages use the `sparkrun.plugins` entry-point group;
+   `EXT_PLATFORM` is not an installed-package discovery route. See
+   [plugin registration](PLUGINS.md).
 
 ## Collective backends
 

@@ -8,6 +8,30 @@ For the long-form 0.3.0 narrative, see [`docs/RELEASE_NOTES.md`](docs/RELEASE_NO
 
 ## [Unreleased]
 
+### 0.4.0 application and API changes
+
+This is a breaking Python API release. See the
+[0.4.0 migration guide](docs/DISTRIBUTION_API_MIGRATION.md) for removed imports,
+fields, and downstream migration steps.
+
+- Added immutable application profiles and console-free initialization for CLI,
+  daemon, desktop, and other Python frontends. Plugins can read application and
+  controller identities; one controller represents an application/config directory.
+- Unified installed plugin discovery under `sparkrun.plugins`, with API version
+  checks, explicit contribution ownership, and registration rollback on failure.
+- Separated benchmark frameworks, publication integrations, immutable measurement
+  snapshots, and resumable state/finalization. Clarified run options, execution
+  strategies, destination-aware status/stop, and setup/monitoring API contracts.
+- Moved Kubernetes-specific APIs and configuration into `sparkrun.plugins.k8s`.
+- Made proxy CLI help and guidance gateway-neutral; LiteLLM and SparkRoute share
+  selection and lifecycle APIs, with implementation-specific capabilities.
+- Docker now defaults to a bundled seccomp profile allowing io_uring and stages
+  controller-local custom profiles on all launch nodes. Explicit seccomp choices
+  remain supported. vLLM no longer supplies `OMP_NUM_THREADS=4` by default.
+- Hardened native executor path, ownership, process-group, and PID persistence
+  contracts. Managed native launch requires detached mode and anchored control paths.
+
+
 ### Added
 
 - `sparkrun setup rdma-test` verifies the high-speed fabric that `setup cx7`

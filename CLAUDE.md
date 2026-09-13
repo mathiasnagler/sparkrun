@@ -63,7 +63,7 @@ src/sparkrun/
 ├── builders/           # Image + environment builder plugins (docker-pull, eugr, uv-venv)
 ├── diagnostics/        # Host and run diagnostic collection (NDJSON output)
 ├── plugins/            # In-tree cross-cutting integrations (see docs/PLUGINS.md)
-├── proxy/              # Inference gateway (LiteLLM engine + gateway selection seam)
+├── proxy/              # Pluggable inference gateways and shared process supervision
 ├── benchmarking/       # Benchmark framework plugins and result export (llama-benchy)
 ├── utils/              # Shared helpers (coerce_value, suppress_noisy_loggers, etc.)
 └── scripts/            # Embedded bash scripts (IB detection, container launch, etc.)
@@ -157,7 +157,14 @@ lifecycle. Six extension points are registered:
 | `sparkrun.scheduler`   | (scheduler)    | `sparkrun.schedulers`                | `Scheduler`             |
 | `sparkrun.transport`   | `EXT_TRANSPORT`| `sparkrun.transports`                | `Transport`             |
 
-Key bootstrap flow: `cli/__init__.py` → `core.bootstrap.init_sparkrun()` → SAF `init_framework_desktop()` →
+Application startup uses `sparkrun.application.initialize()` (API) or `run_cli()`
+(CLI). Both select an application profile before initialization. See
+`docs/APPLICATION_PROFILES.md` and the supported import map in
+`docs/DISTRIBUTION_API_MIGRATION.md`. Installed plugin packages use only
+`[project.entry-points."sparkrun.plugins"]`; the names above are SAF extension
+IDs, not per-kind Python package entry-point groups.
+
+Core bootstrap flow: `core.bootstrap.init_sparkrun()` → SAF `init_framework_desktop()` →
 `find_types_in_modules(...)` over each scanned module above → `register_plugin()` for each discovered plugin (schedulers
 and transports skip base classes with a blank `scheduler_name` / `transport_name`). Finally
 `load_external_plugins(v)` loads any out-of-tree plugins (see External Plugins below).
@@ -1736,8 +1743,8 @@ command for the rest.
 
 The **gateway** is the process fronting every discovered inference endpoint
 behind one OpenAI-compatible API. Core ships one implementation — `ProxyEngine`
-(LiteLLM) — and everything a second needs is in place, including for one living
-outside the `sparkrun.proxy` tree entirely. One word throughout: **gateway** is
+(LiteLLM) — and bundles the SparkRoute plugin outside the `sparkrun.proxy` tree.
+Installed plugins can register additional implementations. One word throughout: **gateway** is
 the pluggable family, `proxy` is the user-facing command.
 
 Three mechanisms, deliberately separate:
@@ -1749,8 +1756,9 @@ Three mechanisms, deliberately separate:
   key, state dir) rather than resolved as a stateless singleton — the same
   reason `platforms` and `models/kv` stayed in-process. Registration carries a
   **loader**, not the class, so `proxy.engine` can import this module without a
-  cycle and registering costs nothing at import time. Idempotent by name, which
-  is what lets an out-of-tree plugin substitute an in-tree implementation.
+  cycle and registering costs nothing at import time. Repeated registration of
+  the same provider is idempotent; a different provider claiming that name
+  raises `PluginConflictError`. Distinct providers need distinct names.
   litellm registers in core, not from a plugin: `proxy` must resolve to
   *something* with every plugin absent.
 - **Availability** — `gateway.<name>` feature flag. `gateway.litellm` defaults

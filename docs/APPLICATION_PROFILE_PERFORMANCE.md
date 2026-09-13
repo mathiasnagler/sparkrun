@@ -2,8 +2,8 @@
 
 Measured 2026-09-11 (UTC) using Python 3.12.3 on
 `Linux-6.14.0-1013-nvidia-aarch64-with-glibc2.39`. The baseline source is
-`03b9114c78560d251889c5097cd6c1dfc09ea4d7`; the current variant includes the uncommitted application-profile
-and plugin support in this worktree. [Raw samples and environment metadata](benchmarks/application-profile-cli-startup.json)
+`03b9114c78560d251889c5097cd6c1dfc09ea4d7`; the measured variant was the application-profile and plugin worktree snapshot
+at the measurement date, not a benchmark of every subsequent branch revision. [Raw samples and environment metadata](benchmarks/application-profile-cli-startup.json)
 are retained with this report.
 
 ## Method

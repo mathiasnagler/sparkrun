@@ -75,7 +75,7 @@ sparkrun update --alpha    # develop-next branch (bleeding edge)
 sparkrun update --yolo     # alias for --alpha
 ```
 
-`sparkrun update` with no flag stays on your current channel; a channel flag switches and is remembered for future updates. The same flags work with `sparkrun setup install` and `sparkrun setup update`. Stable prints a plain version (`0.2.40`); beta/alpha add a channel suffix and commit (`0.3.0-alpha+g1a2b3c4`). Switching from a preview channel back to `--stable` may downgrade.
+`sparkrun update` with no flag stays on your current channel; a channel flag switches and is remembered for future updates. The same flags work with `sparkrun setup install` and `sparkrun setup update`. Stable prints a plain version; beta/alpha add a channel suffix and commit (for example, `0.4.0-alpha+g1a2b3c4`). Switching from a preview channel back to `--stable` may downgrade.
 
 ## Highlights
 
@@ -85,6 +85,24 @@ sparkrun update --yolo     # alias for --alpha
 - **Git-based recipe registries** — we publish official recipes, community recipes, and benchmarked recipes via [Spark Arena](https://spark-arena.com), plus you can add your own registries.
 - **Guided setup wizard** — cluster creation, SSH mesh, CX7 auto-detection, sudoers, earlyoom
 - **Model & container distribution** — syncs models and images to cluster nodes over SSH automatically
+
+## Python API and applications (0.4.0)
+
+The 0.4.0 branch introduces breaking Python API changes. Start with the
+[migration guide](docs/DISTRIBUTION_API_MIGRATION.md), including the supported
+imports and option/result contracts. [Application profiles](docs/APPLICATION_PROFILES.md)
+let CLIs, daemons, and desktop applications share the core with their own identity,
+paths, defaults, and plugins. Use `sparkrun.application.initialize()` for Python
+API use without the Sparkrun CLI.
+
+[Benchmarking](docs/BENCHMARK_API.md) separates measurement frameworks from
+publication integrations. [Plugin authors](docs/PLUGINS.md) register installed
+integrations through `sparkrun.plugins`.
+
+The [proxy CLI](docs/PROXY.md) supports pluggable gateways, including LiteLLM and
+SparkRoute. Docker now stages a custom seccomp profile allowing io_uring on each
+launch node; see [executor configuration](docs/EXECUTORS.md#docker-seccomp-profiles-04).
+vLLM no longer sets `OMP_NUM_THREADS` by default; recipes can set it explicitly.
 
 ## Spark Arena
 [Spark Arena](https://spark-arena.com) is the community hub for DGX Spark recipe benchmarks — browse benchmark results, then run them directly with sparkrun.

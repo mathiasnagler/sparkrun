@@ -78,7 +78,7 @@ sparkrun setup ssh --cluster mylab
 | `/sparkrun:list [query]`       | Browse and search available recipes                              |
 | `/sparkrun:benchmark <recipe>` | Run benchmarks against an inference workload                     |
 | `/sparkrun:monitor`            | Live-monitor CPU, RAM, and GPU metrics across cluster hosts      |
-| `/sparkrun:proxy <action>`     | Manage the LiteLLM-based inference proxy gateway                 |
+| `/sparkrun:proxy <action>`     | Manage the inference proxy and its selected gateway                 |
 | `/sparkrun:setup`              | Guided setup for sparkrun and cluster config                     |
 
 ## Skills (Automatic)

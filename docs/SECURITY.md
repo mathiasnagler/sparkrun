@@ -1,7 +1,7 @@
 # Security
 
-The trust model for recipes, hooks, and registries; what the B-workstream
-security fixes actually changed.
+The trust model for recipes, hooks, registries, and launch configuration. Paths
+below are Sparkrun defaults; other application profiles supply their own roots.
 
 ## Recipe trust model
 
@@ -24,17 +24,12 @@ registry whose name cannot be resolved against the local `registries.yaml`.
 
 ### Where the trust bit comes from
 
-- **Default registries**: every entry shipped in
-  `core/registry.py:FALLBACK_DEFAULT_REGISTRIES` declares `trusted=True` on
-  the entry itself.  All built-in defaults are first-party recipe sources, so
-  all of them ship trusted — including `eugr` and `atlas`, which are not
-  bootstrap-discovery URLs.
-
-  Trust is declared **per entry**, not derived from `BOOTSTRAP_REGISTRY_URLS`
-  (that list exists for bootstrap-time manifest discovery and deliberately
-  differs).  `FALLBACK_DEFAULT_REGISTRIES` is the single source of truth for
-  "which registries ship trusted"; `_default_trusted_urls()` exposes it to the
-  migration below.
+- **Default registries**: the active application profile supplies the catalog.
+  Built-in Sparkrun uses `FALLBACK_DEFAULT_REGISTRIES`, including curated
+  community sources such as `eugr` and `atlas`. Trust is explicit per entry;
+  a custom profile can replace the catalog or ship none. `_default_trusted_urls()`
+  reads the active catalog for migration, rather than treating every bootstrap
+  URL or every application as built-in Sparkrun.
 
 - **Bootstrap manifest discovery**: when `_init_defaults_from_manifests`
   successfully clones a bootstrap URL and reads its
@@ -74,19 +69,17 @@ registry whose name cannot be resolved against the local `registries.yaml`.
 
 ## What trust gates
 
-Three hook surfaces consult the trust flag (all in
-`orchestration/hooks.py:_confirm_hook_execution`):
+`api.run()` rejects untrusted recipes containing `pre_exec`, `post_exec`, or
+`post_commands` before preparation or replacement. Frontends provide explicit
+authorization with `RunOptions(trust=True)`; the CLI exposes `--trust`.
+`api.benchmark()` passes this authorization through when launching inference. These
+API paths do not prompt through Click. See the [migration guide](DISTRIBUTION_API_MIGRATION.md).
 
-| Hook            | Where it runs                                            | Trust behavior                                              |
-|-----------------|----------------------------------------------------------|-------------------------------------------------------------|
-| `pre_exec`      | Inside the head container, before the serve command.     | Trusted: runs. Untrusted: interactive confirmation prompt.  |
-| `post_exec`     | Inside the head container, after the port is healthy.    | Trusted: runs. Untrusted: interactive confirmation prompt.  |
-| `post_commands` | On the **control machine**, after the port is healthy.   | Trusted: runs. Untrusted: interactive confirmation prompt.  |
-
-`launcher.py:launch_inference` computes `recipe_trusted` once and passes it to
-`runtime.run(...)` (which gates `pre_exec`) and to
-`post_launch_lifecycle(trust=...)` (which gates `post_exec` + `post_commands`).
-The same recipe gets the same answer for every surface.
+For trusted recipes, `pre_exec` runs in the workload before serving, `post_exec`
+runs in the workload after readiness, and `post_commands` runs on the controller.
+The low-level `orchestration/hooks.py` helpers retain interactive confirmation
+for direct callers; noninteractive untrusted calls fail. That fallback does not
+replace the authorization required by the public operation APIs.
 
 ## What trust gates beyond hooks
 
@@ -103,8 +96,9 @@ choke point:
 - **Executor selection** (`_TRUSTED_DEFAULT_EXECUTORS`): restricted to
   `docker`.  The rootless, namespaced container is the sandbox that justifies
   running a registry/URL recipe's serve `command` without a prompt; `local`
-  runs it natively via `setsid bash -c` and `k8s` wedges it into
-  `kubectl run`, either of which is arbitrary host code execution.
+  runs it natively via `setsid bash -c`, while `k8s` submits it as a
+  provider-managed workload. These destinations require explicit trust
+  rather than inheriting Docker isolation assumptions.
 - The undocumented `cluster_config` launch overrides
   (`resolved_model_path` / `remote_cache_dir` / `local_cache_dir`), which
   identity-mount a host directory and repoint the serve argument at it.
@@ -280,7 +274,7 @@ When adding a third-party registry:
    `executor_config.cap_add`, `devices`, `security_opt`.
 2. Confirm the registry URL matches one of the approved schemes
    (`https://...`, `git@...`, `ssh://...`, `file://...`).
-3. Run untrusted recipes with `--dry-run` first; the interactive trust prompt
-   makes the per-launch posture explicit.
+3. Inspect recipes and use `--dry-run` first. A preview
+   shows the planned operation; it does not authorize untrusted hooks.
 4. Use `--trust` only when you've reviewed the recipe and intend to run its
    privileged content.
