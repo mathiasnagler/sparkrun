@@ -108,35 +108,9 @@ lists. Falsy values fall through to the dataclass defaults.
 | `env_file`        | `None`                                         | Sourced via `set -a; . <env_file>; set +a` before launch.                                            |
 | `command_prefix`  | `None`                                         | Prepended verbatim (e.g. `nice -n 10 ionice -c2`).                                                   |
 
-Local PID and log paths share the same remote path normalization and shell
-rendering. A leading `~/`, `$HOME/`, or `${HOME}/` expands on the workload host;
-spaces and other shell metacharacters remain literal. Equivalent home prefixes,
-redundant separators, and redundant current-directory components share a spelling.
-Parent (`..`) components are retained: `/base/link/../pids` can differ from
-`/base/pids` when `link` is a symlink. Destination identity preserves that
-distinction. Normalization never uses the controller's home directory or resolves
-remote symlinks; the workload host performs filesystem traversal. An explicit
-file path ending in `/` or `/.` retains its directory requirement rather than
-silently becoming a valid file path.
-
-Managed local workloads require `pid_dir`, with one PID file per workload/rank.
-A singular `pid_file` cannot identify multiple workloads during metadata-free
-discovery, so 0.4.0 rejects it during target resolution and before any launch
-script is generated. Status reports incomplete coverage for an old fixed-file
-configuration and cannot authorize automatic metadata pruning. Old fixed-file records
-also remain ineligible for absence matching after cluster configuration changes
-to a PID directory. `log_file` remains an optional shared append log; use `log_dir` for separate workload logs.
-
-For a legacy fixed-file workload, retain its metadata and use the low-level
-`LocalExecutor.status_cmd()`, `logs_cmd()`, and `stop_cmd()` with its saved executor
-configuration, workload name, application profile, and SSH user. These recovery
-helpers still honor `pid_file`; stop retains its application ownership guard. Managed stop/log/liveness
-operations require a resolvable target and therefore reject that old configuration.
-After confirming the workload has stopped, replace `pid_file` with `pid_dir` in its
-recipe/cluster configuration and launch again. Do not rename a live PID record or
-rewrite its destination metadata to make it appear migrated. Ordinary directory
-records remain readable; older noncanonical destination keys remain conservative
-for absence matching until replaced by a new launch.
+See the [native path, state, and lifecycle contract](#native-paths-state-and-lifecycle)
+for path expansion, setup failures, ownership, process-group status, and legacy
+fixed-file recovery. Workload settings do not relocate PID/log control paths.
 
 ### K8s-only (Docker / Local ignore)
 
@@ -304,24 +278,95 @@ executor_config:
 
 `orchestration/executors/local.py`. Native subprocess; no container.
 
-### What it does
+### Native paths, state, and lifecycle
 
-- `run_cmd`: `mkdir -p <pid_dir> <log_dir>` → optional `cd working_dir` →
-  optional `set -a; . env_file; set +a` → translate `gpus` →
-  `CUDA_VISIBLE_DEVICES` → export explicit env → `setsid bash -c <base64 cmd>
-  >>log 2>&1 </dev/null &` → write `$!` to pidfile.
-- `stop_cmd`: reads pidfile, sends `SIGTERM` to the negative PID (process
-  group), polls up to ~10 s, then `SIGKILL`. Removes pidfile.
-- `status_cmd`: pidfile + `kill -0`.
-- `logs_cmd`: `tail [-F] [-n N] <log_file>`.
+PID and log locations are bound to the remote script's entry directory and home
+before workload setup. Absolute paths retain their location; ordinary relative
+paths use that entry directory. A leading `~/`, `$HOME/`, or `${HOME}/` expands
+using the entry home. Use an absolute or home-relative configuration when commands
+may run from different entry directories. `working_dir`, activation scripts,
+and explicit workload `HOME` do not move the PID/owner/lock or log files.
+
+Only an originally leading home prefix expands. `./$HOME/pids` and `./~/pids`
+name literal relative directories, distinct from home-relative paths. Spaces and
+other shell metacharacters remain literal. Normalization unifies equivalent home
+prefixes, redundant separators, and harmless current-directory components while
+retaining every parent (`..`) step. For example, `/base/link/../pids` can differ
+from `/base/pids` through a symlink; destination identity preserves that distinction.
+Normalization neither uses the controller machine's home nor resolves remote
+symlinks. Explicit file paths ending in `/` or `/.` keep their directory requirement.
+
+Launch and exec hooks apply setup in this order: change to `working_dir`, source
+`env_file` with automatic environment export, select GPU visibility, then export
+explicit workload variables. A relative `env_file` uses the resulting working
+directory, including a bare filename (never a PATH-selected activation script);
+its supported home prefix expands before sourcing. A failed directory change,
+nonzero source result, or rejected environment export aborts without running the payload or overwriting
+an existing PID/owner claim. Setup runs in a subshell, leaving the caller's
+working directory and environment intact. PID/log bindings remain fixed inside it.
+
+Launch and stop serialize changes with a per-PID `flock` from util-linux. The lock
+covers validated ownership, process checks, and PID/owner writes. The workload
+closes the lock descriptor; the OS releases the operation's lock at exit. Lock
+files remain so concurrent operations use the same inode. Launch refuses to
+replace a live workload, including workers whose original leader has exited.
+
+Shared state readers distinguish present, confirmed absent, and failed acquisition.
+Unreadable directories, unreadable or invalid PID/owner records, and failed process
+inspection produce errors. An absent entry in a readable parent can establish
+absence; a failed stat alone cannot. Discovery reports incomplete observation
+on failure, which cannot authorize free capacity or automatic metadata pruning.
+A missing owner marker permits legacy fallback only for an eligible legacy
+application-owned name. Present empty, malformed, unreadable, or foreign markers
+cannot authorize replacement or deletion. PID 1 is invalid workload state.
+
+`setsid` launches the workload with PID equal to its process-group ID. Liveness
+includes both the recorded PID and live members of that group, so a dead leader
+does not hide surviving workers. Legacy standalone PID records remain recoverable
+without signalling the unrelated group containing that PID. Groups containing
+only exited/zombie processes count as stopped.
+
+| Command | Contract |
+| --- | --- |
+| `run_cmd` | Bind paths, validate/lock state, complete setup, launch in a new group with append logging, and record its PID/owner. |
+| `exec_cmd` | Run a foreground hook with the same setup/failure policy; it does not create a workload claim. |
+| `status_cmd` | Exit **0** for a live PID/group, **1** for confirmed absent/dead, **2** for acquisition failure. |
+| `stop_cmd` / `teardown_script` | Send TERM, wait up to about 10 seconds, then KILL if needed and verify the group. Delete recovery records only after confirmed stop; teardown reports actual stopped workloads. |
+| `logs_cmd` | Read the same fixed log location using `tail`, optionally following it or limiting lines. |
+
+Unknown liveness or surviving workers fail teardown and retain recovery records
+and job metadata. Public observation errors and stop result types carry these
+outcomes. A successful stale-record cleanup counts zero stopped workloads.
+
+#### Legacy fixed-file recovery
+
+Managed local workloads require `pid_dir`, with one PID file per workload/rank.
+A singular `pid_file` cannot identify multiple workloads during metadata-free
+discovery, so 0.4.0 rejects it during target resolution and before any launch
+script is generated. Status reports incomplete coverage for an old fixed-file
+configuration and cannot authorize automatic metadata pruning. Old fixed-file records
+also remain ineligible for absence matching after cluster configuration changes
+to a PID directory. `log_file` remains an optional shared append log; use `log_dir` for separate workload logs.
+
+For a legacy fixed-file workload, retain its metadata and use the low-level
+`LocalExecutor.status_cmd()`, `logs_cmd()`, and `stop_cmd()` with its saved executor
+configuration, workload name, application profile, and SSH user. These recovery
+helpers still honor `pid_file`; stop retains its application ownership guard. Managed stop/log/liveness
+operations require a resolvable target and therefore reject that old configuration.
+After confirming the workload has stopped, replace `pid_file` with `pid_dir` in its
+recipe/cluster configuration and launch again. Do not rename a live PID record or
+rewrite its destination metadata to make it appear migrated. Ordinary directory
+records remain readable; older noncanonical destination keys remain conservative
+for absence matching until replaced by a new launch.
 
 ### Known limitations
 
-- **No images**: `image`, `volumes`, `extra_opts` are ignored. `pull_cmd` /
-  `inspect_exists_cmd` are no-ops returning `true`.
-- **Hand-coded process-group lifecycle**: relies on `setsid` (present on every
-  modern Linux), `kill -- -<pgid>`, and pidfile parsing. No supervisor, no
-  systemd unit, no restart on crash.
+- **No images or mounts**: `image` and Docker `extra_opts` are ignored;
+  `pull_cmd` / `inspect_exists_cmd` return `true`. Volume mappings translate
+  container-style environment paths to host paths; they do not mount anything.
+- **Process-group lifecycle**: requires Bash, util-linux `setsid`/`flock`, and
+  process inspection with `ps`. Descendants that leave the launched group are
+  outside lifecycle tracking. No supervisor, systemd unit, or restart on crash.
 - **No Ray strategy**: `generate_ray_head_script` and
   `generate_ray_worker_script` raise `NotImplementedError`. Use a native
   runtime (`vllm-distributed`, `sglang`) or fall back to Docker.
@@ -404,35 +449,6 @@ executor_config:
 Docker fields (the existing ones — `privileged`, `cap_add`, `devices`, etc.)
 keep their previous behavior and ship under the same `executor_config:` block
 when `executor: docker` (or unset).
-
-
-Native launch and stop serialize changes to each PID path using `flock` from
-util-linux (alongside the existing `setsid` requirement). The lock covers owner
-validation and PID/owner writes; the workload closes the lock descriptor. Locks
-are released by the OS when the operation exits. Lock files stay in place so
-concurrent operations continue to lock the same inode. Explicitly shared PID
-paths reject another application's owner even if its claim appeared after solo
-preflight. A launch also refuses to replace a PID that is still running.
-
-Local discovery, liveness, launch, and stop share state-reading helpers that
-distinguish present, confirmed absent, and failed acquisition. Unreadable
-directories, unreadable or invalid PID/owner records, and failed liveness checks
-produce errors. Discovery then reports incomplete observation rather than free
-capacity or confirmed absence, so it cannot authorize automatic metadata pruning.
-An absent entry in a readable parent namespace establishes absence; a failed
-stat alone cannot.
-
-A legacy workload may omit its owner marker only when that marker is confirmed
-missing and its name belongs to the application's legacy namespace. Present empty,
-malformed, or unreadable markers never authorize replacement or deletion. Valid
-foreign markers continue to prevent mutation.
-
-`LocalExecutor.status_cmd()` exits 0 for a live process, 1 for confirmed absence
-or a dead process, and 2 when state cannot be established. Teardown counts and
-verifies the captured PID under the same lock before removing PID/owner records.
-Exited zombies count as stopped; unknown liveness and surviving processes fail
-teardown and retain recovery records and job metadata. The existing public
-observation errors and stop results carry these failures.
 
 
 ## Docker seccomp profiles (0.4)

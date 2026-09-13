@@ -235,7 +235,7 @@ def test_owner_acquisition_controls_mutation(tmp_path, owner, operation):
             marker.chmod(0o600)
 
 
-@pytest.mark.parametrize("content", ["", "0", "-1", "999999999999999999999999", "42\n43", "123\x00", "not-a-pid"])
+@pytest.mark.parametrize("content", ["", "0", "1", "-1", "999999999999999999999999", "42\n43", "123\x00", "not-a-pid"])
 def test_invalid_pid_cannot_authorize_stop_or_replacement(tmp_path, content):
     from sparkrun.core.application_profile import get_application_profile
     from sparkrun.orchestration.executors._base import ExecutorConfig

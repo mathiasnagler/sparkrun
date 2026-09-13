@@ -423,6 +423,15 @@ executor = LocalExecutor(ExecutorConfig(pid_dir=str(root / "pids")))
 script = executor.teardown_script([name])
 assert subprocess.run(["bash", "-c", script], capture_output=True).returncode == 0
 pid = root / "pids" / (name + ".pid")
+child = subprocess.Popen(["sleep", "30"], start_new_session=True)
+try:
+    pid.write_text(str(child.pid))
+    stopped = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert stopped.returncode == 0 and "sparkrun_removed=1" in stopped.stdout
+    assert child.wait(timeout=5) != 0 and not pid.exists()
+finally:
+    child.kill()
+    child.wait(timeout=5)
 pid.write_text("invalid PID")
 result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
 assert result.returncode != 0 and "invalid" in result.stderr

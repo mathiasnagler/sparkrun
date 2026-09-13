@@ -70,17 +70,28 @@ def default_log_dir():
 _GPUS_DEVICE_RE = re.compile(r"device=([0-9,]+)")
 
 
-def _remote_path(path: str, *, directory: bool = False) -> str:
-    """Normalize spelling without resolving symlinks or cancelling parent steps."""
-    if path in ("~", "${HOME}"):
-        path = "$HOME"
-    for prefix in ("~/", "${HOME}/"):
+def _home_relative(path: str) -> str | None:
+    """Return the suffix only when the original path opts into home expansion."""
+    if path in ("~", "$HOME", "${HOME}"):
+        return ""
+    for prefix in ("~/", "$HOME/", "${HOME}/"):
         if path.startswith(prefix):
-            path = "$HOME/" + path[len(prefix) :]
-            break
+            return path[len(prefix) :]
+    return None
+
+
+def _remote_path(path: str, *, directory: bool = False) -> str:
+    """Normalize spelling without changing traversal or expansion eligibility."""
+    home_relative = _home_relative(path)
+    if home_relative is not None:
+        path = "$HOME/" + home_relative if home_relative or path.endswith("/") else "$HOME"
     root = "//" if path.startswith("//") and not path.startswith("///") else "/" if path.startswith("/") else ""
     result = root + "/".join(part for part in path.split("/") if part and part != ".")
     result = result or "."
+    # Removing './' must not turn a literal directory named '$HOME' or '~'
+    # into an expanding prefix. Retain this distinction in target serialization.
+    if home_relative is None and _home_relative(result) is not None:
+        result = "./" + result
     # A trailing slash/dot on a file path requires a directory. Do not turn a
     # bad file path into a different successful read by dropping that constraint.
     if not directory and path.endswith(("/", "/.")) and not result.endswith("/"):
@@ -95,24 +106,19 @@ def _state_helpers() -> str:
 
 
 def _shell_path(path: str) -> str:
-    """Render a remote path for bash, expanding
-    only a leading ``$HOME`` / ``~/`` prefix and shlex-quoting everything else.
-
-    The goal is narrow: let a builder self-determine a ``$HOME``-relative path
-    (e.g. a venv activation ``env_file``). Only a leading ``~/``, ``$HOME/`` or
-    ``${HOME}/`` is honored — rewritten to an expanding unquoted ``"$HOME"`` —
-    and the *remainder* is shlex-quoted so nothing else in the path is
-    interpreted by the shell. This keeps a path containing ``$var`` / ``$(...)``
-    / backticks / spaces a literal (no command substitution, no accidental
-    variable expansion, no injection), unlike a bare double-quote wrapper.
-    """
-    if path in ("~", "$HOME", "${HOME}"):
-        return '"$HOME"'
-    for prefix in ("~/", "$HOME/", "${HOME}/"):
-        if path.startswith(prefix):
-            rest = path[len(prefix) :]
-            return '"$HOME"/' + quote(rest) if rest else '"$HOME"'
+    """Expand an opted-in leading remote home; quote every other path component."""
+    rest = _home_relative(path)
+    if rest is not None:
+        return '"$HOME"/' + quote(rest) if rest else '"$HOME"'
     return quote("./" + path if path.startswith("-") else path)
+
+
+def _bind_launch_path(variable: str, path: str) -> str:
+    """Bind control state to the entry directory/home before workload setup."""
+    return ('%(var)s=%(path)s\ncase "$%(var)s" in /*) ;; *) %(var)s="$PWD/$%(var)s" ;; esac\nreadonly %(var)s\n') % {
+        "var": variable,
+        "path": _shell_path(path),
+    }
 
 
 class LocalExecutor(Executor):
@@ -120,8 +126,9 @@ class LocalExecutor(Executor):
 
     The bash scripts this class generates assume ``setsid`` is
     available (it is part of util-linux on every modern Linux distro).
-    Process-group kill (``kill -- -<pgid>``) is used to clean up the
-    whole tree including any workers the runtime forks.
+    Status and teardown include live workers in the launched process group,
+    even after its leader exits. Descendants that leave the group are outside
+    this executor's lifecycle tracking; it is not a process supervisor.
     """
 
     executor_name = "local"
@@ -178,26 +185,33 @@ class LocalExecutor(Executor):
         """Emit the bash setup lines shared by ``run_cmd`` and ``exec_cmd``.
 
         Order matters: cd → source env_file → export gpu vars → export
-        explicit env.  Returns a fragment ending in a newline (or empty).
+        explicit env. Required setup failures abort the subshell.
+        env_file is relative to working_dir (or the entry directory when unset).
+        Returns a fragment ending in a newline (or empty).
         """
         cfg = self.config
         lines: list[str] = []
         if cfg.working_dir:
-            lines.append("cd %s" % _shell_path(cfg.working_dir))
+            lines.append("cd -- %s || exit $?" % _shell_path(cfg.working_dir))
         if cfg.env_file:
             # 'set -a' so sourced KEY=VAL lines become exports — matches
             # docker --env-file semantics.
+            # Bash source searches PATH for a bare name. A configured file is
+            # relative to the workload directory, not a PATH-selected script.
+            env_file = cfg.env_file
+            if "/" not in env_file and _home_relative(env_file) is None:
+                env_file = "./" + env_file
             lines.append("set -a")
-            lines.append(". %s" % _shell_path(cfg.env_file))
+            lines.append(". %s || exit $?" % _shell_path(env_file))
             lines.append("set +a")
 
         gpus_export = self._cuda_visible_devices_export()
         if gpus_export:
-            lines.append(gpus_export)
+            lines.append(gpus_export + " || exit $?")
 
         if env:
             for key, value in sorted(env.items()):
-                lines.append("export %s=%s" % (key, quote(str(value))))
+                lines.append("export %s=%s || exit $?" % (key, quote(str(value))))
 
         if not lines:
             return ""
@@ -266,17 +280,20 @@ class LocalExecutor(Executor):
         if not command:
             raise ValueError("LocalExecutor.run_cmd requires a non-empty command")
 
-        pid_file = _shell_path(self._resolve_pid_file(container_name))
-        log_file = _shell_path(self._resolve_log_file(container_name))
+        paths = _bind_launch_path("_sr_pid_path", self._resolve_pid_file(container_name)) + _bind_launch_path(
+            "_sr_log_path", self._resolve_log_file(container_name)
+        )
+        pid_file, log_file = '"$_sr_pid_path"', '"$_sr_log_path"'
         full_cmd = self._full_command(command)
 
         # NOTE: ``setsid`` makes the child a session leader → its own
-        # process group.  ``kill -TERM -<pgid>`` (in stop_cmd) reaps the
-        # whole tree without needing tini.
+        # process group. Status and teardown track its surviving members.
+        # Control paths are fixed before setup changes the directory or HOME.
         prelude = self._env_prelude(_hostify_env(env, volumes))
         body = (
             "(\n"
             "%(helpers)s\n"
+            "%(paths)s"
             "%(lock)s\n"
             "_sr_local_state %(pid)s || exit $?\n"
             "%(guard)s\n"
@@ -294,6 +311,7 @@ class LocalExecutor(Executor):
             ") || exit $?\n"
         ) % {
             "helpers": _state_helpers(),
+            "paths": paths,
             "lock": self._pid_lock(pid_file),
             "guard": self._owner_guard(container_name),
             "log_dir_dq": '"$(dirname -- %s)"' % log_file,
@@ -326,7 +344,7 @@ class LocalExecutor(Executor):
         return "bash -c %s" % _bash_safe_command(command)
 
     def stop_cmd(self, container_name: str, force: bool = True) -> str:
-        """Stop a verified process; retain recovery records on any unknown outcome."""
+        """Stop a verified workload group; retain records on an unknown outcome."""
         return self._stop_command(container_name)
 
     def _stop_command(self, container_name: str, *, report_removed=False) -> str:
@@ -417,7 +435,7 @@ class LocalExecutor(Executor):
         return " ".join(parts)
 
     def status_cmd(self, container_name: str) -> str:
-        """Exit 0 for live, 1 for absent/dead, and 2 for failed state acquisition."""
+        """Exit 0 for a live PID/group, 1 for absent/dead, 2 for acquisition failure."""
         pid_file = _shell_path(self._resolve_pid_file(container_name))
         return '(\n%s\n_sr_local_state %s || exit $?\n_sr_local_alive "$_sr_pid"\n)' % (_state_helpers(), pid_file)
 

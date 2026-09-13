@@ -78,7 +78,8 @@ _sr_local_read() {
         _sr_local_error "invalid $2 record in $1"
         return 2
     fi
-    if [ "$2" = pid ] && (( _sr_value > 2147483647 )); then
+    # PID 1 cannot be our launched child; negating it would signal all processes.
+    if [ "$2" = pid ] && (( _sr_value <= 1 || _sr_value > 2147483647 )); then
         _sr_local_error "invalid PID in $1"
         return 2
     fi
@@ -105,28 +106,64 @@ _sr_local_state() {
     return 0
 }
 
-_sr_local_alive() {
-    [ -n "$1" ] || return 1
-    local detail state
+# kill -0 can distinguish ESRCH from EPERM even when process listings are
+# restricted. Both process IDs and negative process-group IDs are supported.
+_sr_local_exists() {
+    local detail
     if detail=$(LC_ALL=C kill -0 -- "$1" 2>&1); then
-        # An exited child may remain a zombie until its parent reaps it.
-        if state=$(LC_ALL=C ps -o stat= -p "$1") && [ -n "$state" ]; then
-            state=${state//[[:space:]]/}
-            [[ $state == Z* ]] && return 1
-            return 0
-        fi
-        # ps may race process exit. Only ESRCH establishes absence; a failed
-        # inspection while the process exists is an unknown, not an empty slot.
-        if detail=$(LC_ALL=C kill -0 -- "$1" 2>&1); then
-            _sr_local_error "cannot read process status for PID $1"
-            return 2
-        fi
+        return 0
     fi
-    # Bash's C-locale ESRCH diagnostic distinguishes dead processes from EPERM
-    # and other failures. Unrecognized diagnostics remain failures.
     if [[ $detail == *'No such process' ]]; then
         return 1
     fi
-    _sr_local_error "cannot establish liveness for PID $1: $detail"
+    _sr_local_error "cannot establish liveness for $1: $detail"
     return 2
+}
+
+_sr_local_workload_exists() {
+    local rc present=1 target
+    for target in "-$1" "$1"; do
+        if _sr_local_exists "$target"; then
+            present=0
+        else
+            rc=$?
+            [ "$rc" -eq 1 ] || return "$rc"
+        fi
+    done
+    return "$present"
+}
+
+_sr_local_alive() {
+    [ -n "$1" ] || return 1
+    local rc rows pid pgid state extra found=0
+    if _sr_local_workload_exists "$1"; then :; else
+        rc=$?
+        return "$rc"
+    fi
+    # setsid launches PID == PGID. Inspect the whole group even when its leader
+    # is dead. Matching the PID as well retains legacy single-process recovery
+    # without signalling the unrelated process group that contains that PID.
+    if ! rows=$(LC_ALL=C ps -e -o pid=,pgid=,stat=); then
+        _sr_local_error "cannot read process group status for PID $1"
+        return 2
+    fi
+    while read -r pid pgid state extra; do
+        if [ "$pid" != "$1" ] && [ "$pgid" != "$1" ]; then continue; fi
+        if [[ ! $pid =~ ^[1-9][0-9]*$ || ! $pgid =~ ^[1-9][0-9]*$ || ! $state =~ ^[A-Za-z] ]] || [ -n "$extra" ]; then
+            _sr_local_error "invalid process group status for PID $1"
+            return 2
+        fi
+        found=1
+        [[ $state == Z* || $state == X* ]] || return 0
+    done <<< "$rows"
+    # A group containing only exited zombies is stopped, even if not yet reaped.
+    [ "$found" -eq 1 ] && return 1
+    # A listing can race exit or hide processes. Only confirmed absence is dead.
+    if _sr_local_workload_exists "$1"; then
+        _sr_local_error "cannot find process group status for PID $1"
+        return 2
+    else
+        rc=$?
+        return "$rc"
+    fi
 }

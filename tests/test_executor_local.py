@@ -164,7 +164,7 @@ class TestLocalExecutorBasics:
 
     def test_run_cmd_writes_pid_after_setsid(self):
         script = _local().run_cmd(image="", command="echo hi", container_name="foo_solo")
-        setsid_idx = script.index("setsid")
+        setsid_idx = script.index("\nsetsid bash ")
         echo_pid_idx = script.index('echo "$_pid"')
         assert setsid_idx < echo_pid_idx, "PID must be captured AFTER setsid backgrounds the child"
 
@@ -176,7 +176,7 @@ class TestLocalExecutorBasics:
     def test_run_cmd_includes_working_dir(self):
         script = _local(working_dir="/srv/inference").run_cmd(image="", command="echo hi", container_name="foo_solo")
         # A plain path is shlex-quoted (safe chars stay bare) — NOT bare double-quoted.
-        assert "cd /srv/inference" in script
+        assert "cd -- /srv/inference || exit $?" in script
 
     def test_run_cmd_sources_env_file(self):
         script = _local(env_file="/etc/sparkrun.env").run_cmd(image="", command="echo hi", container_name="foo_solo")
@@ -198,7 +198,7 @@ class TestLocalExecutorBasics:
         # single quotes neutralize command substitution / variable expansion
         # (unlike a bare double-quote wrapper, which the shell would interpret).
         script = _local(working_dir="/srv/$(touch pwned)/$data").run_cmd(image="", command="echo hi", container_name="foo_solo")
-        assert "cd '/srv/$(touch pwned)/$data'" in script  # single-quoted → inert
+        assert "cd -- '/srv/$(touch pwned)/$data' || exit $?" in script  # single-quoted → inert
         assert 'cd "/srv' not in script  # NOT double-quoted (which would expand $())
 
     def test_run_cmd_prepends_command_prefix(self):
@@ -264,7 +264,7 @@ class TestLocalExecutorBasics:
         # exec_cmd uses ( ... ) so prelude (cd) doesn't pollute caller.
         assert cmd.startswith("(")
         assert cmd.endswith(")")
-        assert "cd /srv" in cmd
+        assert "cd -- /srv || exit $?" in cmd
 
     def test_exec_cmd_without_prelude_is_bare_bash_c(self):
         cmd = LocalExecutor(ExecutorConfig()).exec_cmd(container_name="x", command="echo hi")
@@ -285,7 +285,7 @@ class TestLocalExecutorScripts:
         )
         # Preflight should *only* clean up; the actual setsid launch
         # must wait for generate_exec_serve_script.
-        assert "setsid" not in script
+        assert "\nsetsid bash " not in script
         assert "kill" in script  # stop_cmd is reused as cleanup
         assert "preflight complete" in script
 

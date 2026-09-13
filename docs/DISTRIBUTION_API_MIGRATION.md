@@ -504,21 +504,23 @@ context type and preserves complete-artifact recovery and publication-only retri
 
 ### Native filesystem state and recovery
 
-Local path normalization retains every parent (`..`) component so that remote
-symlink traversal still reaches the configured PID/log path. It does not resolve
-the path on the controller. Equivalent home-prefix spelling remains supported;
-distinct traversals retain distinct destination identities.
+The [native path, state, and lifecycle contract](EXECUTORS.md#native-paths-state-and-lifecycle)
+is the reference for local execution and legacy fixed-file recovery.
 
-Native state reads now distinguish confirmed absence from failure. Unreadable or
-invalid PID/owner files and unreadable directories produce observation errors;
-they cannot authorize free capacity or automatic metadata pruning. A missing
-legacy owner remains supported only when absence is confirmed and the workload's
-name belongs to the application's legacy namespace. A present empty or unreadable
-owner is an error, not a legacy record.
+PID/log paths retain symlink-parent traversal and literal relative home-like
+names. Their locations bind to the script's entry directory/home before workload
+setup. Changing `working_dir` or workload `HOME` no longer relocates state. Use
+absolute or home-relative control paths when invocation directories can differ.
+Missing/unreadable working directories or environment files, and nonzero activation
+results, now abort launch/exec before the payload and leave existing claims intact.
 
-Stop verifies the captured process before deleting its recovery records.
-Unverifiable or surviving processes produce a failed stop and retain job metadata.
-Low-level `LocalExecutor.status_cmd()` returns 0 for live, 1 for absent/dead,
-and 2 for acquisition failure; consumers must not interpret every non-zero result
-as absence. Public status and stop result types are unchanged. The managed
-`pid_file` rejection and documented command-level legacy recovery remain in place.
+State acquisition errors cannot establish free capacity or authorize metadata
+pruning. Empty, invalid, or unreadable owner markers do not receive the confirmed
+missing legacy-owner fallback. PID 1 is rejected as invalid workload state.
+
+Native status and teardown include surviving process-group members after their
+leader exits. Teardown retains records on failed inspection or surviving workers;
+legacy standalone PID recovery remains supported. Low-level `status_cmd()` returns
+0 for a live PID/group, 1 for absent/dead, and 2 for acquisition failure. Do not
+interpret every nonzero result as absence. Public status/stop types and the managed
+`pid_file` rejection remain unchanged.
