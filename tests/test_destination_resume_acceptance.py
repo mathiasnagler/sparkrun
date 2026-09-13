@@ -16,7 +16,7 @@ from test_run_option_contracts import run_env as run_env
 from test_transport_measurement_contracts import local_job as local_job
 
 
-@pytest.mark.parametrize("pid_dir", [None, "relative/pids", "/shared/pids"])
+@pytest.mark.parametrize("pid_dir", [None, "$HOME/custom/pids", "/shared/pids"])
 def test_local_destinations_keep_independent_ids_and_lifecycle(run_env, monkeypatch, pid_dir):
     from sparkrun import api
     from sparkrun.api._run import plan

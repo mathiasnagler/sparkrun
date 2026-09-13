@@ -165,8 +165,8 @@ class TestLocalExecutorBasics:
     def test_run_cmd_writes_pid_after_setsid(self):
         script = _local().run_cmd(image="", command="echo hi", container_name="foo_solo")
         setsid_idx = script.index("\nsetsid bash ")
-        echo_pid_idx = script.index('echo "$_pid"')
-        assert setsid_idx < echo_pid_idx, "PID must be captured AFTER setsid backgrounds the child"
+        commit_pid_idx = script.index('_sr_local_commit_pid "$_pid"')
+        assert setsid_idx < commit_pid_idx, "PID must be captured AFTER setsid backgrounds the child"
 
     def test_run_cmd_rejects_pid_file_override(self):
         ex = LocalExecutor(ExecutorConfig(pid_file="/tmp/explicit.pid", log_file="/tmp/explicit.log"))
@@ -295,7 +295,7 @@ class TestLocalExecutorScripts:
             serve_command="vllm serve foo",
         )
         assert "setsid" in script
-        assert 'echo "$_pid"' in script
+        assert '_sr_local_commit_pid "$_pid"' in script
 
     def test_generate_node_script_per_rank(self):
         ex = _local()

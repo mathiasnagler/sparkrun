@@ -505,12 +505,19 @@ context type and preserves complete-artifact recovery and publication-only retri
 ### Native filesystem state and recovery
 
 The [native path, state, and lifecycle contract](EXECUTORS.md#native-paths-state-and-lifecycle)
-is the reference for local execution and legacy fixed-file recovery.
+is the reference for local execution and legacy fixed-file/relative-path recovery.
 
-PID/log paths retain symlink-parent traversal and literal relative home-like
-names. Their locations bind to the script's entry directory/home before workload
-setup. Changing `working_dir` or workload `HOME` no longer relocates state. Use
-absolute or home-relative control paths when invocation directories can differ.
+Managed `pid_dir`, `log_dir`, and `log_file` now require absolute or home-relative
+paths, including direct launch/preflight script generation. This prevents another
+invocation directory from becoming the same saved destination. Legacy relative-path
+metadata and cached coverage cannot authorize absence/pruning; managed stop rejects
+the unresolved destination and retains metadata. Recover with the low-level helpers
+from the original execution directory before migrating the configuration.
+
+PID/log paths retain symlink-parent traversal. Low-level recovery preserves literal
+relative home-like names. Locations bind before workload setup, so changing
+`working_dir` or workload `HOME` no longer relocates state. Workload `working_dir`
+and `env_file` may still be relative.
 Missing/unreadable working directories or environment files, and nonzero activation
 results, now abort launch/exec before the payload and leave existing claims intact.
 
@@ -524,3 +531,14 @@ legacy standalone PID recovery remains supported. Low-level `status_cmd()` retur
 0 for a live PID/group, 1 for absent/dead, and 2 for acquisition failure. Do not
 interpret every nonzero result as absence. Public status/stop types and the managed
 `pid_file` rejection remain unchanged.
+
+Native launch now commits complete owner/PID records atomically. Failed PID
+persistence rolls back the newly spawned workload using the shared verified group
+shutdown; it never reports launch success with a partial PID. Unconfirmed rollback
+identifies the PID/group for manual recovery. Successful detached submission and
+serving-endpoint readiness remain distinct.
+
+Local `run_cmd(detach=False)`, `generate_launch_script(detach=False)`, and
+`generate_exec_serve_script(detached=False)` now reject unsupported foreground
+workload execution before generating a script. Use detached mode for serving;
+`exec_cmd` remains the separate foreground-hook operation.

@@ -33,6 +33,7 @@ import time
 from typing import Mapping, TYPE_CHECKING
 
 from sparkrun.orchestration.executors._base import Executor, ExecutorTarget
+from sparkrun.orchestration.executors._local_paths import home_relative as _home_relative, validate_managed_paths
 from sparkrun.orchestration.job_metadata import INTENT_ID_LEN, PLACEMENT_TOKEN_LEN
 from sparkrun.utils.shell import quote
 
@@ -68,16 +69,6 @@ def default_log_dir():
 # ``--gpus device=0,2`` → CUDA_VISIBLE_DEVICES=0,2.  Anything fancier
 # (``count=2``, capability filters) is ignored with a warning.
 _GPUS_DEVICE_RE = re.compile(r"device=([0-9,]+)")
-
-
-def _home_relative(path: str) -> str | None:
-    """Return the suffix only when the original path opts into home expansion."""
-    if path in ("~", "$HOME", "${HOME}"):
-        return ""
-    for prefix in ("~/", "$HOME/", "${HOME}/"):
-        if path.startswith(prefix):
-            return path[len(prefix) :]
-    return None
 
 
 def _remote_path(path: str, *, directory: bool = False) -> str:
@@ -142,12 +133,13 @@ class LocalExecutor(Executor):
     # Path resolution helpers
     # ------------------------------------------------------------------
 
-    def _require_pid_directory(self):
-        if self.config.pid_file:
-            raise ValueError(
-                "LocalExecutor pid_file is unsupported for managed workloads; use pid_dir. "
-                "Legacy command helpers remain available for recovery."
-            )
+    def _require_managed_paths(self):
+        validate_managed_paths(vars(self.config))
+
+    @staticmethod
+    def _require_detached(detach):
+        if not detach:
+            raise ValueError("LocalExecutor supports detached workload launch only; foreground launch is unsupported")
 
     def _pid_directory(self) -> str:
         return _remote_path(self.config.pid_dir or default_pid_dir(), directory=True)
@@ -156,7 +148,7 @@ class LocalExecutor(Executor):
         return _remote_path(self.config.log_dir or default_log_dir(), directory=True)
 
     def resolve_target(self, *, dry_run=False) -> ExecutorTarget:
-        self._require_pid_directory()
+        self._require_managed_paths()
         pid_dir = self._pid_directory()
         return ExecutorTarget(
             self.executor_name,
@@ -259,7 +251,10 @@ class LocalExecutor(Executor):
         *,
         sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
-        """Emit a setsid-based native launcher.
+        """Emit a detached setsid launcher; ``detach=False`` is unsupported.
+
+        Success means the complete PID claim was committed, not that the
+        serving endpoint is ready. PID-commit failure rolls back the child.
 
         *image* is ignored — there is no container.  *volumes* mounts
         nothing (native execution), but it *is* consulted to reverse-map
@@ -273,7 +268,8 @@ class LocalExecutor(Executor):
         the LocalExecutor flows through the pidfile name + job metadata
         cache instead (see :func:`_parse_local_pidfile_output`).
         """
-        self._require_pid_directory()
+        self._require_detached(detach)
+        self._require_managed_paths()
         del sparkrun_labels  # accepted but unused — no container to tag
         if not container_name:
             raise ValueError("LocalExecutor.run_cmd requires container_name")
@@ -302,11 +298,11 @@ class LocalExecutor(Executor):
             'else _rc=$?; [ "$_rc" -eq 1 ] || exit "$_rc"; fi\n'
             "mkdir -p -- %(log_dir_dq)s || exit 1\n"
             "%(prelude)s"
-            "printf %%s %(owner)s > %(pid)s.owner || exit 1\n"
-            ": > %(pid)s || exit 1\n"
+            "_sr_local_write_record %(owner)s %(pid)s.owner || exit 1\n"
+            "set +m\n"
             "setsid bash -c %(b64_cmd)s >>%(log)s 2>&1 </dev/null 9>&- &\n"
             "_pid=$!\n"
-            'echo "$_pid" > %(pid)s\n'
+            '_sr_local_commit_pid "$_pid" %(pid)s || exit $?\n'
             'printf "Launched %%s (pid=%%s, log=%%s)\\n" %(name)s "$_pid" %(log)s\n'
             ") || exit $?\n"
         ) % {
@@ -356,29 +352,7 @@ class LocalExecutor(Executor):
             "%(lock)s\n"
             "_sr_local_state %(pid)s || exit $?\n"
             "%(guard)s\n"
-            "_was_running=0\n"
-            'if _sr_local_alive "$_sr_pid"; then\n'
-            "  _was_running=1\n"
-            '  kill -TERM -- -"$_sr_pid" 2>/dev/null || kill -TERM "$_sr_pid" 2>/dev/null || true\n'
-            "  for _i in 1 2 3 4 5 6 7 8 9 10; do\n"
-            '    if _sr_local_alive "$_sr_pid"; then :; else\n'
-            '      _rc=$?; [ "$_rc" -eq 1 ] && break; exit "$_rc"\n'
-            "    fi\n"
-            "    sleep 1\n"
-            "  done\n"
-            '  if _sr_local_alive "$_sr_pid"; then\n'
-            '    kill -KILL -- -"$_sr_pid" 2>/dev/null || kill -KILL "$_sr_pid" 2>/dev/null || true\n'
-            "    for _i in 1 2 3 4 5 6 7 8 9 10; do\n"
-            '      if _sr_local_alive "$_sr_pid"; then :; else\n'
-            '        _rc=$?; [ "$_rc" -eq 1 ] && break; exit "$_rc"\n'
-            "      fi\n"
-            "      sleep 0.1\n"
-            "    done\n"
-            '  else _rc=$?; [ "$_rc" -eq 1 ] || exit "$_rc"; fi\n'
-            'else _rc=$?; [ "$_rc" -eq 1 ] || exit "$_rc"; fi\n'
-            'if _sr_local_alive "$_sr_pid"; then\n'
-            "  printf 'Native workload still present: %%s\\n' %(name)s >&2; exit 1\n"
-            'else _rc=$?; [ "$_rc" -eq 1 ] || exit "$_rc"; fi\n'
+            '_sr_local_stop "$_sr_pid" %(name)s || exit $?\n'
             "rm -f -- %(pid)s %(pid)s.owner || exit 1\n"
             "%(report)s\n"
             ") || exit $?"
@@ -388,7 +362,7 @@ class LocalExecutor(Executor):
             "name": quote(container_name),
             "guard": self._owner_guard(container_name),
             "lock": self._pid_lock(pid_file),
-            "report": 'printf "%s\\n" "$_was_running"' if report_removed else "",
+            "report": 'printf "%s\\n" "$_sr_was_running"' if report_removed else "",
         }
 
     def teardown_script(self, container_names: list[str] | tuple[str, ...]) -> str:
@@ -547,7 +521,8 @@ class LocalExecutor(Executor):
         up any stale pidfile so the subsequent launch is well-defined.
         ``sparkrun_labels`` is ignored (no container).
         """
-        self._require_pid_directory()
+        self._require_detached(detach)
+        self._require_managed_paths()
         del sparkrun_labels  # accepted but unused — no container to tag
         cleanup = self.stop_cmd(container_name)
         return (
@@ -573,18 +548,17 @@ class LocalExecutor(Executor):
     ) -> str:
         """Actually launch the serve command via setsid.
 
-        This is where the native subprocess starts.  ``detached`` is
-        honored to match the docker behavior (always true in practice
-        for sparkrun's solo flow).  ``volumes`` mounts nothing here, but
+        This is where the native subprocess starts. Only ``detached=True``
+        is supported; foreground requests raise before generating a script.
+        ``volumes`` mounts nothing here, but
         is forwarded to :meth:`run_cmd` so container-path env values get
         reverse-mapped to their host source (see :func:`_hostify_env`).
         ``sparkrun_labels`` is ignored (no container to tag).
         """
-        self._require_pid_directory()
+        self._require_detached(detached)
+        self._require_managed_paths()
         del sparkrun_labels  # accepted but unused — no container to tag
-        # ``run_cmd`` already writes the launcher.  Detached / foreground
-        # is the same shape for native — the setsid + & ensures the
-        # parent script exits while the workload keeps running.
+        # ``run_cmd`` owns the detached launch and PID-commit contract.
         return "#!/bin/bash\nset -uo pipefail\n%s" % self.run_cmd(
             image="",
             command=serve_command,
@@ -617,7 +591,7 @@ class LocalExecutor(Executor):
         :func:`_hostify_env`).  ``sparkrun_labels`` is ignored (no
         container to tag).
         """
-        self._require_pid_directory()
+        self._require_managed_paths()
         del sparkrun_labels  # accepted but unused — no container to tag
         from sparkrun.utils import merge_env
 
@@ -680,7 +654,7 @@ class LocalExecutor(Executor):
         from sparkrun.core.hardware import resolve_fallback_hardware
         from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
-        self._require_pid_directory()
+        self._require_managed_paths()
         if not hosts:
             return ClusterStatus(hosts=(), queried_at=time.time(), executor=self.executor_name)
 

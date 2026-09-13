@@ -7,6 +7,25 @@ from sparkrun.benchmarking.run_state import BenchmarkStateError, derive_benchmar
 from sparkrun.core.recipe import Recipe
 
 
+def _image_digest(reference):
+    """Recognize a digest reference without resolving mutable tags or doing I/O."""
+    value = (reference or "").rsplit("@", 1)[-1]
+    return value if value.startswith("sha256:") else None
+
+
+def validate_image_references(references, image):
+    """Reject known image changes; return whether equivalence was established."""
+    references = {value for value in references if value}
+    if not references or not image:
+        return False  # missing evidence stays unknown
+    if image in references:
+        return True
+    digest = _image_digest(image)
+    if digest and digest in {_image_digest(ref) for ref in references}:
+        return True
+    raise BenchmarkStateError("Running job image differs from the saved benchmark; explicitly start fresh")
+
+
 def measurement_specification(recipe: Recipe, overrides: dict) -> dict:
     """Use the existing full Recipe serialization to preserve in-memory edits."""
     return {
@@ -69,8 +88,6 @@ def record_job_specification(state, meta: dict | None) -> None:
 
 def validate_job_specification(state, meta: dict | None, *, recipe=None) -> None:
     """One acceptance rule before appending measurements; never rewrite evidence."""
-    from sparkrun.benchmarking._measurement import validate_image_references
-
     spec = state.measurement_spec or {}
     expected = spec.get("job_fingerprint")
     if meta is None:

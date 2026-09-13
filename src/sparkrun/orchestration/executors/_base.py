@@ -162,7 +162,8 @@ class ExecutorConfig:
     # :class:`K8sExecutor` draft.
     executor_type: str = "docker"
 
-    # LocalExecutor-only fields (ignored by Docker/K8s).
+    # LocalExecutor-only fields (ignored by Docker/K8s). Managed PID/log paths
+    # must be absolute or home-relative; working_dir/env_file may be relative.
     working_dir: str | None = None
     log_dir: str | None = None
     log_file: str | None = None

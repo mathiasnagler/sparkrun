@@ -167,3 +167,59 @@ _sr_local_alive() {
         return "$rc"
     fi
 }
+
+# Stop either a recorded workload or a newly spawned child being rolled back.
+# _sr_was_running is the count contribution; success always verifies absence.
+_sr_local_stop() {
+    local pid=$1 rc i
+    _sr_was_running=0
+    if _sr_local_alive "$pid"; then
+        _sr_was_running=1
+        kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+            if _sr_local_alive "$pid"; then :; else
+                rc=$?; [ "$rc" -eq 1 ] && break; return "$rc"
+            fi
+            sleep 1
+        done
+        if _sr_local_alive "$pid"; then
+            kill -KILL -- -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+                if _sr_local_alive "$pid"; then :; else
+                    rc=$?; [ "$rc" -eq 1 ] && break; return "$rc"
+                fi
+                sleep 0.1
+            done
+        else rc=$?; [ "$rc" -eq 1 ] || return "$rc"; fi
+    else rc=$?; [ "$rc" -eq 1 ] || return "$rc"; fi
+    if _sr_local_alive "$pid"; then
+        printf 'Native workload still present: %s\n' "${2:-PID/group $pid}" >&2
+        return 1
+    else rc=$?; [ "$rc" -eq 1 ] || return "$rc"; fi
+    return 0
+}
+
+# Write in the destination directory, then replace only with a complete record.
+# Failed writes leave an existing record intact; pending files are not PID files.
+_sr_local_write_record() {
+    local temporary
+    temporary=$(mktemp -- "$2.pending.XXXXXX") || return 1
+    if printf %s "$1" > "$temporary" && mv -fT -- "$temporary" "$2"; then
+        return 0
+    fi
+    rm -f -- "$temporary" || printf 'Cannot remove pending native record: %s\n' "$temporary" >&2
+    return 1
+}
+
+_sr_local_commit_pid() {
+    if _sr_local_write_record "$1"$'\n' "$2"; then return 0; fi
+    printf 'Cannot persist native PID %s in %s; rolling back launch\n' "$1" "$2" >&2
+    if _sr_local_stop "$1"; then
+        # The launcher owns this child; reap it after verified group shutdown.
+        wait "$1" 2>/dev/null || true
+        printf 'Rolled back native launch: PID/group %s\n' "$1" >&2
+    else
+        printf 'Native launch rollback could not be confirmed: PID/group %s; manual recovery required\n' "$1" >&2
+    fi
+    return 1
+}

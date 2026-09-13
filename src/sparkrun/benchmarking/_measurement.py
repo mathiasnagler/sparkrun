@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from copy import deepcopy
 
 from sparkrun.benchmarking.metadata import public_benchmark_data
+from sparkrun.benchmarking._specification import validate_image_references, validate_job_specification
 
 _CONTEXT_FIELDS = {
     "category": "benchmark_category",
@@ -56,27 +57,6 @@ def restore_measurement_context(state, *, category=""):
     result.setdefault("container_image_sha_pinned", bool(state.extras.get("container_image_sha")))
     result["image_context_known"] = state.extras.get("measurement_context_version", 0) >= 2
     return result
-
-
-def _image_digest(reference):
-    """Recognize a digest reference without resolving mutable tags or doing I/O."""
-    value = (reference or "").rsplit("@", 1)[-1]
-    return value if value.startswith("sha256:") else None
-
-
-def validate_image_references(references, image):
-    """Reject known image changes; return whether equivalence was established."""
-    from sparkrun.benchmarking.run_state import BenchmarkStateError
-
-    references = {value for value in references if value}
-    if not references or not image:
-        return False  # missing evidence stays unknown
-    if image in references:
-        return True
-    digest = _image_digest(image)
-    if digest and digest in {_image_digest(ref) for ref in references}:
-        return True
-    raise BenchmarkStateError("Running job image differs from the saved benchmark; explicitly start fresh")
 
 
 def capture_launch_context(execution, launch=None, metadata=None, *, container_image=None, state=None):
@@ -137,8 +117,6 @@ def capture_launch_context(execution, launch=None, metadata=None, *, container_i
     if execution.resumed:
         validate_image_references((execution.container_image, execution.container_image_sha, execution.longterm_image_ref), image)
         if state is not None:
-            from sparkrun.benchmarking._specification import validate_job_specification
-
             validate_job_specification(state, candidate)
         # Legacy absence is now an explicit unknown, including automatic
         # resumes with a new LaunchResult that must not supply a fallback.

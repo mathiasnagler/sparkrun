@@ -109,8 +109,8 @@ lists. Falsy values fall through to the dataclass defaults.
 | `command_prefix`  | `None`                                         | Prepended verbatim (e.g. `nice -n 10 ionice -c2`).                                                   |
 
 See the [native path, state, and lifecycle contract](#native-paths-state-and-lifecycle)
-for path expansion, setup failures, ownership, process-group status, and legacy
-fixed-file recovery. Workload settings do not relocate PID/log control paths.
+for required absolute/home-relative control paths, setup failures, ownership,
+process-group status, and legacy recovery. Workload settings do not relocate PID/log control paths.
 
 ### K8s-only (Docker / Local ignore)
 
@@ -280,15 +280,22 @@ executor_config:
 
 ### Native paths, state, and lifecycle
 
-PID and log locations are bound to the remote script's entry directory and home
-before workload setup. Absolute paths retain their location; ordinary relative
-paths use that entry directory. A leading `~/`, `$HOME/`, or `${HOME}/` expands
-using the entry home. Use an absolute or home-relative configuration when commands
-may run from different entry directories. `working_dir`, activation scripts,
-and explicit workload `HOME` do not move the PID/owner/lock or log files.
+Managed native workloads require absolute or home-relative `pid_dir`, `log_dir`,
+and `log_file` paths. Ordinary relative control paths are rejected during target
+resolution and before launch/preflight script generation: their spelling cannot
+identify the same saved destination across invocation directories. Defaults remain
+home-relative. Legacy relative-path records and cached observations cannot establish
+absence or authorize automatic metadata pruning.
+
+PID and log locations are bound before workload setup. Absolute paths retain their
+location; a leading `~/`, `$HOME/`, or `${HOME}/` expands using the execution account's
+entry home. `working_dir`, activation scripts, and explicit workload `HOME` do not
+move the PID/owner/lock or log files. Workload `working_dir` and `env_file` may still
+be relative; they are execution inputs, not saved control-state locations.
 
 Only an originally leading home prefix expands. `./$HOME/pids` and `./~/pids`
-name literal relative directories, distinct from home-relative paths. Spaces and
+name literal relative directories in low-level recovery helpers; managed paths
+reject those spellings as relative. Spaces and
 other shell metacharacters remain literal. Normalization unifies equivalent home
 prefixes, redundant separators, and harmless current-directory components while
 retaining every parent (`..`) step. For example, `/base/link/../pids` can differ
@@ -311,6 +318,14 @@ closes the lock descriptor; the OS releases the operation's lock at exit. Lock
 files remain so concurrent operations use the same inode. Launch refuses to
 replace a live workload, including workers whose original leader has exited.
 
+Owner and PID records are written to temporary files in their destination directory
+and atomically replaced only after a complete write. A PID-write or rename failure
+after spawn returns failure and rolls back the new process group with the same
+verified shutdown used by stop. Failed commits preserve previous records and never
+publish a partial numeric PID. If rollback cannot be confirmed, the error identifies
+the new PID/group for manual recovery. A successful launch means its complete PID
+claim was recorded; serving-endpoint readiness is a separate operation.
+
 Shared state readers distinguish present, confirmed absent, and failed acquisition.
 Unreadable directories, unreadable or invalid PID/owner records, and failed process
 inspection produce errors. An absent entry in a readable parent can establish
@@ -328,8 +343,9 @@ only exited/zombie processes count as stopped.
 
 | Command | Contract |
 | --- | --- |
-| `run_cmd` | Bind paths, validate/lock state, complete setup, launch in a new group with append logging, and record its PID/owner. |
-| `exec_cmd` | Run a foreground hook with the same setup/failure policy; it does not create a workload claim. |
+| `run_cmd` | Requires `detach=True`; foreground requests raise before script generation. Bind paths, validate/lock state, complete setup, then launch and commit its PID claim or roll back. |
+| `generate_launch_script` / `generate_exec_serve_script` | Preflight and serving launch respectively. Only detached workload mode is supported; false `detach` / `detached` arguments raise before script generation. |
+| `exec_cmd` | Run a foreground hook with the same setup/failure policy; it does not create a workload claim. Its `detach` argument is ignored. |
 | `status_cmd` | Exit **0** for a live PID/group, **1** for confirmed absent/dead, **2** for acquisition failure. |
 | `stop_cmd` / `teardown_script` | Send TERM, wait up to about 10 seconds, then KILL if needed and verify the group. Delete recovery records only after confirmed stop; teardown reports actual stopped workloads. |
 | `logs_cmd` | Read the same fixed log location using `tail`, optionally following it or limiting lines. |
@@ -337,6 +353,18 @@ only exited/zombie processes count as stopped.
 Unknown liveness or surviving workers fail teardown and retain recovery records
 and job metadata. Public observation errors and stop result types carry these
 outcomes. A successful stale-record cleanup counts zero stopped workloads.
+
+#### Legacy relative-path recovery
+
+Retain the old job metadata. Use low-level `LocalExecutor.status_cmd()`,
+`logs_cmd()`, and `stop_cmd()` with the saved configuration, workload name,
+application profile, and SSH user, **from the original execution directory/home**.
+These helpers preserve ordinary relative-path semantics for explicit recovery.
+Managed lifecycle operations reject the unanchored configuration, including stop
+by job ID, rather than reporting a successful stop in another directory. After
+confirming the old workload has stopped, configure absolute or home-relative
+control paths and launch again. Do not rewrite a live job's saved destination to
+make it appear migrated.
 
 #### Legacy fixed-file recovery
 

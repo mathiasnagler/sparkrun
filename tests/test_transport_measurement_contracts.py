@@ -103,7 +103,7 @@ def test_resume_verifies_image_before_more_measurements(scheduled_env, monkeypat
         assert published[0].provenance["recipe"]["container"] == expected
 
 
-@pytest.fixture(params=[None, "relative/pids"])
+@pytest.fixture(params=[None, "$HOME/custom/pids"])
 def local_job(bench_env, monkeypatch, request):
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.application_profile import get_application_profile

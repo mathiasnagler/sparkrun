@@ -12,16 +12,18 @@ class ExecutorDestination:
 
     @classmethod
     def from_target(cls, target, ssh_user=None):
-        return cls(target.executor, target.destination_key, target.user_scoped, ssh_user or None)
+        return cls(
+            target.executor,
+            _validated_destination_key(target.executor, target.destination_key, target.config),
+            target.user_scoped,
+            ssh_user or None,
+        )
 
     @classmethod
     def from_metadata(cls, metadata, *, target):
-        key = metadata.get("executor_destination_key")
-        if metadata.get("executor") == "local" and (metadata.get("executor_config") or {}).get("pid_file"):
-            # Old fixed-file records borrowed the directory's key despite
-            # being outside its discovery contract. Even a successful sweep
-            # after removing pid_file from the cluster cannot prove absence.
-            key = None
+        key = _validated_destination_key(
+            metadata.get("executor"), metadata.get("executor_destination_key"), metadata.get("executor_config") or {}
+        )
         return cls(
             metadata.get("executor") or "",
             key,
@@ -54,6 +56,21 @@ class ExecutorDestination:
         return result
 
 
+def _validated_destination_key(executor, key, config):
+    if executor == "local":
+        from sparkrun.orchestration.executors._local_paths import anchored_path, validate_managed_paths
+
+        # Old fixed-file/relative-path records and cached targets are outside
+        # managed discovery. Their matching spelling cannot establish absence.
+        try:
+            validate_managed_paths(config)
+        except ValueError:
+            return None
+        if key and not anchored_path(key):
+            return None
+    return key
+
+
 def resolve_destination_user(target, hosts, ssh_kwargs):
     """Materialize namespace-relevant transport before a new workload starts."""
     user = (ssh_kwargs or {}).get("ssh_user")
@@ -84,6 +101,8 @@ def job_ssh_kwargs(target, metadata, ssh_kwargs, *, explicit_user=False):
     if not metadata:
         return result
     recorded = ExecutorDestination.from_metadata(metadata, target=target)
+    if recorded.executor == "local" and metadata.get("executor_destination_key") is not None and recorded.key is None:
+        raise ValueError("Recorded native destination is unsupported or unanchored; use low-level command recovery")
     if not recorded.user_scoped:
         return result
     if not recorded.ssh_user:

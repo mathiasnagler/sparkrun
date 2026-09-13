@@ -60,20 +60,19 @@ def test_explicit_literal_relative_home_spelling_is_preserved(tmp_path, prefix):
     assert result.returncode == 0, result.stderr
     assert result.stdout == "literal relative log\n"
     home_target = LocalExecutor(ExecutorConfig(pid_dir=prefix + "/pids")).resolve_target()
-    literal_target = LocalExecutor(ExecutorConfig(pid_dir="./" + prefix + "/pids")).resolve_target()
-    assert literal_target.destination_key != home_target.destination_key
-    restored = LocalExecutor(ExecutorConfig(**dict(literal_target.config))).resolve_target()
-    assert restored == literal_target
+    assert home_target.config["pid_dir"] == "$HOME/pids"
+    with pytest.raises(ValueError, match="pid_dir requires an absolute or home-relative"):
+        LocalExecutor(ExecutorConfig(pid_dir="./" + prefix + "/pids")).resolve_target()
 
 
-def test_working_dir_preserves_relative_control_state(tmp_path):
+def test_working_dir_preserves_absolute_control_state(tmp_path):
     work = tmp_path / "work"
     for root in (tmp_path, work):
         (root / "pids").mkdir(parents=True)
         (root / "logs").mkdir()
     ready = tmp_path / "ready"
-    executor = LocalExecutor(ExecutorConfig(pid_dir="pids", log_dir="logs", working_dir=str(work)))
-    assert executor.resolve_target().config["pid_dir"] == "pids"
+    executor = LocalExecutor(ExecutorConfig(pid_dir=str(tmp_path / "pids"), log_dir=str(tmp_path / "logs"), working_dir=str(work)))
+    assert executor.resolve_target().config["pid_dir"] == str(tmp_path / "pids")
     pid = None
     try:
         command = "printf ready > %s; exec sleep 300" % shlex.quote(str(ready))
@@ -298,6 +297,11 @@ def test_activation_environment_and_directory_do_not_relocate_control_state(tmp_
         shlex.quote(str(content)),
         shlex.quote(str(ready)),
     )
+    if path_kind == "relative" and operation == "launch":
+        with pytest.raises(ValueError, match="pid_dir requires an absolute or home-relative"):
+            executor.run_cmd("", payload, NAME)
+        assert not ready.exists() and not root.exists()
+        return
     pid = None
     try:
         script = (
