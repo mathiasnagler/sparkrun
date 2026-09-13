@@ -166,7 +166,13 @@ def _shared_run_options(f):
         click.option("--port", type=int, default=None, help="Override serve port"),
         click.option("--profile", default=None, type=PROFILE_NAME, help="Benchmark profile name or file path"),
         click.option("--framework", default=None, help="benchmarking framework (default from config.default_benchmark_framework)"),
-        click.option("--output", "output_file", default=None, type=click.Path(), help="Output file for results YAML"),
+        click.option(
+            "--output",
+            "output_file",
+            default=None,
+            type=click.Path(),
+            help="Exact filename for results YAML; JSON/CSV sidecars are named alongside it",
+        ),
         click.option("-b", "--benchmark-option", "bench_options", multiple=True, help="Override benchmark arg: -b key=value (repeatable)"),
         click.option(
             "--api-key-env",

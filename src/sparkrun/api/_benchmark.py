@@ -1526,13 +1526,14 @@ def _export_measurement(execution, *, config, tp, pp, output_file, emitter):
             / ("benchmark_%s_%s_tp%d%s.yaml" % (execution.recipe.name.replace("/", "_"), profile_slug, tp, pp_suffix))
         )
     # Bind all artifact references before export, callbacks, and persistence.
-    output_file = Path(output_file).expanduser().absolute()
+    output_paths = _measurement_output_paths(output_file, execution.results)
+    output_file = output_paths["yaml"]
     _write_measurement(execution, tp=tp, output_path=output_file)
     if execution.outputs is None:
         execution.outputs = {}
     execution.outputs["yaml"] = str(output_file)
     emitter.info("Results saved to: %s" % output_file)
-    _emit_results_outputs(execution.results, Path(output_file), emitter, outputs=execution.outputs)
+    _emit_results_outputs(execution.results, output_paths, emitter, outputs=execution.outputs)
 
 
 def _notify_complete(result, emitter):
@@ -1558,22 +1559,41 @@ def _save_completed_results(state, results, cache_dir):
     state.save(cache_dir)
 
 
-def _emit_results_outputs(results: dict[str, Any], base_path: Path, emitter: _ProgressEmitter, *, outputs=None) -> dict[str, Path]:
-    """Write json/csv variants of ``base_path`` and emit the artifact paths.
+def _measurement_output_paths(output_file, results) -> dict[str, Path]:
+    """Bind distinct primary/sidecar destinations before writing any export."""
+    primary = Path(output_file).expanduser().absolute()
+    paths = {"yaml": primary}
+    for fmt in ("json", "csv"):
+        if results.get(fmt):
+            paths[fmt] = primary.with_suffix("." + fmt) if primary.suffix.lower() in {".yaml", ".yml"} else Path(str(primary) + "." + fmt)
+    # Existing symlinks or hard links must not make otherwise distinct names
+    # overwrite one another. This is a preflight, not a concurrent-writer lock.
+    resolved = set()
+    inodes = set()
+    for path in paths.values():
+        canonical = path.resolve()
+        stat = path.stat() if path.exists() else None
+        inode = (stat.st_dev, stat.st_ino) if stat is not None else None
+        if canonical in resolved or (inode is not None and inode in inodes):
+            raise ValueError("Benchmark export destinations refer to the same file: %s" % path)
+        resolved.add(canonical)
+        if inode is not None:
+            inodes.add(inode)
+    return paths
 
-    Returns a mapping from format (``"json"``, ``"csv"``) to the written path.
-    """
+
+def _emit_results_outputs(results: dict[str, Any], paths: dict[str, Path], emitter: _ProgressEmitter, *, outputs=None) -> dict[str, Path]:
+    """Write planned JSON/CSV exports and record only successful artifacts."""
     writers = {
         "json": lambda data, path: path.write_text(json.dumps(data, indent=2)),
         "csv": lambda data, path: path.write_text(data),
     }
     written: dict[str, Path] = {}
     for fmt, writer in writers.items():
-        payload = results.get(fmt)
-        if not payload:
+        if fmt not in paths:
             continue
-        out = base_path.with_suffix("." + fmt)
-        writer(payload, out)
+        out = paths[fmt]
+        writer(results[fmt], out)
         written[fmt] = out
         if outputs is not None:
             outputs[fmt] = str(out)

@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from sparkrun.api._context import resolve_sctx
 from sparkrun.api._errors import InsufficientCapacity, LayoutRequired, SparkrunError
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ def schedule(
         sctx: Optional shared :class:`SparkrunContext`.  When provided,
             its ``variables`` are used for SAF scheduler lookup so
             callers chaining api calls share the same plugin registry.
+            When omitted, initialize through the default API context.
 
     Returns:
         A :class:`SchedulingResult` with the resolved
@@ -54,7 +56,7 @@ def schedule(
         get_scheduler,
     )
 
-    v = sctx.variables if sctx is not None else None
+    v = resolve_sctx(sctx).variables
     try:
         plugin = get_scheduler(scheduler, v=v)
     except ValueError as e:

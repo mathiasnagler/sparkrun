@@ -162,7 +162,11 @@ class BenchmarkOptions:
 
     # --- Output ---
     output_file: str | None = None
-    """Explicit output file base path.  ``None`` uses the auto-generated path."""
+    """Exact primary YAML filename; ``None`` uses the auto-generated path.
+
+    JSON/CSV sidecars replace a .yaml/.yml suffix, or append their suffix to
+    any other filename. All returned artifact paths are absolute.
+    """
     export_files: bool = True
     """Export benchmark result files (CSV, JSON, YAML) alongside the run."""
 

@@ -90,7 +90,8 @@ tests/                # pytest tests (mirrors src/ structure)
 Use `sparkrun.application.initialize()` for embedding and `sparkrun.api` for
 operations. See the [0.4.0 migration guide](docs/DISTRIBUTION_API_MIGRATION.md)
 for supported imports and the [benchmark guide](docs/BENCHMARK_API.md) for
-measurement, integrations, and resume/finalization contracts.
+measurement, integrations, and resume/finalization contracts. The [catalog guide](docs/CATALOG_API.md)
+covers typed dictionary results, headless recipe selection, trust, and retention.
 
 ## Key Patterns
 

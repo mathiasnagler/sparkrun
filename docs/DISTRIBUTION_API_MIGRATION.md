@@ -11,6 +11,7 @@ shared unless noted below. The tables also cover pre-release plugin contracts.
 | --- | --- |
 | Application authors | `sparkrun.application`: `initialize`, `run_cli`, `ApplicationProfile`, `UpdateSource`, `APPLICATION_PROFILE_API_VERSION`, and application/controller identity helpers. |
 | Workload and benchmark callers | `sparkrun.api`: operation functions, options, results, decisions/events, and operational errors. |
+| Catalog/front-end callers | `sparkrun.api`: catalog functions and `Catalog*` dictionary types; see the [headless catalog guide](CATALOG_API.md#browse-preview-and-retain). |
 | Setup callers | `sparkrun.api.setup`: checks/models, probe/plan helpers, apply/undo runners, manifest manager, statuses, and `SetupFailed`. |
 | Benchmark integration authors | `sparkrun.core.benchmark_integrations`: registration, `BenchmarkIntegration`, `BenchmarkDefaults`, context and immutable measurement/state snapshots. |
 | Setup extension authors | `sparkrun.core.setup_steps`: step/constraint registration; caller-facing types are also exported by `api.setup`. |

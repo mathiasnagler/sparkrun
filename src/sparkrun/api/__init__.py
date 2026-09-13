@@ -26,7 +26,7 @@ failures are wrapped with their original cause; interrupts propagate. Streaming
 surfaces (``logs``) return iterators of structured records that the CLI renders
 to the TTY.
 
-Stability: the dataclass shapes and exception hierarchy are stable;
+Stability: the dataclass shapes, catalog dictionary shapes, and exception hierarchy are stable;
 field additions are non-breaking, field removals are breaking.
 """
 
@@ -42,6 +42,22 @@ from sparkrun.api._benchmark_models import (
     ProgressEvent,
     BenchmarkDecision,
     ResumeMode,
+)
+from sparkrun.api._catalog_models import (
+    CatalogBenchmarkContext,
+    CatalogCapacity,
+    CatalogCluster,
+    CatalogFacet,
+    CatalogHostCapacity,
+    CatalogIssue,
+    CatalogPage,
+    CatalogRecipe,
+    CatalogRecipeDetails,
+    CatalogRecipeMetadata,
+    CatalogRefreshResult,
+    CatalogRegistry,
+    CatalogRegistryResult,
+    ResolvedCatalogRecipe,
 )
 from sparkrun.api._context import default_sctx
 from sparkrun.api._errors import (
@@ -111,6 +127,21 @@ from sparkrun.api._catalog import (
 )
 
 __all__ = [
+    # Catalog payload types
+    "CatalogBenchmarkContext",
+    "CatalogCapacity",
+    "CatalogCluster",
+    "CatalogFacet",
+    "CatalogHostCapacity",
+    "CatalogIssue",
+    "CatalogPage",
+    "CatalogRecipe",
+    "CatalogRecipeDetails",
+    "CatalogRecipeMetadata",
+    "CatalogRefreshResult",
+    "CatalogRegistry",
+    "CatalogRegistryResult",
+    "ResolvedCatalogRecipe",
     "catalog_recipes",
     "configure_registry",
     "catalog_cluster_capacity",

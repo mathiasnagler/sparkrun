@@ -200,6 +200,7 @@ def resolve_cluster(
 
     Raises:
         HostsUnreachable: No host source could be determined.
+        SparkrunError: A named cluster cannot be loaded.
     """
     from sparkrun.core.cluster_manager import ClusterDefinition
 
@@ -214,18 +215,16 @@ def resolve_cluster(
         return cluster_input
 
     if isinstance(cluster_input, str):
-        # Named cluster lookup.
-        if cluster_mgr is None and sctx is not None:
-            try:
-                cluster_mgr = sctx.cluster_manager
-            except Exception:
-                logger.debug("sctx.cluster_manager unavailable", exc_info=True)
-        if cluster_mgr is None:
-            from sparkrun.core.cluster_manager import ClusterManager
-            from sparkrun.core.config import get_config_root
+        from yaml import YAMLError
+        from sparkrun.api._context import resolve_sctx
+        from sparkrun.core.cluster_manager import ClusterError
 
-            cluster_mgr = ClusterManager(get_config_root())
-        loaded = cluster_mgr.get(cluster_input)
+        try:
+            if cluster_mgr is None:
+                cluster_mgr = resolve_sctx(sctx).cluster_manager
+            loaded = cluster_mgr.get(cluster_input)
+        except (ClusterError, OSError, ValueError, YAMLError) as exc:
+            raise SparkrunError("Cannot load cluster %r: %s" % (cluster_input, exc)) from exc
         if explicit_hosts is not None:
             return _replace_cluster_hosts(loaded, explicit_hosts)
         return loaded

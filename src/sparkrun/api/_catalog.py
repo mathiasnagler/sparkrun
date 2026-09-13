@@ -13,7 +13,28 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING, cast, get_args
+from collections.abc import Callable
+
+from sparkrun.api._catalog_models import (
+    CatalogBenchmarkContext,
+    CatalogCapacity,
+    CatalogCluster,
+    CatalogFacet,
+    CatalogHostCapacity,
+    CatalogIssue,
+    CatalogPage,
+    CatalogRecipe,
+    CatalogRecipeDetails,
+    CatalogRecipeMetadata,
+    CatalogRefreshResult,
+    CatalogRegistry,
+    CatalogRegistryResult,
+    ResolvedCatalogRecipe,
+)
+
+if TYPE_CHECKING:
+    from sparkrun.core.context import SparkrunContext
 
 from sparkrun.api._context import resolve_sctx
 from sparkrun.api._errors import RecipeNotFound, SparkrunError
@@ -22,7 +43,7 @@ MAX_RECIPE_BYTES = 256 * 1024
 _REFERENCE = re.compile(r"^catalog:([0-9a-f]{32})$")
 
 
-def _root(sctx) -> Path:
+def _root(sctx: SparkrunContext) -> Path:
     return Path(sctx.config.config_path).parent / "recipe-catalog"
 
 
@@ -37,7 +58,7 @@ def _atomic(path: Path, value: dict) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def _reference(path: Path, registry: str | None, sctx, *, imported: bool = False) -> str:
+def _reference(path: Path, registry: str | None, sctx: SparkrunContext, *, imported: bool = False) -> str:
     value = {"path": str(path.resolve()), "registry": registry, "imported": imported}
     if registry:
         value["registry_url"] = sctx.registry_manager.get_registry(registry).url
@@ -48,7 +69,7 @@ def _reference(path: Path, registry: str | None, sctx, *, imported: bool = False
     return "catalog:" + identity
 
 
-def _selection(reference: str, sctx) -> tuple[Path, str | None, bool]:
+def _selection(reference: str, sctx: SparkrunContext) -> tuple[Path, str | None, bool]:
     from sparkrun.core.registry import RegistryError
 
     match = _REFERENCE.fullmatch(reference)
@@ -84,7 +105,7 @@ def _selection(reference: str, sctx) -> tuple[Path, str | None, bool]:
     return path, sctx.registry_manager.registry_for_path(path), path.parent == _root(sctx) / "imports"
 
 
-def list_registries(*, sctx=None) -> list[dict[str, Any]]:
+def list_registries(*, sctx: SparkrunContext | None = None) -> list[CatalogRegistry]:
     """List configured registries without initializing or updating them."""
     sctx = resolve_sctx(sctx)
     manager = sctx.registry_manager
@@ -100,7 +121,7 @@ def list_registries(*, sctx=None) -> list[dict[str, Any]]:
     ]
 
 
-def list_clusters(*, sctx=None) -> list[dict[str, Any]]:
+def list_clusters(*, sctx: SparkrunContext | None = None) -> list[CatalogCluster]:
     """List named cluster definitions; no SSH or live capacity probe."""
     sctx = resolve_sctx(sctx)
     manager = sctx.cluster_manager
@@ -124,9 +145,9 @@ def catalog_recipes(
     local_only: bool = False,
     offset: int = 0,
     limit: int = 50,
-    filters: dict[str, str] | None = None,
-    sctx=None,
-) -> dict[str, Any]:
+    filters: dict[CatalogFacet, str] | None = None,
+    sctx: SparkrunContext | None = None,
+) -> CatalogPage:
     """Search cached recipes with exact file identity and bounded pagination."""
     from sparkrun.api._recipes import search_recipes
     from sparkrun.core.recipe import recipe_summary
@@ -172,14 +193,16 @@ def catalog_recipes(
                             entries.append(row)
                     except (OSError, ValueError):
                         continue
-    rows = []
+    rows: list[CatalogRecipe] = []
     seen = set()
     for entry in entries:
         path = Path(entry["path"]).resolve()
         if path in seen:
             continue
         seen.add(path)
-        row = {key: entry.get(key) for key in ("name", "model", "runtime", "description", "min_nodes", "tp", "registry")}
+        row = cast(
+            CatalogRecipe, {key: entry.get(key) for key in ("name", "model", "runtime", "description", "min_nodes", "tp", "registry")}
+        )
         for key in ("name", "model", "runtime", "description", "registry"):
             if row.get(key) is not None:
                 row[key] = str(row[key])[:1024]
@@ -205,7 +228,9 @@ def catalog_recipes(
     }
 
 
-def resolve_catalog_recipe(reference: str, overrides: dict | None = None, *, sctx=None):
+def resolve_catalog_recipe(
+    reference: str, overrides: dict[str, Any] | None = None, *, sctx: SparkrunContext | None = None
+) -> ResolvedCatalogRecipe:
     """Resolve one exact selection and normalize overrides like the CLI run path.
 
     Returns (Recipe, launch overrides). Image and env overrides are applied to
@@ -233,7 +258,9 @@ def resolve_catalog_recipe(reference: str, overrides: dict | None = None, *, sct
         raise SparkrunError("Recipe is invalid: %s" % type(exc).__name__) from exc
 
 
-def get_recipe_details(reference: str, overrides: dict | None = None, *, sctx=None) -> dict[str, Any]:
+def get_recipe_details(
+    reference: str, overrides: dict[str, Any] | None = None, *, sctx: SparkrunContext | None = None
+) -> CatalogRecipeDetails:
     """Resolve a selection into a safe model-configuration preview, without launching."""
     from sparkrun.api._resolve import resolve_runtime
     from sparkrun.core.launcher import resolve_recipe_trust
@@ -246,8 +273,8 @@ def get_recipe_details(reference: str, overrides: dict | None = None, *, sctx=No
     recipe, normalized = resolve_catalog_recipe(reference, overrides, sctx=sctx)
     runtime = resolve_runtime(recipe, sctx=sctx)
     trusted = resolve_recipe_trust(recipe, False)
-    issues = [
-        issue.to_dict()
+    issues: list[CatalogIssue] = [
+        cast(CatalogIssue, issue.to_dict())
         for issue in validate_recipe(
             recipe, runtime=runtime, overrides=normalized, config=sctx.config, v=sctx.variables, include_unmapped_keys=False
         )
@@ -330,7 +357,7 @@ def get_recipe_details(reference: str, overrides: dict | None = None, *, sctx=No
     }
 
 
-def import_recipe(content: str, *, sctx=None) -> dict[str, Any]:
+def import_recipe(content: str, *, sctx: SparkrunContext | None = None) -> CatalogRecipeDetails:
     """Import a single YAML document. Never executes hooks or resolves build assets."""
     import yaml
     from sparkrun.core.recipe import Recipe
@@ -360,7 +387,7 @@ def import_recipe(content: str, *, sctx=None) -> dict[str, Any]:
     return get_recipe_details(_reference(path, None, sctx, imported=True), sctx=sctx)
 
 
-def refresh_registries(*, progress=None, sctx=None) -> dict[str, Any]:
+def refresh_registries(*, progress: Callable[[str, bool], None] | None = None, sctx: SparkrunContext | None = None) -> CatalogRefreshResult:
     """Explicitly initialize/update registries, preserving per-registry outcomes."""
     sctx = resolve_sctx(sctx)
     manager = sctx.registry_manager
@@ -371,7 +398,7 @@ def refresh_registries(*, progress=None, sctx=None) -> dict[str, Any]:
     }
 
 
-def retain_catalog_recipe(reference: str, *, sctx=None) -> None:
+def retain_catalog_recipe(reference: str, *, sctx: SparkrunContext | None = None) -> None:
     """Retain a managed import when a client commits a persistent binding."""
     sctx = resolve_sctx(sctx)
     path, registry, imported = _selection(reference, sctx)
@@ -384,7 +411,7 @@ def retain_catalog_recipe(reference: str, *, sctx=None) -> None:
     _atomic(record, value)
 
 
-def cleanup_catalog_imports(*, sctx=None, max_age_seconds: float = 7 * 86400) -> int:
+def cleanup_catalog_imports(*, sctx: SparkrunContext | None = None, max_age_seconds: float = 7 * 86400) -> int:
     """Remove abandoned staged uploads. Persistently bound imports never expire."""
     sctx = resolve_sctx(sctx)
     removed = 0
@@ -401,10 +428,10 @@ def cleanup_catalog_imports(*, sctx=None, max_age_seconds: float = 7 * 86400) ->
     return removed
 
 
-CATALOG_FACETS = ("min_nodes", "tp", "pp", "quantization", "context_length", "parameters_b")
+CATALOG_FACETS = get_args(CatalogFacet)
 
 
-def _declared_facets(path: Path) -> dict[str, Any]:
+def _declared_facets(path: Path) -> CatalogRecipeMetadata:
     """Only declared YAML metadata; no name heuristics, network, or HF resolver."""
     import math
     import yaml
@@ -422,7 +449,7 @@ def _declared_facets(path: Path) -> dict[str, Any]:
         if not isinstance(defaults, dict) or not isinstance(metadata, dict):
             return {}
 
-        def number(value):
+        def number(value: object) -> int | float | None:
             return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0 else None
 
         params = number(metadata.get("model_params"))
@@ -441,8 +468,8 @@ def _declared_facets(path: Path) -> dict[str, Any]:
 
 
 def configure_registry(
-    action: str, name: str, *, url: str = "", subpath: str = "", acknowledge_trust: bool = False, sctx=None
-) -> dict[str, Any]:
+    action: str, name: str, *, url: str = "", subpath: str = "", acknowledge_trust: bool = False, sctx: SparkrunContext | None = None
+) -> CatalogRegistryResult:
     """Explicit configuration changes; adding never clones or grants trust."""
     from sparkrun.core.registry import RegistryEntry, RegistryError
 
@@ -464,14 +491,15 @@ def configure_registry(
     return {"registries": list_registries(sctx=sctx)}
 
 
-def catalog_cluster_capacity(cluster: str, *, sctx=None) -> dict[str, Any]:
+def catalog_cluster_capacity(cluster: str, *, sctx: SparkrunContext | None = None) -> CatalogCapacity:
     """Explicit live advisory occupancy probe; never reserves or launches."""
     from sparkrun.api._status import status
+    from sparkrun.api._resolve import resolve_cluster
 
     sctx = resolve_sctx(sctx)
-    definition = sctx.cluster_manager.get(cluster)
+    definition = resolve_cluster(cluster, sctx=sctx)
     observed = status(list(definition.hosts), cluster=definition, sctx=sctx)
-    rows = []
+    rows: list[CatalogHostCapacity] = []
     for host in definition.hosts[:256]:
         occupancy = observed.for_host(host)
         rows.append(
@@ -486,17 +514,17 @@ def catalog_cluster_capacity(cluster: str, *, sctx=None) -> dict[str, Any]:
     return {"cluster": cluster, "observed_at": time.time(), "hosts": rows, "advisory": True}
 
 
-def _benchmark_context(value) -> list[dict[str, Any]]:
+def _benchmark_context(value) -> list[CatalogBenchmarkContext]:
     """Bounded, explicitly declared context; these are not measured by browsing."""
     import math
 
     if not isinstance(value, list):
         return []
-    result = []
+    result: list[CatalogBenchmarkContext] = []
     for entry in value[:10]:
         if not isinstance(entry, dict):
             continue
-        row = {}
+        row: CatalogBenchmarkContext = {}
         for key in ("output_tokens_per_second", "time_to_first_token_ms", "input_tokens", "output_tokens", "concurrency"):
             item = entry.get(key)
             if isinstance(item, (int, float)) and not isinstance(item, bool) and math.isfinite(item) and item >= 0:

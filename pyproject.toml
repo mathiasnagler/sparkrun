@@ -51,6 +51,7 @@ sparkrun = "sparkrun.application:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
+"sparkrun" = ["py.typed"]
 "sparkrun.scripts" = ["*.sh"]
 "sparkrun.orchestration.executors" = ["seccomp/*.json", "seccomp/LICENSE", "seccomp/README.md"]
 "sparkrun.plugins.sparkroute" = ["LICENSE", "LICENSE_EXCEPTION", "README.md", "VENDORED.toml"]

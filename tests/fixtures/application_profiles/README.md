@@ -19,3 +19,7 @@ a local state record; no real gateway, host, or inference workload is started.
 
 Gateway fixtures also cover first-call selection without an explicit context,
 the public supervisor facade, and operational error class compatibility.
+
+The installed plugin also registers a one-rank scheduler and consumes the public
+catalog dictionary types. Tests cover first-call scheduling with both application
+profiles, typed browse/preview/resolve payloads, and the installed `py.typed` marker.

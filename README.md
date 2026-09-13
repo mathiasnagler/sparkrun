@@ -93,7 +93,8 @@ The 0.4.0 branch introduces breaking Python API changes. Start with the
 imports and option/result contracts. [Application profiles](docs/APPLICATION_PROFILES.md)
 let CLIs, daemons, and desktop applications share the core with their own identity,
 paths, defaults, and plugins. Use `sparkrun.application.initialize()` for Python
-API use without the Sparkrun CLI.
+API use without the Sparkrun CLI. The [catalog API](docs/CATALOG_API.md) supports
+headless browsing, previews, and persistent recipe selection.
 
 [Benchmarking](docs/BENCHMARK_API.md) separates measurement frameworks from
 publication integrations. [Plugin authors](docs/PLUGINS.md) register installed

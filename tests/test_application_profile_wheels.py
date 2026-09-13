@@ -550,3 +550,49 @@ assert 'click' not in sys.modules and 'sparkrun.cli' not in sys.modules
     env = {"SPARKRUN_APPLICATION_PROFILE": "profile_test_app.profile:PROFILE_TEST_APP"} if application != "sparkrun" else {}
     result = invoke(wheels, tmp_path, "python", "-c", code, first_call, env_extra=env)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("alternate", [False, True])
+def test_installed_scheduler_first_call_and_catalog_types(wheels, tmp_path, alternate):
+    config = tmp_path / "config.yaml"
+    config.write_text("integrations:\n  profile-test-plugin: true\n")
+    # An explicit empty registry inventory makes browsing offline even on the
+    # built-in profile's first run (which otherwise discovers default manifests).
+    (tmp_path / "registries.yaml").write_text("registries: []\n")
+    code = """
+import json, sys
+from importlib.resources import files
+from sparkrun import api
+from sparkrun.core.parallelism import ParallelismConfig
+from sparkrun.core.scheduler import SchedulingRequest
+request = SchedulingRequest(parallelism=ParallelismConfig(), hosts=('localhost',))
+first = api.schedule(request, scheduler='profile-test')
+context = api.default_sctx()
+assert first == api.schedule(request, scheduler='profile-test', sctx=context)
+assert first.assignment.hosts_used == ('localhost',)
+from profile_test_plugin.catalog import browse, preview
+uploaded: api.CatalogRecipeDetails = api.import_recipe(
+    'model: test/model\\nruntime: sglang\\ncontainer: test/image\\ndefaults: {tensor_parallel: 1}\\n', sctx=context)
+page: api.CatalogPage = browse(context)
+assert page['total'] == 1 and page['next_offset'] is None
+assert page['recipes'][0]['reference'] == uploaded['reference']
+details, resolved = preview(uploaded['reference'], context)
+assert isinstance(details, dict) and type(resolved) is tuple
+assert resolved[1]['tensor_parallel'] == 1
+assert details['trusted'] is False and resolved[0].is_url_sourced
+assert json.loads(json.dumps(page)) == page
+assert 'pp' in api.CatalogRecipe.__optional_keys__
+assert 'reference' in api.CatalogRecipe.__required_keys__
+assert files('sparkrun').joinpath('py.typed').is_file()
+assert 'sparkrun.cli' not in sys.modules
+print(context.application_profile.id)
+"""
+    env = {
+        "SPARKRUN_APPLICATION_CONFIG": str(config),
+        "SPARKRUN_APPLICATION_PROFILE": (
+            "profile_test_app.profile:PROFILE_TEST_APP" if alternate else "sparkrun.core.application_profile:SPARKRUN"
+        ),
+    }
+    result = invoke(wheels, tmp_path, "python", "-c", code, env_extra=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == ("profile-test-app" if alternate else "sparkrun")

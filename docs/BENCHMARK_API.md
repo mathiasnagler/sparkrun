@@ -209,7 +209,13 @@ The CLI renders the no-op message; API callers receive a normal successful resul
 Saved data for unavailable integrations remains intact.
 
 `resume_benchmark(id, export_files=False)` disables optional exports after resumed
-measurement. `output_file="/path/to/result.yaml"` chooses the export base path.
+measurement. `output_file="/path/to/result.yaml"` chooses the exact primary YAML
+filename. JSON/CSV sidecars replace a `.yaml` or `.yml` suffix (case-insensitive);
+for any other filename they append `.json` or `.csv`. For example, `result.json`
+is still the primary YAML file, with sidecars `result.json.json` and
+`result.json.csv`. An extensionless `result` has sidecars `result.json` and
+`result.csv`. Existing links that alias two selected destinations are rejected
+before any export is written. This check does not coordinate concurrent writers.
 These options do not turn completed result loading or publication retry into an
 export-repair operation. The default `export_files=True` matches initial execution.
 A corrupt/missing validated result file still raises `BenchmarkFailed`.

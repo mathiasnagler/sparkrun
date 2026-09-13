@@ -23,4 +23,8 @@ def register(v):
     register_gateway("profile-test", feature_flag="gateway.profile-test", loader=_load_gateway)
 
     if v is not None:
+        from scitrera_app_framework import register_plugin
+        from .scheduler import ProfileTestScheduler
+
+        register_plugin(ProfileTestScheduler, v=v)
         v.set("test.plugin.application_identity", get_application_identity())
