@@ -70,6 +70,13 @@ system, gateway registry, and execution-strategy extension points shipped in
 
 ### Fixed
 
+- Gateway management initializes application plugins before resolving the running
+  implementation, while preserving process status/stop if bootstrap fails or a
+  plugin is unavailable. Recorded gateway identity takes precedence over a saved
+  preference for the next start.
+- Rejected proxy starts and timed-out restarts preserve generated configuration
+  and discovery snapshots. Successful fileless gateway starts return `None` for
+  `config_path`, matching dry-run results.
 - Preserved managed-import distrust across catalog, run API, CLI, and benchmark
   loaders, including symlinked paths. Shared source tagging retains selected
   registry identity. Automatic trust requires the recorded registry URL to match

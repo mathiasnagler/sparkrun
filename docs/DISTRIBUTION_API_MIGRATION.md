@@ -588,3 +588,14 @@ omitted and honor the saved gateway pin, just like start. Plugins should import
 for existing providers. Optional credential and console operations must raise
 `GatewayOperationError` for expected failures; arbitrary `RuntimeError` is no
 longer treated as a routine management refusal.
+
+Management operations also initialize an omitted context before plugin lookup,
+then use the gateway recorded in process state rather than the saved pin. If
+plugin bootstrap fails, generic process status/stop remain available; model
+queries report unavailability. Invalid application profiles still raise.
+
+`prepare_config(write=False)` now previews ordinary starts and restarts as well
+as dry runs. It must not write files, persist discovery snapshots, or update a
+live gateway. The API calls `prepare_config(write=True)` after any previous
+process has exited. `ProxyStartResult.config_path` is `None` for fileless
+gateways and dry runs; callers must not expect the old string `"None"`.

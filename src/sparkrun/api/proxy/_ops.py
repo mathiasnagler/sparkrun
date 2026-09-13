@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from sparkrun.api._context import resolve_sctx
+from sparkrun.api._errors import SparkrunError
 from sparkrun.proxy.contracts import (
     ProxyModel,
     GatewayQueryError,
@@ -37,6 +38,7 @@ from ._errors import GatewayUnavailable, ProxyAlreadyRunning, ProxyStartFailed, 
 
 if TYPE_CHECKING:
     from sparkrun.core.context import SparkrunContext
+    from sparkrun.proxy._supervisor import GatewaySupervisor
     from sparkrun.proxy.discovery import DiscoveredEndpoint
 
 logger = logging.getLogger(__name__)
@@ -157,6 +159,7 @@ class ProxyStartResult:
     auto_discover: bool = False
     discover_interval: int = 0
     discover_removal_grace_sweeps: int = 0
+    #: Generated configuration file; None for fileless gateways and dry runs.
     config_path: str | None = None
     #: True when a previously-running proxy was stopped to make way for this one.
     restarted: bool = False
@@ -262,71 +265,73 @@ def _engine_class(gateway: str):
         raise _as_gateway_unavailable(exc) from exc
 
 
-def _new_engine(gateway: str, **kwargs):
-    """Construct the engine for *gateway* (does not gate; ``start`` does)."""
-    return _engine_class(gateway)(**kwargs)
+def _running_engine(sctx: "SparkrunContext | None" = None) -> GatewaySupervisor:
+    """Initialize plugins, then bind management to the recorded gateway.
 
-
-def _running_engine(sctx: "SparkrunContext | None" = None):
-    """Engine bound to the proxy recorded in the state file.
-
-    Deliberately ungated and independent of the *configured* gateway: it
-    reflects what is actually running, so a proxy stays manageable after its
-    flag is disabled or the configured gateway is changed underneath it.
+    Selection is ungated and independent of the saved gateway preference.
+    Missing plugins or failed bootstrap retain process-level status and stop.
     """
+    from sparkrun.core.application_profile import initialize_child_application_profile
+    from sparkrun.proxy._supervisor import GatewayState, GatewaySupervisor
     from sparkrun.proxy.gateway import DEFAULT_GATEWAY
 
-    probe = _new_engine(DEFAULT_GATEWAY)
+    try:
+        sctx = resolve_sctx(sctx)
+    except SparkrunError as exc:
+        # Bootstrap may fail after selecting the application. Confirm its
+        # identity without loading plugins before accessing process state; an
+        # invalid profile must never fall back to another application's cache.
+        try:
+            initialize_child_application_profile()
+        except Exception as profile_error:
+            raise exc from profile_error
+        sctx = None
+        logger.warning("%s; only process-level gateway management is available.", exc)
+
+    probe = GatewayState()
     state = probe.get_state() or {}
     gateway = str(state.get("gateway") or DEFAULT_GATEWAY)
-    if gateway == DEFAULT_GATEWAY:
-        return probe
-    try:
-        return _new_engine(gateway, **_engine_config_kwargs(gateway, sctx))
-    except GatewayUnavailable:
-        # The state file names a gateway whose implementation is not loaded —
-        # its plugin was removed, or its flag turned off since it started.
-        # Raising here would strand a *running* process: `proxy status` could
-        # not describe it and `proxy stop` could not kill it, which is exactly
-        # the outcome the ungated management paths exist to prevent.
-        #
-        # The base supervisor is enough for both: state reading and SIGTERM are
-        # gateway-independent.  Anything implementation-specific (the model
-        # list) raises NotImplementedError naming the gateway, which the
-        # callers already surface as ``model_query_error``.
-        logger.warning(
-            "No implementation is loaded for the running gateway %r; only process-level management is available.",
-            gateway,
-        )
-        from sparkrun.proxy._supervisor import GatewaySupervisor
+    if sctx is not None:
+        try:
+            engine_cls = _engine_class(gateway)
+        except GatewayUnavailable:
+            logger.warning(
+                "No implementation is loaded for the running gateway %r; only process-level management is available.",
+                gateway,
+            )
+        else:
+            return engine_cls(**_gateway_context_kwargs(engine_cls, sctx))
 
-        orphan = GatewaySupervisor(state_dir=probe.state_dir)
-        orphan.gateway_name = gateway
-        orphan.host = str(state.get("host") or "")
-        orphan.port = int(state.get("port") or 0)
-        return orphan
+    orphan = GatewaySupervisor(state_dir=probe.state_dir)
+    orphan.gateway_name = gateway
+    orphan.host = str(state.get("host") or "")
+    orphan.port = int(state.get("port") or 0)
+    return orphan
+
+
+def _gateway_context_kwargs(engine_cls: type, sctx: "SparkrunContext") -> dict[str, Any]:
+    """Pass application configuration only to gateways that request it.
+
+    Start and management share this construction contract. Context resolution
+    precedes class lookup so installed plugins participate in both paths.
+    """
+    if not getattr(engine_cls, "wants_proxy_config", False):
+        return {}
+    return {"proxy_config": sctx.proxy_config, "sctx": sctx}
 
 
 def _engine_config_kwargs(gateway: str, sctx: "SparkrunContext | None") -> dict[str, Any]:
-    """Config kwargs for engines that declare ``wants_proxy_config``.
+    """Compatibility with the pinned gateway snapshot's private helper contract.
 
-    Management paths resolve their engine from the state file, but a
-    config-driven gateway still needs ``proxy.yaml`` — without it a reconcile
-    would compute an *empty* desired state and replace the running
-    configuration with nothing, so ``proxy alias add`` would silently delete
-    every deployment it was not told about.
-
-    Declared as a capability rather than branched on by name, so
-    :func:`_engine_class` stays the one place a name becomes an implementation.
+    Runtime construction uses the resolved class directly; retain this name
+    while the vendored integration tests still consume it.
     """
+    sctx = resolve_sctx(sctx)
     try:
         engine_cls = _engine_class(gateway)
     except GatewayUnavailable:
         return {}
-    if not getattr(engine_cls, "wants_proxy_config", False):
-        return {}
-    sctx = resolve_sctx(sctx)
-    return {"proxy_config": sctx.proxy_config, "sctx": sctx}
+    return _gateway_context_kwargs(engine_cls, sctx)
 
 
 # --------------------------------------------------------------------------
@@ -394,9 +399,7 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
         "host_configured": host_configured,
     }
     engine_cls = _engine_class(gateway)
-    if getattr(engine_cls, "wants_proxy_config", False):
-        engine_kwargs["proxy_config"] = proxy_cfg
-        engine_kwargs["sctx"] = sctx
+    engine_kwargs.update(_gateway_context_kwargs(engine_cls, sctx))
     engine = engine_cls(**engine_kwargs)
 
     auto_discover = proxy_cfg.auto_discover if options.auto_discover is None else options.auto_discover
@@ -408,16 +411,33 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
         auto_discover = False
     interval = options.discover_interval or proxy_cfg.discover_interval
 
-    # A dry run still reports which aliases would apply, so the alias split is
-    # computed either way and only the write is conditional — answering that
-    # from the same code that renders the real config is what keeps the
-    # preview honest.
+    # Refuse a foreign state directory before invoking plugin preparation.
     if not options.dry_run:
         try:
             engine.claim_state_directory()
         except GatewayOperationError as exc:
             raise ProxyStartFailed(str(exc)) from exc
-    config_path, applied, pending = engine.prepare_config(healthy, aliases, write=not options.dry_run)
+
+    # Validate without changing generated files or gateway snapshots while a
+    # previous process may still be serving them. The same preview supplies
+    # the alias results for a dry run.
+    config_path, applied, pending = engine.prepare_config(healthy, aliases, write=False)
+
+    restarted = False
+    if not options.dry_run:
+        if engine.is_running():
+            pid = engine.current_pid()
+            if not options.restart:
+                raise ProxyAlreadyRunning(
+                    "Proxy is already running (PID %s) on port %d." % (pid, engine.port),
+                    pid=pid,
+                    port=engine.port,
+                    persisted=persisted,
+                )
+            if not _stop_and_wait(engine):
+                raise ProxyStartFailed("Proxy did not stop cleanly within %.0fs; aborting restart." % RESTART_WAIT_SECONDS)
+            restarted = True
+        config_path, applied, pending = engine.prepare_config(healthy, aliases, write=True)
 
     common = {
         "gateway": gateway,
@@ -431,24 +451,11 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
         "discover_removal_grace_sweeps": removal_grace_sweeps,
         "persisted": persisted,
         "warnings": tuple(warnings),
+        "config_path": str(config_path) if config_path is not None and not options.dry_run else None,
     }
 
     if options.dry_run:
         return ProxyStartResult(started=False, dry_run=True, **common)
-
-    restarted = False
-    if engine.is_running():
-        pid = engine.current_pid()
-        if not options.restart:
-            raise ProxyAlreadyRunning(
-                "Proxy is already running (PID %s) on port %d." % (pid, engine.port),
-                pid=pid,
-                port=engine.port,
-                persisted=persisted,
-            )
-        if not _stop_and_wait(engine):
-            raise ProxyStartFailed("Proxy did not stop cleanly within %.0fs; aborting restart." % RESTART_WAIT_SECONDS)
-        restarted = True
 
     ad_kwargs = None
     if auto_discover:
@@ -467,12 +474,12 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
 
     if options.foreground:
         # Blocking mode: start() returns the proxy's own exit code.
-        return ProxyStartResult(started=True, foreground_rc=rc, restarted=restarted, config_path=str(config_path), **common)
+        return ProxyStartResult(started=True, foreground_rc=rc, restarted=restarted, **common)
 
     if rc != 0:
         raise ProxyStartFailed("Gateway %s failed to start (exit code %d)." % (gateway, rc), exit_code=rc)
 
-    return ProxyStartResult(started=True, restarted=restarted, config_path=str(config_path), **common)
+    return ProxyStartResult(started=True, restarted=restarted, **common)
 
 
 def stop(*, dry_run: bool = False, sctx: "SparkrunContext | None" = None) -> ProxyStopResult:

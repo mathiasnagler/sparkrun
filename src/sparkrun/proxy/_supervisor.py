@@ -278,11 +278,14 @@ class GatewaySupervisor(GatewayState):
             write: When False, compute everything but touch no files.  A dry
                 run still reports which aliases *would* apply, and answering
                 that from the same code that renders the real config is what
-                keeps the preview honest.
+                keeps the preview honest. Start also previews before stopping
+                a previous process, then calls again with write=True only
+                after that process exits. Preview must not persist snapshots
+                or update a live gateway.
 
         Returns:
             ``(config_path, aliases_applied, aliases_pending)``; the path is
-            ``None`` when *write* is False.
+            ``None`` when *write* is False or the gateway uses no config file.
         """
         raise NotImplementedError
 

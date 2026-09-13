@@ -249,8 +249,9 @@ selected = api.proxy.resolve_gateway(sctx=context)
 ```
 
 Omitting `sctx` initializes the default application context, including installed
-plugins, and uses the same saved gateway pin. An explicit gateway name overrides
-that pin. Low-level registry selection in `sparkrun.proxy.gateway` does not
+plugins. Selection and start use the saved gateway pin unless an explicit
+name overrides it. Management operations use the gateway recorded in process
+state, even when the saved preference has changed. Low-level registry selection in `sparkrun.proxy.gateway` does not
 initialize the application and remains usable during plugin bootstrap.
 
 Gateway plugins register a deferred class loader with
@@ -277,6 +278,17 @@ provide configuration, model reconciliation and management capabilities such as
 Start checks availability even for a dry run. Existing processes remain
 manageable after a feature is disabled; when an implementation is unavailable,
 the base supervisor can still inspect state and stop the recorded process.
+This fallback also covers plugin initialization failures: the failure is logged,
+status reports model enumeration as unavailable, and process stop remains usable.
+An invalid application profile still raises instead of accessing another
+application's state.
+
+Start previews configuration before stopping an existing process and writes
+generated configuration or discovery snapshots only after shutdown succeeds.
+Duplicate-start rejection and shutdown timeout preserve those files. Explicit
+settings still persist to `proxy.yaml` before the lifecycle decision unless
+`persist=False` or `dry_run=True`. `ProxyStartResult.config_path` is a string for
+a generated file, or `None` for a fileless gateway or dry run.
 
 ### Gateway plugin contract
 

@@ -236,7 +236,7 @@ class TestApiFacade:
         from sparkrun.api.proxy._ops import _running_engine
         from sparkrun.proxy.engine import ProxyEngine
 
-        with patch("sparkrun.proxy.engine.ProxyEngine.get_state", return_value={"pid": 1, "gateway": "litellm"}):
+        with patch("sparkrun.proxy._supervisor.GatewayState.get_state", return_value={"pid": 1, "gateway": "litellm"}):
             assert isinstance(_running_engine(), ProxyEngine)
 
     def test_management_engine_degrades_for_an_unknown_recorded_gateway(self, caplog):
@@ -252,7 +252,7 @@ class TestApiFacade:
         from sparkrun.api.proxy._ops import _running_engine
         from sparkrun.proxy._supervisor import GatewaySupervisor
 
-        with patch("sparkrun.proxy.engine.ProxyEngine.get_state", return_value={"pid": 1, "gateway": "ghost"}):
+        with patch("sparkrun.proxy._supervisor.GatewayState.get_state", return_value={"pid": 1, "gateway": "ghost"}):
             with caplog.at_level(logging.WARNING):
                 engine = _running_engine()
 

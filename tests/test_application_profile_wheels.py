@@ -603,3 +603,48 @@ def test_installed_catalog_consumer_types(wheels, tmp_path):
 
     _root, _environment, python = wheels
     check_api_consumer(tmp_path, python=python)
+
+
+@pytest.mark.parametrize("application", ["sparkrun", "profile-test-app"])
+@pytest.mark.parametrize("first_call", ["status", "models"])
+def test_installed_gateway_management_initializes_implicitly(wheels, tmp_path, application, first_call):
+    config = tmp_path / "custom-config" / "config.yaml"
+    config.parent.mkdir()
+    config.write_text("integrations:\n  profile-test-plugin: true\nfeatures:\n  gateway.profile-test: true\n")
+    (config.parent / "proxy.yaml").write_text("proxy:\n  gateway: litellm\n")
+    code = """
+import json, os, sys
+from pathlib import Path
+from sparkrun import api
+from sparkrun.core import bootstrap
+from sparkrun.proxy import gateway
+from sparkrun.proxy.contracts import ProxyModel
+assert bootstrap._variables is None
+assert 'profile-test' not in gateway._GATEWAY_LOADERS
+# The fixture provider queries locally; this process supplies a live PID only.
+state = Path.home() / '.cache' / sys.argv[3] / 'proxy' / 'state.yaml'
+state.parent.mkdir(parents=True)
+state.write_text(json.dumps({'gateway': 'profile-test', 'pid': os.getpid(), 'distribution': sys.argv[3]}))
+first = getattr(api.proxy, sys.argv[1])()
+models = first.require_models() if sys.argv[1] == 'status' else first
+assert models == (ProxyModel('fixture-model', 'http://fixture/v1', 8192),)
+context = api.default_sctx()
+assert context.config.config_path == Path(sys.argv[2])
+assert context.application_identity.id == sys.argv[3]
+assert context.proxy_config.gateway == 'litellm'
+assert api.proxy.models(sctx=context) == models
+assert 'click' not in sys.modules and 'sparkrun.cli' not in sys.modules
+"""
+    profile_ref = "sparkrun.core.application_profile:SPARKRUN" if application == "sparkrun" else "profile_test_app.profile:PROFILE_TEST_APP"
+    result = invoke(
+        wheels,
+        tmp_path,
+        "python",
+        "-c",
+        code,
+        first_call,
+        str(config),
+        application,
+        env_extra={"SPARKRUN_APPLICATION_PROFILE": profile_ref, "SPARKRUN_APPLICATION_CONFIG": str(config)},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
