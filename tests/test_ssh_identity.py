@@ -31,8 +31,7 @@ def test_ssh_alias_and_custom_config_resolve_without_a_connection(ssh_config):
     assert resolve_ssh_user(["worker-a", "worker-b"], ssh_options=["-F", str(ssh_config)]) == "alice"
     assert resolve_ssh_user(["worker-a"], ssh_user="charlie", ssh_options=["-F", str(ssh_config)]) == "charlie"
     assert resolve_ssh_user(["worker-a"], ssh_options=["-F", str(ssh_config), "-o", "User=delta"]) == "delta"
-    with pytest.raises(ValueError, match="SSH options select a different user"):
-        resolve_ssh_user(["worker-a"], ssh_user="alice", ssh_options=["-F", str(ssh_config), "-o", "User=bob"])
+    assert resolve_ssh_user(["worker-a"], ssh_user="alice", ssh_options=["-F", str(ssh_config), "-o", "User=bob"]) == "alice"
 
 
 @pytest.mark.parametrize("mode", ["mixed", "invalid"])
@@ -82,7 +81,7 @@ def test_plan_pins_implicit_alias_user_and_preserves_key_rotation(run_env, monke
     assert env.sctx.config.ssh_user is None
 
 
-def test_plan_rejects_conflicting_user_options_before_ensure_or_handler(run_env, monkeypatch, ssh_config):
+def test_plan_keeps_explicit_user_when_options_change(run_env, monkeypatch, ssh_config):
     from sparkrun import api
     from sparkrun.api._run import plan, run
 
@@ -92,9 +91,41 @@ def test_plan_rejects_conflicting_user_options_before_ensure_or_handler(run_env,
     monkeypatch.setattr("sparkrun.api._hosts.resolve_effective_hosts", lambda hosts, *a, **kw: (hosts, True, [], None))
     planned = plan(options, sctx=env.sctx)
     env.sctx.config.set("ssh.options", ["-F", str(ssh_config), "-o", "User=bob"])
-    monkeypatch.setattr(
-        "sparkrun.api._intent.find_running_intent", lambda *a, **kw: pytest.fail("must reject before querying another user")
-    )
-    monkeypatch.setattr("sparkrun.core.launcher.launch_inference", lambda *a, **kw: pytest.fail("must not submit"))
-    with pytest.raises(api.SparkrunError, match="SSH options select a different user"):
-        run(options, sctx=env.sctx, plan=planned)
+
+    def find(*args, **kwargs):
+        assert kwargs["sctx"].config.ssh_user == "alice"
+        return None
+
+    monkeypatch.setattr("sparkrun.api._intent.find_running_intent", find)
+    seen = []
+
+    def launch(**kwargs):
+        from sparkrun.orchestration.ssh import build_ssh_cmd
+        import subprocess
+
+        config = kwargs["config"]
+        cmd = build_ssh_cmd("worker-a", config.ssh_user, config.ssh_key, config.ssh_options)
+        effective = subprocess.run([cmd[0], "-G", *cmd[1:]], capture_output=True, text=True, check=True)
+        seen.append(next(line for line in effective.stdout.splitlines() if line.startswith("user ")))
+        return env.launch
+
+    monkeypatch.setattr("sparkrun.core.launcher.launch_inference", launch)
+    assert run(options, sctx=env.sctx, plan=planned).rc == 0
+    assert seen == ["user alice"]
+
+
+@pytest.mark.parametrize("format", ["command", "embedded"])
+@pytest.mark.parametrize("user", [None, "alice"])
+@pytest.mark.parametrize("option", [["-o", "User=bob"], ["-l", "bob"], ["-oUser=bob"], ["-lbob"]])
+def test_all_ssh_builders_share_effective_user_precedence(ssh_config, format, user, option):
+    import shlex
+    import subprocess
+    from sparkrun.orchestration.ssh import build_ssh_cmd, build_ssh_opts_string
+
+    kwargs = {"ssh_user": user, "ssh_options": ["-F", str(ssh_config), *option]}
+    if format == "command":
+        cmd = build_ssh_cmd("worker-a", **kwargs)
+    else:
+        cmd = ["ssh", *shlex.split(build_ssh_opts_string(**kwargs)), "worker-a"]
+    result = subprocess.run([cmd[0], "-G", *cmd[1:]], capture_output=True, text=True, check=True)
+    assert next(line for line in result.stdout.splitlines() if line.startswith("user ")) == "user " + (user or "bob")

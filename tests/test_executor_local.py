@@ -168,13 +168,10 @@ class TestLocalExecutorBasics:
         echo_pid_idx = script.index('echo "$_pid"')
         assert setsid_idx < echo_pid_idx, "PID must be captured AFTER setsid backgrounds the child"
 
-    def test_run_cmd_with_pid_file_override(self):
+    def test_run_cmd_rejects_pid_file_override(self):
         ex = LocalExecutor(ExecutorConfig(pid_file="/tmp/explicit.pid", log_file="/tmp/explicit.log"))
-        script = ex.run_cmd(image="", command="echo hi", container_name="foo_solo")
-        assert "/tmp/explicit.pid" in script
-        assert "/tmp/explicit.log" in script
-        # No <container_name>.pid path leaks in when overrides are set.
-        assert "foo_solo.pid" not in script
+        with pytest.raises(ValueError, match="pid_file.*use pid_dir"):
+            ex.run_cmd(image="", command="echo hi", container_name="foo_solo")
 
     def test_run_cmd_includes_working_dir(self):
         script = _local(working_dir="/srv/inference").run_cmd(image="", command="echo hi", container_name="foo_solo")
@@ -364,9 +361,10 @@ class TestLocalExecutorRoundTrip:
     are safe to run in CI on Linux runners.
     """
 
-    def test_launch_status_stop(self, tmp_path):
-        pid_dir = tmp_path / "pids"
-        log_dir = tmp_path / "logs"
+    @pytest.mark.parametrize("directory", ["plain", "spaces ' [literal] $(touch SHOULD_NOT_EXIST)"])
+    def test_launch_status_stop(self, tmp_path, directory):
+        pid_dir = tmp_path / directory / "pids"
+        log_dir = tmp_path / directory / "logs"
         ex = LocalExecutor(
             ExecutorConfig(
                 executor_type="local",

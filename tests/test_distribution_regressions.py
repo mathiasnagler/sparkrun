@@ -370,14 +370,14 @@ def test_native_serve_rechecks_owner_after_preflight(tmp_path):
     from sparkrun.orchestration.executors.local import LocalExecutor
     from sparkrun.orchestration.executors._base import ExecutorConfig
 
-    pid = tmp_path / "shared.pid"
-    owner = tmp_path / "shared.pid.owner"
-    log = tmp_path / "shared.log"
-    executor = LocalExecutor(ExecutorConfig(pid_file=str(pid), log_file=str(log)))
     name = "sparkrun_" + "a" * 16 + "_" + "b" * 12 + "_solo"
+    pid = tmp_path / (name + ".pid")
+    owner = tmp_path / (name + ".pid.owner")
+    log = tmp_path / "shared.log"
+    executor = LocalExecutor(ExecutorConfig(pid_dir=str(tmp_path), log_file=str(log)))
     preflight = executor.generate_launch_script(image="", container_name=name, command="true")
     subprocess.run(["bash", "-c", preflight], check=True, capture_output=True, timeout=10)
-    # A competing application claims the explicit shared path after preflight.
+    # A competing application claims the same PID path after preflight.
     pid.write_text(str(os.getpid()))
     owner.write_text("jetsonrun")
     script = executor.generate_exec_serve_script(container_name=name, serve_command="true")
@@ -394,7 +394,7 @@ def test_competing_native_launches_cannot_both_claim_pid_path(tmp_path, monkeypa
     from sparkrun.orchestration.executors.local import LocalExecutor
     from sparkrun.orchestration.executors._base import ExecutorConfig
 
-    executor = LocalExecutor(ExecutorConfig(pid_file=str(tmp_path / "shared.pid"), log_file=str(tmp_path / "shared.log")))
+    executor = LocalExecutor(ExecutorConfig(pid_dir=str(tmp_path), log_file=str(tmp_path / "shared.log")))
     name = "sparkrun_" + "a" * 16 + "_" + "b" * 12 + "_solo"
     scripts = []
     for owner in ("sparkrun", "jetsonrun"):
@@ -409,4 +409,4 @@ def test_competing_native_launches_cannot_both_claim_pid_path(tmp_path, monkeypa
         results = list(pool.map(launch, scripts))
     assert sorted(result.returncode for result in results) == [0, 1]
     winner = "sparkrun" if results[0].returncode == 0 else "jetsonrun"
-    assert (tmp_path / "shared.pid.owner").read_text() == winner
+    assert (tmp_path / (name + ".pid.owner")).read_text() == winner

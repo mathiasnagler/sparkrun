@@ -13,7 +13,9 @@ def resolve_ssh_user(hosts, *, ssh_user=None, ssh_key=None, ssh_options=None):
     Different implicit users across hosts require an explicit cluster user;
     guessing one would redirect part of the launch into another namespace.
     """
-    if ssh_user and not ssh_options:
+    # build_ssh_cmd makes an explicit principal authoritative for every
+    # transport consumer, independently of aliases, options and rotated keys.
+    if ssh_user:
         return ssh_user
     users = set()
     for host in dict.fromkeys(hosts):
@@ -28,8 +30,6 @@ def resolve_ssh_user(hosts, *, ssh_user=None, ssh_key=None, ssh_options=None):
                 raise ValueError("OpenSSH did not return an effective user")
         except (OSError, subprocess.SubprocessError, ValueError) as error:
             raise ValueError("Cannot resolve SSH user for %r; configure cluster.user or ssh.user" % host) from error
-        if ssh_user and user != ssh_user:
-            raise ValueError("SSH options select a different user for %r; keep cluster.user/ssh.user and SSH options consistent" % host)
         if "@" in host and not ssh_user:
             raise ValueError("For user-scoped launches, supply the user through cluster.user or ssh.user instead of a user@host address")
         users.add(user)

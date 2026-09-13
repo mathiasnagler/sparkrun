@@ -102,11 +102,36 @@ lists. Falsy values fall through to the dataclass defaults.
 |-------------------|------------------------------------------------|------------------------------------------------------------------------------------------------------|
 | `working_dir`     | `None`                                         | `cd <working_dir>` before launch.                                                                    |
 | `log_dir`         | `$HOME/.cache/sparkrun/local/logs`             | Per-container `<log_dir>/<container_name>.log`.                                                      |
-| `log_file`        | `None`                                         | Overrides `<log_dir>/...` entirely.                                                                  |
+| `log_file`        | `None`                                         | Optional shared append log; otherwise logs are per-container.                                                                  |
 | `pid_dir`         | `$HOME/.cache/sparkrun/local/pids`             | Per-container `<pid_dir>/<container_name>.pid`.                                                      |
-| `pid_file`        | `None`                                         | Overrides `<pid_dir>/...` entirely.                                                                  |
+| `pid_file`        | `None`                                         | Legacy command recovery only. Managed operations reject it; use `pid_dir`.                                                                  |
 | `env_file`        | `None`                                         | Sourced via `set -a; . <env_file>; set +a` before launch.                                            |
 | `command_prefix`  | `None`                                         | Prepended verbatim (e.g. `nice -n 10 ionice -c2`).                                                   |
+
+Local PID and log paths share the same remote path normalization and shell
+rendering. A leading `~/`, `$HOME/`, or `${HOME}/` expands on the workload host;
+spaces and other shell metacharacters remain literal. Equivalent home prefixes
+and redundant path separators resolve to the same destination. Resolution never
+uses the controller's home directory or follows remote symlinks.
+
+Managed local workloads require `pid_dir`, with one PID file per workload/rank.
+A singular `pid_file` cannot identify multiple workloads during metadata-free
+discovery, so 0.4.0 rejects it during target resolution and before any launch
+script is generated. Status reports incomplete coverage for an old fixed-file
+configuration and cannot authorize automatic metadata pruning. Old fixed-file records
+also remain ineligible for absence matching after cluster configuration changes
+to a PID directory. `log_file` remains an optional shared append log; use `log_dir` for separate workload logs.
+
+For a legacy fixed-file workload, retain its metadata and use the low-level
+`LocalExecutor.status_cmd()`, `logs_cmd()`, and `stop_cmd()` with its saved executor
+configuration, workload name, application profile, and SSH user. These recovery
+helpers still honor `pid_file`; stop retains its application ownership guard. Managed stop/log/liveness
+operations require a resolvable target and therefore reject that old configuration.
+After confirming the workload has stopped, replace `pid_file` with `pid_dir` in its
+recipe/cluster configuration and launch again. Do not rename a live PID record or
+rewrite its destination metadata to make it appear migrated. Ordinary directory
+records remain readable; older noncanonical destination keys remain conservative
+for absence matching until replaced by a new launch.
 
 ### K8s-only (Docker / Local ignore)
 
@@ -552,8 +577,10 @@ Local dispatch uses the current OS account; remote aliases/defaults are resolved
 through OpenSSH's local `-G` configuration evaluation, including `ssh.options`.
 This opens no SSH session. Clusters with different implicit users must select
 one explicit `cluster.user` or `ssh.user`; unresolved identity fails before launch.
-Use those user fields rather than embedding `user@` in host addresses. Conflicting
-`User` SSH options fail instead of silently overriding an explicit principal.
+Use those user fields rather than embedding `user@` in host addresses. An explicit
+or recorded user takes precedence over `-o User=...`, `-l ...`, and SSH configuration.
+This rule is shared by direct SSH, embedded transfer scripts, pipelines, and rsync.
+Without an explicit user, OpenSSH options/configuration still supply the default.
 
 `api.plan()` retains that resolved principal independently of mutable defaults and
 its cluster object. Reusing the plan keeps discovery, replacement, and submission

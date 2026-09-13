@@ -403,8 +403,12 @@ validation evidence and does not override this historical context. This does not
 change the recipe-free publication retry or complete-artifact processing contracts.
 
 
-Candidate deployment evidence is assembled once from a private launch handle, or
-from saved job metadata supplemented by the public `RunResult.container_image`.
+Candidate deployment evidence is assembled once from the available private launch
+handle, saved job metadata, and public `RunResult.container_image`. Every nonempty
+image reference must agree or share a SHA-256 digest. Missing evidence permits a
+fallback; contradictory evidence raises an error before fresh or resumed measurement
+commands. A private handle does not exempt public results or metadata from this
+check. Mutable tags with different spellings are not assumed equivalent.
 The same detached candidate is used for continuation validation and initial job
 baseline recording. Run handlers do not need a private launch handle: an equivalent
 digest supplied by their public result remains evidence even when job metadata

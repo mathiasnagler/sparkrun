@@ -89,13 +89,31 @@ def capture_launch_context(execution, launch=None, metadata=None, *, container_i
     Returns the normalized candidate for baseline recording, so callers must
     not reload metadata and discard evidence supplied by the launch result.
     """
+    # Missing evidence can fall back; contradictory known sources cannot.
+    # Preserve the established preference for equivalent reference spellings.
+    from sparkrun.benchmarking.run_state import BenchmarkStateError
+
+    images = [
+        (source, value)
+        for source, value in (
+            ("launch handle", launch.container_image if launch is not None else None),
+            ("job metadata", (metadata or {}).get("effective_container_image")),
+            ("run result", container_image),
+        )
+        if value
+    ]
+    source, image = images[0] if images else (None, None)
+    for other_source, value in images[1:]:
+        try:
+            validate_image_references((image,), value)
+        except BenchmarkStateError as error:
+            raise BenchmarkStateError("Conflicting container image evidence: %s disagrees with %s" % (source, other_source)) from error
+
     if launch is not None:
-        image = launch.container_image or None
         recipe = launch.recipe
         overrides = dict(launch.overrides or {})
         runtime_info = dict(launch.runtime_info or {})
     elif metadata is not None:
-        image = metadata.get("effective_container_image") or container_image or None
         recipe = execution.recipe
         if metadata.get("recipe_state"):
             from sparkrun.core.recipe import Recipe
@@ -104,7 +122,6 @@ def capture_launch_context(execution, launch=None, metadata=None, *, container_i
         overrides = dict(metadata.get("overrides", execution.overrides) or {})
         runtime_info = dict(metadata.get("runtime_info", execution.runtime_info) or {})
     else:
-        image = container_image or None
         recipe, overrides, runtime_info = execution.recipe, execution.overrides, execution.runtime_info
     candidate = {**metadata, "effective_container_image": image} if metadata is not None else None
     if launch is not None:

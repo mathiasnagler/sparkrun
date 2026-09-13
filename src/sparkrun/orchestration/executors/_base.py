@@ -167,6 +167,7 @@ class ExecutorConfig:
     log_dir: str | None = None
     log_file: str | None = None
     pid_dir: str | None = None
+    # Legacy local command recovery only; managed workloads require pid_dir.
     pid_file: str | None = None
     env_file: str | None = None
     command_prefix: str | None = None

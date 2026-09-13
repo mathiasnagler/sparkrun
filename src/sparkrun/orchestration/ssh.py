@@ -453,7 +453,8 @@ def build_ssh_cmd(
 
     Args:
         host: Remote hostname or IP address.
-        ssh_user: Optional SSH username (prepended as user@host).
+        ssh_user: Optional SSH username. Takes precedence over SSH options
+            and configuration, including for saved-job recovery.
         ssh_key: Optional path to SSH private key file.
         ssh_options: Additional SSH command-line options.
         connect_timeout: SSH connection timeout in seconds.
@@ -461,14 +462,22 @@ def build_ssh_cmd(
     Returns:
         List of command parts suitable for subprocess.
     """
-    cmd = ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}"]
-    if ssh_key:
-        cmd.extend(["-i", ssh_key])
-    if ssh_options:
-        cmd.extend(ssh_options)
     target = f"{ssh_user}@{host}" if ssh_user else host
-    cmd.append(target)
-    return cmd
+    return ["ssh", *_ssh_option_args(ssh_user, ssh_key, ssh_options, connect_timeout), target]
+
+
+def _ssh_option_args(ssh_user, ssh_key, ssh_options, connect_timeout):
+    """One precedence rule for direct SSH, transfer pipelines and rsync."""
+    parts = ["-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}"]
+    # OpenSSH uses the first user option. A user@host target alone loses to
+    # -o User=... / -l ... in ssh_options, which can redirect saved jobs.
+    if ssh_user:
+        parts.extend(["-l", ssh_user])
+    if ssh_key:
+        parts.extend(["-i", ssh_key])
+    if ssh_options:
+        parts.extend(ssh_options)
+    return parts
 
 
 def run_remote_script(
@@ -1134,7 +1143,7 @@ def build_ssh_opts_string(
     into shell scripts that construct their own ``ssh`` or ``rsync -e`` calls.
 
     Args:
-        ssh_user: Optional SSH username (not included here — handle in the script).
+        ssh_user: Optional SSH username, authoritative over additional options.
         ssh_key: Optional path to SSH private key file.
         ssh_options: Additional SSH command-line options.
         connect_timeout: SSH connection timeout in seconds.
@@ -1143,12 +1152,7 @@ def build_ssh_opts_string(
         Space-separated options string, e.g.
         ``"-o BatchMode=yes -o ConnectTimeout=10 -i /path/key"``.
     """
-    parts = ["-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}"]
-    if ssh_key:
-        parts.extend(["-i", ssh_key])
-    if ssh_options:
-        parts.extend(ssh_options)
-    return args_list_to_shell_str(parts)
+    return args_list_to_shell_str(_ssh_option_args(ssh_user, ssh_key, ssh_options, connect_timeout))
 
 
 def run_pipeline_to_remote(

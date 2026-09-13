@@ -63,10 +63,10 @@ class TestBuildSshOptsString:
         assert "-v" in result
         assert "ConnectTimeout=5" in result
 
-    def test_user_not_in_string(self):
-        """ssh_user is accepted but not embedded in the options string."""
+    def test_explicit_user_in_string(self):
+        """Transfers keep the same explicit principal as direct SSH."""
         result = build_ssh_opts_string(ssh_user="admin")
-        assert "admin" not in result
+        assert "-l admin" in result
 
 
 # ---------------------------------------------------------------------------

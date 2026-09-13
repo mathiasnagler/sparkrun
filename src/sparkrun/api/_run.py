@@ -320,14 +320,6 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     sctx = sctx.for_cluster(cluster_def)
     config = sctx.config
     hosts = list(plan.candidate_hosts)
-    if plan.executor_target is not None and plan.executor_target.user_scoped:
-        from sparkrun.core._executor_destination import resolve_destination_user
-        from sparkrun.orchestration.primitives import build_ssh_kwargs
-
-        # A changed -o User must not override the pinned principal, including
-        # on native handler and ensure paths that bypass the common launcher.
-        with _launch_errors("planned executor destination"):
-            resolve_destination_user(plan.executor_target, hosts, build_ssh_kwargs(config))
     host_list = list(plan.host_list)
     is_solo = plan.is_solo
     placement = plan.placement

@@ -16,9 +16,15 @@ class ExecutorDestination:
 
     @classmethod
     def from_metadata(cls, metadata, *, target):
+        key = metadata.get("executor_destination_key")
+        if metadata.get("executor") == "local" and (metadata.get("executor_config") or {}).get("pid_file"):
+            # Old fixed-file records borrowed the directory's key despite
+            # being outside its discovery contract. Even a successful sweep
+            # after removing pid_file from the cluster cannot prove absence.
+            key = None
         return cls(
             metadata.get("executor") or "",
-            metadata.get("executor_destination_key"),
+            key,
             bool(metadata.get("executor_user_scoped")) or target.user_scoped,
             metadata.get("ssh_user") or None,
         )

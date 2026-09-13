@@ -474,3 +474,29 @@ zero confirmed free slots.
 Benchmark baseline recording consumes the same normalized deployment evidence as
 resume validation. API-only run results retain their image-equivalence evidence
 without requiring a private launch handle or a redundant image field in metadata.
+
+
+### Effective transport, local paths, and deployment evidence
+
+Explicit SSH users now take precedence over user settings in `ssh.options`, as
+well as SSH config files. This applies to saved-job lifecycle operations and new
+launches, and to direct SSH, embedded transfer scripts, pipelines, and rsync.
+`build_ssh_opts_string(ssh_user=...)` now includes that user instead of ignoring it.
+Implicit users still resolve from OpenSSH configuration or the local OS account;
+rotating authentication keys does not change the selected namespace.
+
+Local execution now uses one remote-path normalization/rendering policy for target
+identity, launch, status, logs, and teardown. Leading remote-home prefixes are
+equivalent; spaces and shell metacharacters are literal. Managed `pid_file` overrides
+are rejected before submission; configure a per-workload `pid_dir` instead. Existing
+fixed-file jobs retain only command-level recovery support, and failed discovery
+cannot authorize automatic metadata deletion. See the [local path and recovery
+contract](EXECUTORS.md#local-only-docker--k8s-ignore) before migrating an old job.
+`log_file` remains an intentional shared append log; `log_dir` keeps logs separate.
+
+Benchmark candidate assembly checks all available actual-image evidence for
+agreement, including metadata when a private launch handle is present. Missing
+sources retain their fallback behavior. Conflicting nonempty references fail before
+new measurement commands; existing artifacts and historical provenance remain
+unchanged. Equivalent digest aliases are accepted. This adds no public result or
+context type and preserves complete-artifact recovery and publication-only retries.

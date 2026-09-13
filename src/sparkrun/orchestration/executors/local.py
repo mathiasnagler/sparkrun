@@ -27,6 +27,7 @@ from sparkrun.core.application_profile import remote_cache_path, get_application
 from sparkrun.core.ownership import OWNER_LABEL, owns_resource, assert_resource_namespace
 
 import logging
+import posixpath
 import re
 import time
 from typing import Mapping, TYPE_CHECKING
@@ -69,8 +70,22 @@ def default_log_dir():
 _GPUS_DEVICE_RE = re.compile(r"device=([0-9,]+)")
 
 
+def _remote_path(path: str) -> str:
+    """Canonical remote spelling shared by destination identity and scripts."""
+    if path in ("~", "${HOME}"):
+        path = "$HOME"
+    for prefix in ("~/", "${HOME}/"):
+        if path.startswith(prefix):
+            path = "$HOME/" + path[len(prefix) :]
+            break
+    if path.startswith("$HOME/"):
+        relative = posixpath.normpath(path[len("$HOME/") :])
+        return "$HOME" if relative == "." else "$HOME/" + relative
+    return posixpath.normpath(path)
+
+
 def _shell_path(path: str) -> str:
-    """Render a config path (``working_dir`` / ``env_file``) for bash, expanding
+    """Render a remote path for bash, expanding
     only a leading ``$HOME`` / ``~/`` prefix and shlex-quoting everything else.
 
     The goal is narrow: let a builder self-determine a ``$HOME``-relative path
@@ -81,6 +96,8 @@ def _shell_path(path: str) -> str:
     / backticks / spaces a literal (no command substitution, no accidental
     variable expansion, no injection), unlike a bare double-quote wrapper.
     """
+    if path in ("~", "$HOME", "${HOME}"):
+        return '"$HOME"'
     for prefix in ("~/", "$HOME/", "${HOME}/"):
         if path.startswith(prefix):
             rest = path[len(prefix) :]
@@ -108,33 +125,40 @@ class LocalExecutor(Executor):
     # Path resolution helpers
     # ------------------------------------------------------------------
 
-    def resolve_target(self, *, dry_run=False) -> ExecutorTarget:
-        # Remote paths stay remote; never expand the controller's home directory.
-        import posixpath
+    def _require_pid_directory(self):
+        if self.config.pid_file:
+            raise ValueError(
+                "LocalExecutor pid_file is unsupported for managed workloads; use pid_dir. "
+                "Legacy command helpers remain available for recovery."
+            )
 
-        pid_dir = posixpath.normpath(self.config.pid_dir or default_pid_dir())
+    def _pid_directory(self) -> str:
+        return _remote_path(self.config.pid_dir or default_pid_dir())
+
+    def _log_directory(self) -> str:
+        return _remote_path(self.config.log_dir or default_log_dir())
+
+    def resolve_target(self, *, dry_run=False) -> ExecutorTarget:
+        self._require_pid_directory()
+        pid_dir = self._pid_directory()
         return ExecutorTarget(
             self.executor_name,
-            {"pid_dir": pid_dir, "log_dir": self.config.log_dir or default_log_dir()},
-            destination_key=pid_dir if pid_dir != posixpath.normpath(default_pid_dir()) else "",
+            {"pid_dir": pid_dir, "log_dir": self._log_directory()},
+            destination_key=pid_dir if pid_dir != _remote_path(default_pid_dir()) else "",
             user_scoped=True,
         )
 
     def _resolve_pid_file(self, container_name: str) -> str:
-        """Return the pidfile path for *container_name* (single workload)."""
-        cfg = self.config
-        if cfg.pid_file:
-            return cfg.pid_file
-        directory = cfg.pid_dir or default_pid_dir()
-        return "%s/%s.pid" % (directory, container_name)
+        """Raw remote path; fixed files are retained only for legacy recovery."""
+        if self.config.pid_file:
+            return _remote_path(self.config.pid_file)
+        return posixpath.join(self._pid_directory(), container_name + ".pid")
 
     def _resolve_log_file(self, container_name: str) -> str:
-        """Return the logfile path for *container_name*."""
-        cfg = self.config
-        if cfg.log_file:
-            return cfg.log_file
-        directory = cfg.log_dir or default_log_dir()
-        return "%s/%s.log" % (directory, container_name)
+        """Raw remote logfile path, before shell rendering."""
+        if self.config.log_file:
+            return _remote_path(self.config.log_file)
+        return posixpath.join(self._log_directory(), container_name + ".log")
 
     # ------------------------------------------------------------------
     # Bash fragment helpers
@@ -225,14 +249,15 @@ class LocalExecutor(Executor):
         the LocalExecutor flows through the pidfile name + job metadata
         cache instead (see :func:`_parse_local_pidfile_output`).
         """
+        self._require_pid_directory()
         del sparkrun_labels  # accepted but unused — no container to tag
         if not container_name:
             raise ValueError("LocalExecutor.run_cmd requires container_name")
         if not command:
             raise ValueError("LocalExecutor.run_cmd requires a non-empty command")
 
-        pid_file = self._resolve_pid_file(container_name)
-        log_file = self._resolve_log_file(container_name)
+        pid_file = _shell_path(self._resolve_pid_file(container_name))
+        log_file = _shell_path(self._resolve_log_file(container_name))
         full_cmd = self._full_command(command)
 
         # NOTE: ``setsid`` makes the child a session leader → its own
@@ -291,7 +316,7 @@ class LocalExecutor(Executor):
     def stop_cmd(self, container_name: str, force: bool = True) -> str:
         """Signal the process group, wait briefly, SIGKILL, then prune pidfile."""
         assert_resource_namespace(container_name)
-        pid_file = self._resolve_pid_file(container_name)
+        pid_file = _shell_path(self._resolve_pid_file(container_name))
         # Send to the negative PID to target the whole process group.
         # ``kill -0`` precheck avoids spurious "no such process" noise.
         # 2>/dev/null on the read guards against missing pidfile.
@@ -337,7 +362,7 @@ class LocalExecutor(Executor):
         tail: int | None = None,
     ) -> str:
         """Tail the logfile that ``run_cmd`` writes to."""
-        log_file = self._resolve_log_file(container_name)
+        log_file = _shell_path(self._resolve_log_file(container_name))
         parts = ["tail"]
         if follow:
             parts.append("-F")  # -F survives logfile rotation/recreation
@@ -348,7 +373,7 @@ class LocalExecutor(Executor):
 
     def status_cmd(self, container_name: str) -> str:
         """Exit 0 iff the workload's PID is still alive."""
-        pid_file = self._resolve_pid_file(container_name)
+        pid_file = _shell_path(self._resolve_pid_file(container_name))
         return ('{ _pid=$(cat %(pid)s 2>/dev/null || true); [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; }') % {"pid": pid_file}
 
     def describe_terminated(
@@ -381,7 +406,7 @@ class LocalExecutor(Executor):
         script = (
             "\n".join(
                 "[ -e %s ] && printf '%%s\\t%%s\\n' %s %s || true"
-                % (quote(self._resolve_log_file(n)), quote(n), quote(self._resolve_log_file(n)))
+                % (_shell_path(self._resolve_log_file(n)), quote(n), _shell_path(self._resolve_log_file(n)))
                 for n in names
             )
             + "\n"
@@ -419,7 +444,7 @@ class LocalExecutor(Executor):
                     found[(host, container)] = TerminationInfo(
                         exists=True,
                         detail="process is gone; its log file remains",
-                        investigate_hints=("cat %s" % log_file,),
+                        investigate_hints=("cat %s" % _shell_path(log_file),),
                     )
                 else:
                     found[(host, container)] = TerminationInfo(exists=False, detail="no log file remains on the host")
@@ -459,6 +484,7 @@ class LocalExecutor(Executor):
         up any stale pidfile so the subsequent launch is well-defined.
         ``sparkrun_labels`` is ignored (no container).
         """
+        self._require_pid_directory()
         del sparkrun_labels  # accepted but unused — no container to tag
         cleanup = self.stop_cmd(container_name)
         return (
@@ -491,6 +517,7 @@ class LocalExecutor(Executor):
         reverse-mapped to their host source (see :func:`_hostify_env`).
         ``sparkrun_labels`` is ignored (no container to tag).
         """
+        self._require_pid_directory()
         del sparkrun_labels  # accepted but unused — no container to tag
         # ``run_cmd`` already writes the launcher.  Detached / foreground
         # is the same shape for native — the setsid + & ensures the
@@ -527,6 +554,7 @@ class LocalExecutor(Executor):
         :func:`_hostify_env`).  ``sparkrun_labels`` is ignored (no
         container to tag).
         """
+        self._require_pid_directory()
         del sparkrun_labels  # accepted but unused — no container to tag
         from sparkrun.utils import merge_env
 
@@ -589,10 +617,11 @@ class LocalExecutor(Executor):
         from sparkrun.core.hardware import resolve_fallback_hardware
         from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
+        self._require_pid_directory()
         if not hosts:
             return ClusterStatus(hosts=(), queried_at=time.time(), executor=self.executor_name)
 
-        pid_dir = self.config.pid_dir or default_pid_dir()
+        pid_dir = _shell_path(self._pid_directory())
         # Print "<name>\t<pid>" for each pidfile whose PID is alive.
         script = (
             "shopt -s nullglob\n"

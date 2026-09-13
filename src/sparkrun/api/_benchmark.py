@@ -1041,7 +1041,7 @@ def _execute_benchmark(
             candidate = capture_launch_context(
                 bench_result,
                 launch=launch_result,
-                metadata=load_job_metadata(cluster_id, cache_dir=cache_dir) if launch_result is None else None,
+                metadata=load_job_metadata(cluster_id, cache_dir=cache_dir),
                 container_image=getattr(run_result, "container_image", None),
                 state=state,
             )
