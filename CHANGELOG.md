@@ -70,6 +70,13 @@ system, gateway registry, and execution-strategy extension points shipped in
 
 ### Fixed
 
+- Preserved managed-import distrust across catalog, run API, CLI, and benchmark
+  loaders, including symlinked paths. Shared source tagging retains selected
+  registry identity. Automatic trust requires the recorded registry URL to match
+  the enabled, trusted entry; older recipes without that provenance need reloading
+  or explicit trust.
+- Public recipe planning and execution wrap known recipe-decoding/resolution
+  failures in `SparkrunError`, retaining their cause and preserving interrupts.
 - Repaired tab-broken shell continuations, including recipe hook commands.
 - Status reports without an explicit context use the application's configured
   cache for pending operations and job metadata. Intent matching respects the

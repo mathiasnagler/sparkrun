@@ -127,7 +127,12 @@ registries; `True` explicitly authorizes hooks and other trust-gated execution.
 Frontends must complete any prompt before calling the API. API execution now
 rejects untrusted hooks before preparation/launch even with a TTY attached, instead
 of reaching legacy interactive prompts. The CLI uses `--trust` for this explicit
-authorization; local/trusted-registry automatic trust remains unchanged.
+authorization.
+
+Preloaded registry recipes must carry the source URL recorded by their loader
+for automatic trust. A missing URL or a mismatch with the currently configured
+registry requires reloading or explicit `trust=True`. Staged catalog imports keep
+their external-source flag when loaded by path through any frontend.
 
 `RunOptions.follow` now defaults to `False`. It controls only legacy foreground
 runtime attachment (`detached=False`); detached API launches return without
@@ -280,9 +285,12 @@ See [the complete headless example](SETUP_STEPS.md#complete-headless-example).
 
 Operational API failures use `SparkrunError` subtypes. Implicit API initialization
 wraps bootstrap failures with their original cause; explicit `initialize()` exposes
-bootstrap errors directly. Pure model/plan validation, including unsupported
-`materialize()` layouts, may raise `ValueError` or `TypeError`. Setup runner
-orchestration errors use `SetupFailed`; per-host action failures are returned
+bootstrap errors directly. Malformed recipe files and known recipe-resolution
+failures in `plan()` / `run()` raise `SparkrunError` with the original cause;
+missing recipe selections use `RecipeNotFound`. Pure model/plan validation,
+including unsupported `materialize()` layouts, may raise `ValueError` or
+`TypeError`. Setup runner orchestration errors use `SetupFailed`; per-host
+action failures are returned
 outcomes. Benchmark result-bearing failures are described above. Interrupts and
 `SystemExit` propagate unchanged.
 

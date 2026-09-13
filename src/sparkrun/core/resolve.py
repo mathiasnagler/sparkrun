@@ -170,6 +170,9 @@ def load_recipe(
         is_recipe_url,
     )
 
+    from sparkrun.core._recipe_source import recipe_registry_entry, tag_recipe_source
+    from sparkrun.utils import parse_scoped_name
+
     recipe_name = expand_recipe_shortcut(recipe_name)
 
     if is_recipe_url(recipe_name):
@@ -180,7 +183,7 @@ def load_recipe(
         # URL-sourced recipes are never auto-trusted (see
         # core.launcher.resolve_recipe_trust): their hooks require --trust
         # or interactive confirmation.
-        recipe.is_url_sourced = True
+        tag_recipe_source(recipe, None, config=config, external=True)
         registry_mgr = config.get_registry_manager()
         registry_mgr.ensure_initialized()
         return recipe, cached_path, registry_mgr
@@ -191,14 +194,9 @@ def load_recipe(
     recipe_path = find_recipe(recipe_name, registry_manager=registry_mgr, local_files=discover_cwd_recipes())
     recipe = Recipe.load(recipe_path, resolve=resolve)
 
-    # Tag recipe with its source registry (None for local/CWD recipes)
-    recipe.source_registry = registry_mgr.registry_for_path(recipe_path)
-    if recipe.source_registry:
-        try:
-            entry = registry_mgr.get_registry(recipe.source_registry)
-            recipe.source_registry_url = entry.url
-        except Exception:
-            pass
+    scope, _ = parse_scoped_name(recipe_name)
+    registry = recipe_registry_entry(recipe_path, registry_mgr, registry_name=scope)
+    tag_recipe_source(recipe, registry, config=config)
     return recipe, recipe_path, registry_mgr
 
 

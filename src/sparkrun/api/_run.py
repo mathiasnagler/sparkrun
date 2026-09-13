@@ -348,7 +348,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     from sparkrun.core.launcher import resolve_recipe_trust
 
     if any(getattr(recipe, name, None) for name in ("pre_exec", "post_exec", "post_commands")):
-        if not resolve_recipe_trust(recipe, options.trust):
+        if not resolve_recipe_trust(recipe, options.trust, sctx=sctx):
             raise SparkrunError("Recipe hooks require explicit authorization: pass RunOptions(trust=True) (CLI: --trust).")
 
     # Recipe-owned execution strategies are selected only from top-level items

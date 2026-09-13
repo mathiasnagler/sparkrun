@@ -27,6 +27,7 @@ from __future__ import annotations
 from sparkrun.core.application_profile import resource_name
 
 import logging
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -74,6 +75,18 @@ def scope_operation(cluster, *, sctx=None, ssh_kwargs=None, dry_run=False, prepa
     return scoped, {**build_ssh_kwargs(scoped.config), **(ssh_kwargs or {})}
 
 
+@contextmanager
+def _recipe_errors():
+    """Translate known file/recipe-data failures without wrapping the whole operation."""
+    from yaml import YAMLError
+    from sparkrun.core.recipe import RecipeError
+
+    try:
+        yield
+    except (RecipeError, OSError, YAMLError, ValueError, TypeError) as exc:
+        raise SparkrunError("Recipe is invalid: %s" % type(exc).__name__) from exc
+
+
 def resolve_recipe(
     recipe_input: "str | Recipe",
     *,
@@ -105,53 +118,40 @@ def resolve_recipe(
     Raises:
         RecipeNotFound: When a string name doesn't resolve to any
             recipe in the configured registries or *local_files*.
+        SparkrunError: Known file-decoding or recipe-resolution failures,
+            with the original exception retained as the cause.
     """
+    from yaml import YAMLError
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.core.recipe import Recipe, find_recipe
+    from sparkrun.core.recipe import Recipe, RecipeError, find_recipe
+    from sparkrun.core.registry import RegistryError
+    from sparkrun.core._recipe_source import recipe_registry_entry, tag_recipe_source
+    from sparkrun.utils import parse_scoped_name
 
-    # Any non-string input is treated as a pre-loaded recipe (Recipe
-    # instance, or a duck-typed object — supports tests that pass
-    # mocks).  Only bare strings flow through registry lookup.
     if not isinstance(recipe_input, str):
         recipe = recipe_input
-    elif isinstance(recipe_input, Recipe):
-        recipe = recipe_input
     else:
-        # Prefer sctx.registry_manager when available — it's cached on
-        # the session, so chained api calls don't re-scan registries.
-        registry_mgr = None
-        if sctx is not None:
-            try:
-                registry_mgr = sctx.registry_manager
-            except Exception:
-                logger.debug("sctx.registry_manager unavailable", exc_info=True)
-        if registry_mgr is None:
-            cfg = config or (sctx.config if sctx is not None else SparkrunConfig())
-            try:
-                registry_mgr = cfg.get_registry_manager()
-            except Exception:
-                logger.debug("Failed to construct RegistryManager for recipe lookup", exc_info=True)
-
+        cfg = config or (sctx.config if sctx is not None else SparkrunConfig())
         try:
+            registry_mgr = sctx.registry_manager if sctx is not None and config is None else cfg.get_registry_manager()
             recipe_path = find_recipe(recipe_input, registry_manager=registry_mgr, local_files=local_files)
-        except Exception as e:
-            raise RecipeNotFound("Recipe %r not found: %s" % (recipe_input, e)) from e
+        except (RecipeError, RegistryError, OSError, YAMLError, ValueError) as exc:
+            raise RecipeNotFound("Recipe %r not found: %s" % (recipe_input, exc)) from exc
         if not recipe_path:
             raise RecipeNotFound("Recipe %r not found in any configured registry" % recipe_input)
-        recipe = Recipe.load(recipe_path, resolve=False)
-        if registry_mgr is not None:
-            try:
-                recipe.source_registry = registry_mgr.registry_for_path(recipe_path)
-                if recipe.source_registry:
-                    entry = registry_mgr.get_registry(recipe.source_registry)
-                    recipe.source_registry_url = entry.url
-            except Exception as exc:
-                raise RecipeNotFound("Recipe source could not be established: %s" % recipe_input) from exc
+        with _recipe_errors():
+            recipe = Recipe.load(recipe_path, resolve=False)
+        try:
+            scope, _ = parse_scoped_name(recipe_input)
+            registry = recipe_registry_entry(recipe_path, registry_mgr, registry_name=scope)
+            tag_recipe_source(recipe, registry, config=cfg)
+        except (RegistryError, OSError, YAMLError, ValueError, TypeError) as exc:
+            raise RecipeNotFound("Recipe source could not be established: %s" % recipe_input) from exc
 
-    # Apply overrides if provided so downstream callers see a fully-
-    # resolved recipe (runtime selection finalized, defaults merged).
+    # Keep preloaded provenance intact; resolve only when overrides are supplied.
     if overrides is not None:
-        recipe.resolve(overrides)
+        with _recipe_errors():
+            recipe.resolve(overrides)
     return recipe
 
 

@@ -375,14 +375,15 @@ class TestTrustMigration:
 
 
 # ---------------------------------------------------------------------------
-# resolve_recipe_trust — name-based registry lookup
+# resolve_recipe_trust — source-bound registry lookup
 # ---------------------------------------------------------------------------
 
 
 class _StubRecipe:
-    def __init__(self, source_registry: str | None, is_url_sourced: bool = False):
+    def __init__(self, source_registry: str | None, is_url_sourced: bool = False, source_registry_url: str | None = None):
         self.source_registry = source_registry
         self.is_url_sourced = is_url_sourced
+        self.source_registry_url = source_registry_url
 
 
 class TestResolveRecipeTrust:
@@ -428,14 +429,14 @@ class TestResolveRecipeTrust:
         from sparkrun.core.launcher import resolve_recipe_trust
 
         mgr._save_registries([RegistryEntry(name="r", url="https://example.com", subpath="recipes", trusted=True)])
-        assert resolve_recipe_trust(_StubRecipe(source_registry="r"), trust_cli=False) is True
+        assert resolve_recipe_trust(_StubRecipe(source_registry="r", source_registry_url="https://example.com"), trust_cli=False) is True
 
     def test_untrusted_registry_recipe_untrusted(self, mgr, monkeypatch):
         self._patch_config(monkeypatch, mgr)
         from sparkrun.core.launcher import resolve_recipe_trust
 
         mgr._save_registries([RegistryEntry(name="r", url="https://example.com", subpath="recipes", trusted=False)])
-        assert resolve_recipe_trust(_StubRecipe(source_registry="r"), trust_cli=False) is False
+        assert resolve_recipe_trust(_StubRecipe(source_registry="r", source_registry_url="https://example.com"), trust_cli=False) is False
 
     def test_unknown_registry_recipe_untrusted(self, mgr, monkeypatch):
         self._patch_config(monkeypatch, mgr)

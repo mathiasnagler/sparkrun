@@ -436,6 +436,9 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
         Tuple of (recipe, recipe_path, registry_mgr).
     """
     from sparkrun.core.recipe import Recipe, find_recipe, discover_cwd_recipes, RecipeError, RecipeAmbiguousError
+    from sparkrun.core.registry import RegistryError
+    from sparkrun.core._recipe_source import recipe_registry_entry, tag_recipe_source
+    from sparkrun.utils import parse_scoped_name
 
     # Expand shortcuts (e.g. @spark-arena/UUID -> full URL)
     recipe_name = _expand_recipe_shortcut(recipe_name)
@@ -470,7 +473,7 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
         # URL-sourced recipes are never auto-trusted (see
         # core.launcher.resolve_recipe_trust): their hooks require
         # --trust or interactive confirmation.
-        recipe.is_url_sourced = True
+        tag_recipe_source(recipe, None, config=config, external=True)
         # Registry manager still needed by callers (e.g. tuning sync)
         registry_mgr = config.get_registry_manager()
         registry_mgr.ensure_initialized()
@@ -492,11 +495,12 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
             type=click.IntRange(1, len(err.matches)),
             default=1,
         )
-        _reg_name, chosen = err.matches[choice - 1]
-        return chosen
+        registry_name, chosen = err.matches[choice - 1]
+        return chosen, registry_name
 
     # Locate the recipe file; optionally retry once after refreshing registries.
     recipe_path = None
+    selected_registry, _ = parse_scoped_name(recipe_name)
     retried = False
     while True:
         try:
@@ -504,7 +508,7 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
             break
         except RecipeAmbiguousError as e:
             if sys.stdin.isatty():
-                recipe_path = _prompt_disambiguation(e)
+                recipe_path, selected_registry = _prompt_disambiguation(e)
                 break
             raise click.ClickException(str(e)) from e
         except RecipeError as e:
@@ -514,8 +518,6 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
             retried = True
             click.echo("Recipe '%s' not found; refreshing registries and retrying..." % recipe_name, err=True)
             # If the user scoped the name (@registry/...), only refresh that registry.
-            from sparkrun.utils import parse_scoped_name
-
             scoped_registry, _ = parse_scoped_name(recipe_name)
             try:
                 registry_mgr.update(scoped_registry) if scoped_registry else registry_mgr.update()
@@ -524,18 +526,12 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
 
     try:
         recipe = Recipe.load(recipe_path, resolve=resolve)
-    except RecipeError as e:
+        registry = recipe_registry_entry(recipe_path, registry_mgr, registry_name=selected_registry)
+        tag_recipe_source(recipe, registry, config=config)
+    except (RecipeError, RegistryError) as e:
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
 
-    # Tag recipe with its source registry (None for local/CWD recipes)
-    recipe.source_registry = registry_mgr.registry_for_path(recipe_path)
-    if recipe.source_registry:
-        try:
-            entry = registry_mgr.get_registry(recipe.source_registry)
-            recipe.source_registry_url = entry.url
-        except Exception:
-            pass
     return recipe, recipe_path, registry_mgr
 
 

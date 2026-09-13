@@ -96,7 +96,9 @@ def resolve_recipe_trust(
       ``source_registry`` *and* not fetched from a URL);
     * the recipe came from a registry that the local ``registries.yaml``
       marks as ``trusted: true`` (per-registry opt-in stored in
-      :class:`sparkrun.core.registry.RegistryEntry`).
+      :class:`sparkrun.core.registry.RegistryEntry`), with a URL matching
+      the source recorded when the recipe was loaded. A missing recorded URL
+      requires reloading the recipe or explicit caller trust.
 
     Recipes fetched from a remote URL (``recipe.is_url_sourced``) are
     **never** auto-trusted, even though they carry no ``source_registry``:
@@ -144,7 +146,13 @@ def resolve_recipe_trust(
         if entry is None:
             mgr = sctx.registry_manager if sctx is not None else SparkrunConfig().get_registry_manager()
             entry = mgr.get_registry(recipe.source_registry, allow_discovery=False)
-        return bool(entry.name == recipe.source_registry and entry.enabled and entry.trusted)
+        return bool(
+            recipe.source_registry_url
+            and entry.name == recipe.source_registry
+            and entry.url == recipe.source_registry_url
+            and entry.enabled
+            and entry.trusted
+        )
     except RegistryError:
         return False
     except Exception:

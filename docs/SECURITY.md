@@ -13,10 +13,19 @@ A recipe is **trusted** when any of the following holds (see
 `core/launcher.py:resolve_recipe_trust`):
 
 1. The user passed `--trust` on the CLI (hidden flag, default off).
-2. The recipe was loaded from a local path (no `source_registry` recorded —
-   files passed on the CLI, `./recipes/`, `~/.config/sparkrun/recipes/`).
-3. The recipe came from a registry whose `trusted` flag is `true` in the
-   user's local `registries.yaml`.
+2. The recipe was loaded from a locally authored path, with no `source_registry`
+   recorded and no external-source flag. This includes `./recipes/` and
+   `~/.config/sparkrun/recipes/`.
+3. The recipe came from an enabled registry whose `trusted` flag is `true` in the
+   user's local `registries.yaml`, and its recorded registry name and URL match
+   that entry.
+
+Controller-managed imports remain externally sourced even when reopened through
+an absolute path or symlink by the catalog, run API, CLI, or benchmark loader.
+Holding a resolved recipe in memory preserves that provenance. Replacing a
+registry with a different URL cannot grant trust to its previously loaded recipes.
+Older preloaded recipes without a recorded registry URL must be reloaded through
+a source-aware loader or explicitly authorized with `--trust` / `trust=True`.
 
 A recipe is **untrusted** otherwise — typically a third-party registry the user
 added via `sparkrun registry add <url>` without the `--trust` flag, or any

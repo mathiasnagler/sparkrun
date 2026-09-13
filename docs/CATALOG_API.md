@@ -170,8 +170,12 @@ benchmark attribution. URL selections are rejected. Import
 and exact resolution are limited to 256 KiB. Imports accept one valid YAML
 mapping, store content under a hash-derived filename, and do not resolve build
 assets. Imported recipes remain URL-sourced/untrusted even when reopened by their
-staged absolute path. Imports requiring mods or builder configuration report an
-auxiliary-file issue because a single document cannot carry those assets.
+staged absolute path or a symlink, including through the regular run API, CLI,
+or benchmark loader. Preloaded recipes preserve their recorded source identity;
+automatic registry trust requires the current entry's name and URL to match.
+Missing or changed URL provenance requires reloading or explicit caller trust.
+Imports requiring mods or builder configuration report an auxiliary-file issue
+because a single document cannot carry those assets.
 
 `CatalogIssue` always has `severity`, `code`, and `message`; `summary`, `fix`, and
 `deprecation` are optional. Treat `severity="error"` as a blocking preview issue,

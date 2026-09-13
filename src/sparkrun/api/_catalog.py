@@ -35,9 +35,12 @@ from sparkrun.api._catalog_models import (
 
 if TYPE_CHECKING:
     from sparkrun.core.context import SparkrunContext
+    from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.registry import RegistryEntry, RegistryManager
 
 from sparkrun.api._context import resolve_sctx
+from sparkrun.api._resolve import _recipe_errors
+from sparkrun.core._recipe_source import catalog_root, is_catalog_import, tag_recipe_source
 from sparkrun.api._errors import RecipeNotFound, SparkrunError
 
 MAX_RECIPE_BYTES = 256 * 1024
@@ -45,7 +48,7 @@ _REFERENCE = re.compile(r"^catalog:([0-9a-f]{32})$")
 
 
 def _root(sctx: SparkrunContext) -> Path:
-    return Path(sctx.config.config_path).parent / "recipe-catalog"
+    return catalog_root(sctx.config)
 
 
 def _atomic(path: Path, value: dict) -> None:
@@ -112,7 +115,7 @@ def _selection(reference: str, sctx: SparkrunContext) -> tuple[Path, RegistryEnt
                 registry = by_name[owner] if owner else None
             path = path.resolve()
             imported = False
-        imported = imported or path.parent == (_root(sctx) / "imports").resolve()
+        imported = imported or is_catalog_import(path, sctx.config)
         if not path.is_file():
             raise RecipeNotFound("Selected recipe no longer exists; choose it again")
         if registry and not registry.enabled:
@@ -231,7 +234,7 @@ def catalog_recipes(
         except RegistryError:
             continue  # an ambiguous/orphaned cache alias is not a local recipe
         row["registry"] = source.name if source else None
-        row["reference"] = _reference(path, source, sctx, imported=path.parent == (_root(sctx) / "imports").resolve())
+        row["reference"] = _reference(path, source, sctx, imported=is_catalog_import(path, sctx.config))
         row.update(_declared_facets(path))
         rows.append(row)
     rows.sort(key=lambda row: (bool(row["registry"]), str(row["name"]), row["source_path"]))
@@ -261,32 +264,27 @@ def resolve_catalog_recipe(
     the recipe before runtime selection and fingerprint derivation.
     """
     sctx = resolve_sctx(sctx)
-    return _resolve_selected_recipe(*_selection(reference, sctx), overrides)
+    return _resolve_selected_recipe(*_selection(reference, sctx), overrides, config=sctx.config)
 
 
 def _resolve_selected_recipe(
-    path: Path, registry: RegistryEntry | None, imported: bool, overrides: dict[str, Any] | None
+    path: Path, registry: RegistryEntry | None, imported: bool, overrides: dict[str, Any] | None, *, config: SparkrunConfig
 ) -> ResolvedCatalogRecipe:
     """Load a selected source once, sharing normalization across preview and resolution."""
-    from sparkrun.core.recipe import Recipe, RecipeError
+    from sparkrun.core.recipe import Recipe
     from sparkrun.core.resolve import apply_recipe_overrides
     from sparkrun.utils import coerce_value
 
-    if path.stat().st_size > MAX_RECIPE_BYTES:
-        raise SparkrunError("Recipe exceeds the size limit")
-    try:
+    with _recipe_errors():
+        if path.stat().st_size > MAX_RECIPE_BYTES:
+            raise SparkrunError("Recipe exceeds the size limit")
         recipe = Recipe.load(path, resolve=False)
-        recipe.source_registry = registry.name if registry else None
-        recipe.source_registry_url = registry.url if registry else None
-        # Imported files have not inherited the trust of a local author.
-        recipe.is_url_sourced = imported
+        tag_recipe_source(recipe, registry, config=config, external=imported)
         values = {str(key): coerce_value(value) if isinstance(value, str) else value for key, value in (overrides or {}).items()}
         image = values.pop("image", None)
         env = ["%s=%s" % (key, values.pop(key)) for key in list(values) if key.startswith("env.")]
         recipe, values = apply_recipe_overrides(env, image=image, recipe=recipe, **values)
         return recipe, values
-    except (RecipeError, ValueError, TypeError) as exc:
-        raise SparkrunError("Recipe is invalid: %s" % type(exc).__name__) from exc
 
 
 def get_recipe_details(
@@ -301,7 +299,7 @@ def get_recipe_details(
 
     sctx = resolve_sctx(sctx)
     path, registry, imported = _selection(reference, sctx)
-    recipe, normalized = _resolve_selected_recipe(path, registry, imported, overrides)
+    recipe, normalized = _resolve_selected_recipe(path, registry, imported, overrides, config=sctx.config)
     runtime = resolve_runtime(recipe, sctx=sctx)
     trusted = resolve_recipe_trust(recipe, False, sctx=sctx, registry_entry=registry)
     issues: list[CatalogIssue] = [
