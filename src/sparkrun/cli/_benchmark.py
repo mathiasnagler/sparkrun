@@ -460,7 +460,7 @@ def _run_benchmark(
     progress emitter, calls the orchestration, and translates typed exceptions
     back into ``click.echo`` + ``sys.exit``.
 
-    Returns the internal ``sparkrun.benchmarking.base.BenchmarkResult`` so
+    Returns the internal ``sparkrun.benchmarking.base.BenchmarkExecution`` so
     CLI callers can inspect the execution outcome.
     """
     from sparkrun.api._benchmark_models import BenchmarkOptions

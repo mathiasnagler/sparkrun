@@ -127,3 +127,18 @@ def test_cluster_path_pins_only_the_served_model(
     #                          ssh_kwargs, revision, ...)
     seen = [(c.args[0], c.args[9]) for c in mock_model.call_args_list]
     assert seen == [(PRIMARY, SHA), (DRAFT, None)]
+
+
+def test_repeated_distribution_preserves_recipe_templates(monkeypatch):
+    from copy import deepcopy
+    from sparkrun.orchestration.distribution import distribute_from_config
+
+    calls = []
+    _patch_local(monkeypatch, calls)
+    recipe = _recipe()
+    original = deepcopy(recipe.distribution_config)
+    distribute_from_config(recipe, "img:first", ["localhost"], "/tmp/cache", _Cfg(), dry_run=False)
+    recipe.model = "other/model"
+    distribute_from_config(recipe, "img:second", ["localhost"], "/tmp/cache", _Cfg(), dry_run=False)
+    assert calls == [(PRIMARY, None), (DRAFT, None), ("other/model", None), (DRAFT, None)]
+    assert recipe.distribution_config == original

@@ -70,11 +70,13 @@ def test_snapshot_failure_carries_completed_measurements(bench_env, monkeypatch)
 def test_snapshots_do_not_resolve_builder_images(bench_env):
     env = bench_env
     env.launch.builder = Mock()
+    env.launch.builder.resolve_long_term_image.return_value = (None, False)
     env.launch.runtime_info["observed_at"] = datetime(2026, 9, 11, tzinfo=timezone.utc)
     seen = []
     register_benchmark_integration(BenchmarkIntegration("review", on_complete=lambda ctx: seen.append(ctx.result)))
     assert benchmark(replace(env.options, integrations={"review": {}}, export_files=False), sctx=env.sctx).success
-    env.launch.builder.resolve_long_term_image.assert_not_called()
+    # One launch-time archival lookup; snapshots/export must not repeat it.
+    env.launch.builder.resolve_long_term_image.assert_called_once()
     assert seen[0].provenance["recipe"]["container"] == env.recipe.container
     assert seen[0].provenance["runtime_info"]["observed_at"] == "2026-09-11T00:00:00+00:00"
 

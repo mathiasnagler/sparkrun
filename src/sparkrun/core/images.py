@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import DistributionContainerEntry, Recipe
@@ -95,8 +95,11 @@ class ImagePlan:
     """
 
     default_image: str
-    """Common fallback or the first host's runtime default; may be empty
-    when per-host declarations supply the images."""
+    """Common fallback used during resolution, or empty when none applies.
+
+    The selected images are in ``images_by_node``; use ``head_image()`` for
+    the first host's actual image, which can differ from this fallback.
+    """
 
     declared: tuple[tuple[str, str], ...] = ()
     """Sorted ``(host, image)`` pairs exactly as declared.  Empty ⇒ no
@@ -119,10 +122,10 @@ class ImagePlan:
         return tuple(seen)
 
     def image_for_node(self, index: int) -> str:
-        """Image for the node at *index*, falling back to the default."""
-        if 0 <= index < len(self.images_by_node):
-            return self.images_by_node[index]
-        return self.default_image
+        """Image for a resolved node; invalid indices are programming errors."""
+        if not 0 <= index < len(self.images_by_node):
+            raise IndexError("image plan has no node at index %s" % index)
+        return self.images_by_node[index]
 
     def head_image(self) -> str:
         """Image the head node runs, for summaries and single-host operations."""
@@ -226,8 +229,10 @@ def derive_container_entries(plan: ImagePlan, host_list: list[str]) -> list["Dis
     """
     from sparkrun.core.recipe import DistributionContainerEntry
 
+    if len(plan.images_by_node) != len(host_list):
+        raise ImagePlanError("image distribution requires one image per host")
     targets: dict[str, list[int]] = {}
-    for index, image in enumerate(plan.images_by_node[: len(host_list)]):
+    for index, image in enumerate(plan.images_by_node):
         targets.setdefault(image, []).append(index)
 
     return [DistributionContainerEntry(name=image, target=indices) for image, indices in targets.items()]
@@ -239,12 +244,20 @@ def resolve_runtime_image_plan(
     hosts: list[str],
     *,
     cluster: ClusterDefinition | None = None,
+    images_by_node: Sequence[str] | None = None,
 ) -> ImagePlan:
     """Resolve explicit images and each selected host's runtime/platform default.
 
     This is a read-only plan: builders and distribution consume its images
     without changing the recipe declarations used for workload identity.
+    Prepared references replace declarations/defaults entirely. Their final
+    plan obeys the same host alignment and runtime constraints.
     """
+    if images_by_node is not None:
+        if isinstance(images_by_node, (str, bytes)):
+            raise ImagePlanError("prepared images must be a sequence of image references")
+        plan = ImagePlan(default_image="", images_by_node=tuple(images_by_node))
+        return validate_runtime_image_plan(plan, runtime, hosts)
     declared_hosts = {entry["host"] for entry in (getattr(recipe, "containers", None) or [])}
     fallbacks = {}
     for host in hosts:
@@ -254,11 +267,23 @@ def resolve_runtime_image_plan(
             fallbacks[host] = runtime.resolve_container(recipe, host_hardware=cluster.hardware_for(host) if cluster is not None else None)
     plan = resolve_image_plan(
         recipe,
-        next(iter(fallbacks.values()), ""),
+        next(iter(fallbacks.values()), "") if len(set(fallbacks.values())) == 1 else "",
         hosts,
         cluster_hosts=list(cluster.hosts) if cluster is not None else None,
         fallback_images=fallbacks,
     )
+    return validate_runtime_image_plan(plan, runtime, hosts)
+
+
+def validate_runtime_image_plan(plan: ImagePlan, runtime: RuntimePlugin, hosts: Sequence[str]) -> ImagePlan:
+    """Normalize the selected references and enforce the final launch contract."""
+    from dataclasses import replace
+
+    if not hosts or len(plan.images_by_node) != len(hosts):
+        raise ImagePlanError("image plan has %d image(s) for %d host(s); expected one per host" % (len(plan.images_by_node), len(hosts)))
+    if any(not isinstance(image, str) or not image.strip() for image in plan.images_by_node):
+        raise ImagePlanError("image references must be non-empty strings")
+    plan = replace(plan, images_by_node=tuple(image.strip() for image in plan.images_by_node))
     if plan.heterogeneous and not runtime.supports_heterogeneous_images:
         raise ImagePlanError(
             "Runtime '%s' requires one image across all hosts; set an explicit `container:` image compatible with every host"

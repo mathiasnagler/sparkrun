@@ -78,13 +78,13 @@ def test_prepare_images_strategy_override_skips_builder_and_drives_distribution(
         HOSTS,
         run_builder=False,
         images_by_node=capsules,
-        strategy_name="snapshot",
     )
 
     assert prepared.builder is None
     assert prepared.images_by_node == capsules
-    assert recipe.distribution_config.containers.enabled is True
-    assert [entry.name for entry in recipe.distribution_config.containers.entries] == list(capsules)
+    assert prepared.container_distribution.enabled is True
+    assert [entry.name for entry in prepared.container_distribution.entries] == list(capsules)
+    assert [entry.name for entry in recipe.distribution_config.containers.entries] != list(capsules)
 
 
 def test_resolve_content_images_preserves_pins_and_pins_builder_tags(monkeypatch):

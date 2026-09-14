@@ -1,7 +1,6 @@
 """Credentials stay ephemeral and checkpoints fail closed across real API flows."""
 
 from dataclasses import replace
-import json
 import logging
 from pathlib import Path
 import sys
@@ -44,10 +43,8 @@ def test_credentials_only_reach_command_execution(request, scheduled, source, mo
     def command(*args, **kwargs):
         values = args[2] if len(args) > 2 else kwargs["args"]
         received.append(dict(values))
-        if scheduled:
-            cmd = original(*args, **kwargs)
-            return [*cmd[:-1], cmd[-1] + "; print(%r)" % secret]
-        return [sys.executable, "-c", "import sys; print(%r, file=sys.stderr); print(%r)" % (secret, json.dumps(env.rows))]
+        cmd = original(*args, **kwargs)
+        return [*cmd[:-1], cmd[-1] + "; import sys; print(%r, file=sys.stderr)" % secret]
 
     env.fw.build_benchmark_command.side_effect = command
     caplog.set_level(logging.INFO)

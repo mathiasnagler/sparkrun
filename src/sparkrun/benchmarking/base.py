@@ -139,7 +139,7 @@ class BenchmarkingPlugin(Plugin):
             result_file: Path where the framework should save results.
 
         Returns:
-            Command argv list suitable for subprocess.
+            Raw command argv suitable for subprocess, without shell quoting.
         """
         ...
 
@@ -246,18 +246,14 @@ class BenchmarkingPlugin(Plugin):
         self,
         base_args: dict[str, Any],
         schedule: list[dict[str, Any]] | None,
-    ) -> list["BenchTask"] | None:
-        """Build a list of scheduled benchmark tasks or return None for legacy single-call path.
+    ) -> list["BenchTask"]:
+        """Build a nonempty, ordered task list, with contiguous zero-based indices.
 
-        If ``schedule`` is provided (non-None), the framework should validate each entry
-        and raise :class:`~sparkrun.core.benchmark_profiles.BenchmarkError` on invalid entries.
-        If ``schedule`` is None, the framework may optionally build a default task list
-        from ``base_args`` (e.g. cartesian product). Returning None opts out of the
-        batched execution path and falls back to the legacy single-call flow.
-
-        Default: framework does not support batched/scheduled execution.
+        Frameworks implement this directly, including those that run one task.
+        Persist each task's overrides in ``schedule_entry`` so the same list
+        can be reconstructed on resume. Invalid schedules raise BenchmarkError.
         """
-        return None
+        raise NotImplementedError("Benchmark frameworks must implement build_task_list")
 
     # --- Scheduler / aggregator hooks (optional, with safe defaults) -----
 
@@ -645,10 +641,6 @@ class BenchmarkExecution:
             pass
 
         return public_benchmark_data(metadata)
-
-
-# Compatibility for existing framework consumers; new code names the execution record.
-BenchmarkResult = BenchmarkExecution
 
 
 def export_results(

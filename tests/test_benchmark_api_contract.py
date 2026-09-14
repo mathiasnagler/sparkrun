@@ -118,7 +118,7 @@ def test_preloaded_recipe_is_used_without_registry_lookup(bench_env, monkeypatch
     result = benchmark(replace(env.options, recipe=env.recipe), sctx=env.sctx)
     assert result.success
     assert env.run.call_args.args[0].recipe is env.recipe
-    assert env.fw.build_benchmark_command.call_args.kwargs["model"] == env.recipe.model
+    assert env.fw.build_benchmark_command.call_args.args[1] == env.recipe.model
     lookup.assert_not_called()
 
 
@@ -171,13 +171,14 @@ def test_public_result_keeps_integration_selected_category(bench_env, monkeypatc
 
 
 @pytest.mark.parametrize("fail_fast", [False, True])
-def test_single_call_nonzero_exit_never_publishes_partial_measurements(bench_env, monkeypatch, fail_fast):
+def test_single_task_nonzero_exit_never_publishes_partial_measurements(bench_env, monkeypatch, fail_fast):
     from sparkrun.core.benchmark_integrations import BenchmarkIntegration, register_benchmark_integration
 
     env = bench_env
     monkeypatch.setattr("sparkrun.core.benchmark_integrations._INTEGRATIONS", {})
     publish = Mock()
     register_benchmark_integration(BenchmarkIntegration("failure-contract", on_complete=publish))
+    env.fw.build_benchmark_command.side_effect = None
     env.fw.build_benchmark_command.return_value = [
         sys.executable,
         "-c",
@@ -187,7 +188,10 @@ def test_single_call_nonzero_exit_never_publishes_partial_measurements(bench_env
         benchmark(
             replace(env.options, exit_on_first_fail=fail_fast, integrations={"failure-contract": {}}, export_files=False), sctx=env.sctx
         )
-    assert failure.value.exit_code == 7
+    assert failure.value.exit_code == 1
+    state_path = next(env.sctx.config.cache_dir.glob("benchmarks/bench_*/state.yaml"))
+    state = BenchmarkRunState.load(state_path.parent.name, str(env.sctx.config.cache_dir), strict=True)
+    assert state.failed_indices == [0] and state.completed_indices == []
     publish.assert_not_called()
     env.fw.parse_results.assert_not_called()
     env.stop.assert_called_once()
@@ -232,3 +236,56 @@ def test_failed_schedule_advances_once_and_retries_on_resume(scheduled_env, monk
     assert calls == ([0, 1] if fail_fast else [0])
     saved = BenchmarkRunState.load(state_path.parent.name, str(env.sctx.config.cache_dir))
     assert sorted(saved.completed_indices) == [0, 1] and saved.failed_indices == []
+
+
+@pytest.mark.parametrize("tasks", [None, [], [BenchTask(1, "gap")], [BenchTask(True, "boolean")], [object()]])
+def test_invalid_framework_task_contract_fails_before_launch(bench_env, tasks):
+    from sparkrun.api import SparkrunError
+
+    env = bench_env
+    env.fw.build_task_list.return_value = tasks
+    with pytest.raises(SparkrunError, match="BenchTask"):
+        benchmark(env.options, sctx=env.sctx)
+    env.run.assert_not_called()
+    env.fw.build_benchmark_command.assert_not_called()
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_cli_and_callback_consume_same_scheduler_notifications(monkeypatch, capsys, interrupted):
+    from sparkrun.api._benchmark import _CallbackProgressEmitter
+    from sparkrun.benchmarking.tool_eval_bench import ToolEvalBenchFramework
+    from sparkrun.cli._benchmark import _CliEmitter
+
+    monkeypatch.setattr("sparkrun.benchmarking.progress_ui._HAS_RICH", False)
+    events = []
+    rows = {"runs": [{"score": 42}]}
+    for emitter in (_CliEmitter(), _CallbackProgressEmitter(events.append)):
+        try:
+            with emitter.schedule_progress(
+                total_tasks=1, benchmark_id="bench_contract", fw=ToolEvalBenchFramework(), title="suite"
+            ) as progress:
+                progress.start_task(0, "suite task")
+                progress.log("measurement log")
+                progress.end_task(0, not interrupted, 1.25)
+                progress.update_results_table(rows)
+                if interrupted:
+                    raise KeyboardInterrupt
+        except KeyboardInterrupt:
+            pass
+    output = capsys.readouterr().out
+    assert "[1/1] running suite task" in output
+    assert "measurement log" in output and "1.2s" in output
+    assert ("FAILED" if interrupted else "ok") in output
+    assert "Benchmark schedule finished" in output
+    assert [event.kind for event in events] == [
+        "schedule_started",
+        "task_start",
+        "schedule_log",
+        "task_end",
+        "results_update",
+        "schedule_finished",
+    ]
+    assert all(event.data["benchmark_id"] == "bench_contract" and event.data["total_tasks"] == 1 for event in events)
+    assert events[3].data["success"] is not interrupted
+    rows["runs"][0]["score"] = -1
+    assert events[4].data["results"]["runs"][0]["score"] == 42

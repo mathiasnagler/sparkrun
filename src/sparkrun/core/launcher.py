@@ -1127,6 +1127,26 @@ def launch_inference(
         config_chain = recipe.build_config_chain(overrides)
         serve_port = int(config_chain.get("port") or 8000)
 
+    from sparkrun.core.hardware import resolve_fallback_hardware
+
+    _head_hw = cluster.hardware_for(host_list[0]) if cluster is not None else resolve_fallback_hardware()
+    # Resolve one executor for preparation and launch. The head host supplies
+    # the hardware-default tier. Freeze local inputs before replacement so
+    # every worker uses the same policy even if a source file changes later.
+    from sparkrun.orchestration.executor import resolve_executor
+
+    executor = resolve_executor(
+        recipe=recipe,
+        cluster=cluster,
+        runtime=runtime,
+        config=config,
+        cli_overrides=executor_config if isinstance(executor_config, dict) else None,
+        rootless=rootless,
+        auto_user=auto_user,
+        host_hardware=_head_hw,
+        v=v,
+    )
+
     # Per-machine images (``containers:``) are gated *before* any side effect —
     # the guards must fire before the builder runs, the image is pulled, or the
     # model is synced.  The plan itself is resolved after the builder phase,
@@ -1138,13 +1158,14 @@ def launch_inference(
     # launch must not die on a missing optional field.
     from sparkrun.core.image_preparation import validate_image_configuration
 
-    validate_image_configuration(
-        recipe,
-        runtime,
-        v=v,
-        run_builder=asset_policy is None or asset_policy.run_builder,
-        transform_check=builder_transforms_image,
-    )
+    if executor.needs_image and (asset_policy is None or asset_policy.images_by_node is None):
+        validate_image_configuration(
+            recipe,
+            runtime,
+            v=v,
+            run_builder=asset_policy is None or asset_policy.run_builder,
+            transform_check=builder_transforms_image,
+        )
 
     # Resolve recipe.mods to pre_exec entries (builder-agnostic).
     # Part of preparation — surfaces resolution failures before any
@@ -1198,14 +1219,15 @@ def launch_inference(
         transfer_mode=effective_transfer_mode,
         ssh_kwargs=ssh_kwargs,
         run_builder=_run_builder,
+        needs_image=executor.needs_image,
         images_by_node=(asset_policy.images_by_node if asset_policy is not None else None),
-        strategy_name=(prepared_execution.strategy if prepared_execution is not None else ""),
         # Already gated above, before the builder could run.
         validate=False,
     )
     builder = prepared_images.builder
     image_plan = prepared_images.image_plan
-    container_image = prepared_images.head_image
+    # Container-less executors ignore the runtime's image argument.
+    container_image = prepared_images.head_image or ""
     if recipe.builder and _run_builder and p:
         p.phase_end()
 
@@ -1241,7 +1263,6 @@ def launch_inference(
     # has something sensible to validate against.
     from sparkrun.platforms import resolve_platform
 
-    _head_hw = None
     for host in host_list:
         if cluster is not None:
             _hw = cluster.hardware_for(host)
@@ -1249,8 +1270,6 @@ def launch_inference(
             from sparkrun.core.hardware import resolve_fallback_hardware
 
             _hw = resolve_fallback_hardware()
-        if _head_hw is None:
-            _head_hw = _hw
         _platform = resolve_platform(_hw)
         if _platform is not None:
             for _warn in _platform.validate_host(_hw):
@@ -1318,30 +1337,7 @@ def launch_inference(
         _model_dist_enabled = getattr(_dist_model, "enabled", True)
         _skip_model = _skip_model_distribution or not _model_dist_enabled or (asset_policy is not None and not asset_policy.prepare_model)
 
-        # Skip container-image distribution for container-less executors (the
-        # `local` executor has no image to distribute — and the image may not
-        # even exist). Resolve the executor name cheaply here (the full
-        # resolve_executor(...) below is byte-identical, just later) and map it
-        # to its class's needs_image. k8s takes its own launch path
-        # (api/_run.py run_k8s) so only `local` reaches here as container-less.
-        # Any resolution error defaults to distributing the image (never break
-        # launch on the skip decision).
-        _skip_container = False
-        try:
-            from sparkrun.orchestration.executor import get_executor, resolve_executor_name
-
-            _exec_name = resolve_executor_name(
-                cli_overrides=executor_config if isinstance(executor_config, dict) else None,
-                recipe=recipe,
-                cluster=cluster,
-                runtime=runtime,
-                config=config,
-                v=v,
-            )
-            _skip_container = not getattr(get_executor(_exec_name, v), "needs_image", True)
-        except Exception:
-            logger.debug("Could not resolve executor for image-skip decision; distributing image", exc_info=True)
-            _skip_container = False
+        _skip_container = not executor.needs_image
         if asset_policy is not None and not asset_policy.distribute_images:
             _skip_container = True
 
@@ -1379,7 +1375,7 @@ def launch_inference(
             groups: dict[str, list[str]] = {}
             # strict=False: the ENTRYPOINT probe is fail-open by contract, so a
             # skew must cost at most an unprobed host — never a raised launch.
-            for _host, _img in zip(host_list, image_plan.images_by_node, strict=False):
+            for _host, _img in zip(host_list, prepared_images.images_by_node, strict=False):
                 groups.setdefault(_img, []).append(_host)
 
             if len(groups) <= 1:
@@ -1416,6 +1412,7 @@ def launch_inference(
             prefs=_model_prefs,
             skip_model=_skip_model,
             skip_container=_skip_container,
+            container_distribution=prepared_images.container_distribution,
             after_container_sync=_probe_image_entrypoint,
             timeline=timeline,
             job_cluster_id=cluster_id,
@@ -1564,23 +1561,6 @@ def launch_inference(
         _rt_display = RUNTIME_DISPLAY.get(runtime.runtime_name, runtime.runtime_name)
         p.phase(5, "Launching %s runtime" % _rt_display)
 
-    # Resolve one executor for preparation and launch. The head host supplies
-    # the hardware-default tier. Freeze local inputs before replacement so
-    # every worker uses the same policy even if a source file changes later.
-    from sparkrun.orchestration.executor import resolve_executor
-
-    executor = resolve_executor(
-        recipe=recipe,
-        cluster=cluster,
-        runtime=runtime,
-        config=config,
-        cli_overrides=executor_config if isinstance(executor_config, dict) else None,
-        rootless=rootless,
-        auto_user=auto_user,
-        host_hardware=_head_hw,
-        v=v,
-    )
-
     # Direct launcher callers need the same recoverable destination as api.plan.
     # Resolve implicit users before submission and retain the chosen principal
     # in both runtime transport and metadata; never mutate the caller's config.
@@ -1610,7 +1590,7 @@ def launch_inference(
                 recipe_ref=recipe_ref,
                 runtime_info=runtime_info,
                 container_image=container_image,
-                container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
+                container_images=(image_plan.images_by_node if image_plan is not None and image_plan.heterogeneous else None),
                 runtime=runtime,
                 backends=backends,
                 recipe_fingerprint=recipe_fingerprint,
@@ -1635,7 +1615,7 @@ def launch_inference(
             cluster_id=cluster_id,
             hosts=tuple(host_list),
             container_image=container_image,
-            images_by_node=tuple(image_plan.images_by_node),
+            images_by_node=prepared_images.images_by_node,
             effective_cache_dir=effective_cache_dir,
             serve_port=serve_port,
             serve_command=serve_command,
@@ -1758,7 +1738,9 @@ def launch_inference(
                 image=container_image,
                 # Only probed when the key needs it — see probe_image_identity.
                 image_identity=(
-                    probe_image_identity(container_image, host_list, ssh_kwargs, dry_run=dry_run) if _rc_settings.key_by_image else None
+                    probe_image_identity(container_image, host_list, ssh_kwargs, dry_run=dry_run)
+                    if _rc_settings.key_by_image and executor.needs_image
+                    else None
                 ),
                 fingerprint=derive_recipe_fingerprint(recipe, overrides),
             )
@@ -1802,7 +1784,7 @@ def launch_inference(
     rc = runtime.run(
         hosts=host_list,
         image=container_image,
-        images_by_node=(image_plan.images_by_node if image_plan.heterogeneous else None),
+        images_by_node=(image_plan.images_by_node if image_plan is not None and image_plan.heterogeneous else None),
         serve_command=serve_command,
         recipe=recipe,
         overrides=overrides,

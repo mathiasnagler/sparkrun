@@ -20,9 +20,10 @@ def test_framework_name():
 def test_default_args():
     fw = ToolEvalBenchFramework()
     defaults = fw.get_default_args()
-    assert defaults["backend"] == "vllm"
+    assert "backend" not in defaults
+    assert defaults["ref"] == "v2.6.0"
+    assert defaults["timeout"] == 120
     assert defaults["parallel"] == 1
-    assert defaults["timeout"] == 60
     assert defaults["max_turns"] == 8
     assert defaults["temperature"] == 0.0
 
@@ -176,7 +177,7 @@ def test_estimate_test_count_short():
 
 def test_estimate_test_count_hardmode():
     fw = ToolEvalBenchFramework()
-    assert fw.estimate_test_count({"hardmode": True}) == 74
+    assert fw.estimate_test_count({"hardmode": True}) == 88
 
 
 def test_estimate_test_count_explicit_scenarios():
@@ -312,3 +313,95 @@ def test_scenario_results_to_csv_missing_optional_fields():
     row = lines[1].split(",")
     ttft_idx = header.index("ttft_ms")
     assert row[ttft_idx] == ""
+
+
+def test_latest_command_uses_native_json_file_and_raw_values(tmp_path):
+    fw = ToolEvalBenchFramework()
+    output = str(tmp_path / "results with spaces.json")
+    label = "owner's trial, $(not a shell)"
+    command = fw.build_benchmark_command(
+        "http://localhost:8000/v1",
+        "org/model",
+        {
+            "label": label,
+            "scenario_pack": ["/packs/one", "/packs/two with spaces"],
+            "depth": [0, 4096],
+            "concurrency": [1, 4],
+            "spec_prompts": ["code", "structured"],
+            "backend_kwargs": {"rate": 1, "text": "a,b"},
+            "json_file": "/wrong/path",
+            "format": "openai",
+            "hardmode_only": True,
+        },
+        result_file=output,
+    )
+    assert command[:5] == ["uvx", "--from", "git+https://github.com/SeraphimSerapis/tool-eval-bench@v2.6.0", "tool-eval-bench", "run"]
+    assert command[command.index("--label") + 1] == label
+    assert command[command.index("--json-file") + 1] == output
+    assert command.count("--json-file") == 1 and "/wrong/path" not in command
+    assert command.count("--scenario-pack") == 2
+    assert command[command.index("--depth") + 1] == "0,4096"
+    assert command[command.index("--concurrency") + 1] == "1,4"
+    assert json.loads(command[command.index("--backend-kwargs") + 1]) == {"rate": 1, "text": "a,b"}
+
+
+def test_interpret_arg_preserves_scalar_commas():
+    fw = ToolEvalBenchFramework()
+    assert fw.interpret_arg("label", "first, second") == "first, second"
+    assert fw.interpret_arg("backend_kwargs", '{"a":1,"b":2}') == '{"a":1,"b":2}'
+    assert fw.interpret_arg("scenario_pack", "one,two") == ["one", "two"]
+    assert fw.interpret_arg("hardmode_only", "true") is True
+
+
+def test_single_suite_task_round_trips_without_mutating_arguments():
+    fw = ToolEvalBenchFramework()
+    base = fw.get_default_args()
+    tasks = fw.build_task_list(base, [{"scenarios": ["TC-01"], "label": "trial"}])
+    restored = fw.build_task_list(base, [task.schedule_entry for task in tasks])
+    assert restored == tasks and tasks[0].run_args["ref"] == "v2.6.0"
+    tasks[0].run_args["scenarios"].append("TC-02")
+    assert "scenarios" not in base
+    assert tasks[0].schedule_entry["scenarios"] == ["TC-01"]
+
+
+def test_native_result_file_preserves_versioned_envelope(tmp_path):
+    import csv
+    import io
+
+    fw = ToolEvalBenchFramework()
+    payload = {
+        "schema_version": "1",
+        "tool_eval_bench_version": "2.6.0",
+        "final_score": 0,
+        "scores": {
+            "completion_rate": 0.5,
+            "excluded_scenarios": ["TC-02"],
+            "scenario_results": [
+                {"scenario_id": "TC-01", "status": "fail", "points": 0, "summary": "wrong tool"},
+                {"scenario_id": "TC-02", "status": "fail", "points": 0, "failure_kind": "timeout"},
+            ],
+        },
+        "trial_statistics": {"trials": 2},
+    }
+    path = tmp_path / "result.json"
+    path.write_text(json.dumps(payload))
+    result = fw.parse_results("diagnostic output is not JSON", "", str(path))
+    assert result["json"] == payload
+    assert list(csv.DictReader(io.StringIO(result["csv"])))[1]["failure_kind"] == "timeout"
+    assert fw.consolidate_per_task_results([payload]) == payload
+
+
+def test_unknown_result_schema_is_not_silently_interpreted():
+    import pytest
+
+    with pytest.raises(ValueError, match="Unsupported.*schema"):
+        ToolEvalBenchFramework().parse_results('{"schema_version":"2"}', "")
+
+
+def test_single_suite_rejects_unsupported_schedules():
+    import pytest
+    from sparkrun.core.benchmark_profiles import BenchmarkError
+
+    for schedule in ([], [{}, {}]):
+        with pytest.raises(BenchmarkError, match="one schedule entry"):
+            ToolEvalBenchFramework().build_task_list({}, schedule)

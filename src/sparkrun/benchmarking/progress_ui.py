@@ -241,7 +241,7 @@ class _PlainUI:
             self._print_header()
             for row in rows:
                 self._print_row(row)
-        print("=== Benchmark complete ===")
+        print("=== Benchmark schedule finished ===")
 
     def start_task(self, idx: int, label: str) -> None:
         print(f"[{idx + 1}/{self._total}] running {label}")

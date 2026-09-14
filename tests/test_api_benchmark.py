@@ -20,7 +20,7 @@ from sparkrun.api._errors import BenchmarkFailed
 
 
 def _fake_internal_result(**overrides):
-    """Build a stand-in for the internal sparkrun.benchmarking.base.BenchmarkResult."""
+    """Build a stand-in for the internal sparkrun.benchmarking.base.BenchmarkExecution."""
     from sparkrun.benchmarking.base import BenchmarkExecution
 
     obj = BenchmarkExecution()
@@ -79,8 +79,8 @@ def test_surface_exports():
     assert issubclass(AmbiguousCategoryError, SparkrunError)
     assert issubclass(FrameworkCategoryMismatch, SparkrunError)
     # ProgressEvent is a frozen dataclass
-    ev = ProgressEvent(kind="test")
-    assert ev.kind == "test"
+    ev = ProgressEvent(kind="info")
+    assert ev.kind == "info"
     assert ev.data == {}
 
 

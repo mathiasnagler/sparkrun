@@ -1,6 +1,6 @@
 """Benchmark scheduling: per-task abstraction and the executor loop.
 
-Frameworks that opt into batched/scheduled execution build a list of
+Frameworks build a nonempty list of
 :class:`BenchTask` instances via
 :meth:`sparkrun.benchmarking.base.BenchmarkingPlugin.build_task_list`. The
 scheduler then dispatches each task as a single benchmark subprocess,
@@ -57,6 +57,18 @@ class ScheduleRunResult:
     failed_count: int
     state: BenchmarkRunState
     consolidated: dict[str, Any]
+
+
+def build_benchmark_tasks(fw, base_args, schedule) -> list[BenchTask]:
+    """Validate the framework's executable task contract before launch or resume."""
+    from sparkrun.core.benchmark_profiles import BenchmarkError
+
+    tasks = fw.build_task_list(base_args, schedule)
+    if not isinstance(tasks, list) or not tasks:
+        raise BenchmarkError("framework %r must return a nonempty list of BenchTask records" % fw.framework_name)
+    if any(not isinstance(task, BenchTask) or type(task.index) is not int or task.index != index for index, task in enumerate(tasks)):
+        raise BenchmarkError("framework %r must return contiguous zero-based BenchTask indices" % fw.framework_name)
+    return tasks
 
 
 def _task_result_path(fw, task, state, cache_dir) -> Path:

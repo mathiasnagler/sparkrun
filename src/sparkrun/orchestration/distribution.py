@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.orchestration.infiniband import IBDetectionResult
     from sparkrun.orchestration.transfer import TransferFailure
-    from sparkrun.core.recipe import Recipe
+    from sparkrun.core.recipe import Recipe, DistributionResourceConfig
     from sparkrun.core.timing import Timeline
 
 logger = logging.getLogger(__name__)
@@ -763,7 +763,8 @@ def distribute_from_config(
     timeline: "Timeline | None" = None,
     job_cluster_id: str = "",
     cluster_name: str = "",
-) -> tuple["ClusterCommEnv | None", dict[str, str], dict[str, str]]:
+    container_distribution: "DistributionResourceConfig | None" = None,
+) -> tuple["ClusterCommEnv | None", dict[str, str], dict[str, str], dict[str, str]]:
     """Distribute resources based on recipe ``distribution_config``.
 
     Resolves templated entry names, expands target node indices, and
@@ -797,6 +798,8 @@ def distribute_from_config(
             locks so ``cluster status`` can name the job a distribution is
             preparing.  The lock's own key stays the image/model/host hash.
         cluster_name: Named cluster the launch targets, recorded likewise.
+        container_distribution: Launch-local image transfer policy from preparation.
+            Resolving transfers never mutates the recipe's distribution templates.
 
     Returns:
         Tuple of (comm_env, ib_ip_map, mgmt_ip_map, ib_iface_map).
@@ -810,7 +813,12 @@ def distribute_from_config(
 
     prefs = prefs or ModelDistributionPrefs()
 
-    dist_cfg = recipe.distribution_config.resolve(recipe, resolved_container=image)
+    from copy import deepcopy
+
+    dist_cfg = deepcopy(recipe.distribution_config)
+    if container_distribution is not None:
+        dist_cfg.containers = deepcopy(container_distribution)
+    dist_cfg.resolve(recipe, resolved_container=image)
 
     # `sparkrun run --rebuild` (or `builder_config.rebuild` in the recipe) asks
     # for the freshest possible image.  For a builder that *builds*, that is a

@@ -392,12 +392,15 @@ example-framework = "example_framework"
 ```
 
 For example, `example_framework/__init__.py` can adapt a command-line measurement
-tool that emits one JSON object:
+tool that writes one JSON result artifact:
 
 ```python
 import json
 import shutil
+from copy import deepcopy
+from pathlib import Path
 from sparkrun.benchmarking.base import BenchmarkingPlugin
+from sparkrun.benchmarking.scheduler import BenchTask
 
 SPARKRUN_PLUGIN_API_VERSION = 1
 
@@ -407,18 +410,29 @@ class ExampleFramework(BenchmarkingPlugin):
     def check_prerequisites(self):
         return [] if shutil.which("example-bench") else ["Install example-bench"]
 
+    def build_task_list(self, base_args, schedule):
+        entries = [{}] if schedule is None else schedule
+        return [BenchTask(i, "measurement", {**deepcopy(base_args), **deepcopy(entry)}, deepcopy(entry))
+                for i, entry in enumerate(entries)]
+
     def build_benchmark_command(self, target_url, model, args, result_file=None):
-        return ["example-bench", "--url", target_url, "--model", model]
+        return ["example-bench", "--url", target_url, "--model", model,
+                "--result-file", result_file]
 
     def parse_results(self, stdout, stderr, result_file=None):
-        return json.loads(stdout)
+        return json.loads(Path(result_file).read_text())
 ```
 
 Select the installed plugin with `integrations: {example-framework: true}`, then
 use `BenchmarkOptions(recipe="...", framework="example-rate")`. The loader scans
 the concrete class; no `register(v)` hook is needed here. `sparkrun.benchmarking`
 is the internal SAF extension point, not a Python package entry-point group.
-This minimal framework has no scheduled-task resume support.
+Every framework implements `build_task_list`, including single-invocation tools.
+Return a nonempty list of `BenchTask` records with contiguous zero-based indices;
+returning `None` no longer selects a separate execution path. Each successful
+command must write a JSON object to `result_file`. Arguments are raw subprocess
+argv, without shell quoting. The scheduler handles deadlines, process cleanup,
+artifact validation, and retries; resume reconstructs tasks from saved entries.
 
 
 ### Application and controller identity
@@ -511,15 +525,17 @@ persisted. Publication-only retries can have `recipe_yaml=None` and empty
 
 `on_bind` precedes inference launch. By `on_checkpoint`, launch/readiness has
 finished (or was skipped). `on_complete` sees successful measurements or a dry-run
-preview. The mutable internal `BenchmarkExecution` remains orchestration-only;
-`benchmarking.base.BenchmarkResult` is its compatibility alias for framework code.
+preview. The mutable internal `BenchmarkExecution` remains orchestration-only.
+Use `api.BenchmarkResult` for API outcomes and `BenchmarkMeasurement` for
+integration observations. The old `benchmarking.base.BenchmarkResult` alias was
+removed in 0.4; frameworks do not receive the private execution record.
 `BenchmarkStateInfo` exposes the benchmark ID, creation/update timestamps, and a
 detached, top-level read-only `extras` mapping for legacy migration. It has no
 `save()` method. New plugins should persist only through `context.data`; internal
 state-file keys outside their data are not a stable plugin API.
 
-State callbacks run while the benchmark state-directory lock is held when a
-scheduled state exists. The host persists each integration's settings and data,
+State callbacks run while the benchmark state-directory lock is held. The host
+persists each integration's settings and data,
 including when a binding/checkpoint/completion callback fails. Rejected settings
 from `validate` are not persisted and do not overwrite the last accepted settings.
 Store only JSON-compatible values, never credentials. Core copies and filters
@@ -533,10 +549,9 @@ Ordinary caller-provided
 `BenchmarkOptions.state_extras` is also copied into newly created state; see
 [caller metadata and reserved keys](BENCHMARK_API.md#caller-metadata).
 
-A scheduled run saves validated results for completion retries; `benchmark resume
-<ID>` can retry publication after inference has stopped. An unscheduled framework
-has no resumable state: its integration callbacks run, but resumable publication
-requires a scheduled framework. Dry runs invoke preview hooks without persisting
+Every framework saves validated task results for completion retries;
+`benchmark resume <ID>` can retry publication after inference has stopped.
+Dry runs invoke preview hooks without persisting
 integration data; each plugin must also honor `context.dry_run` for its own I/O.
 
 To contribute flags, register a `CliOptionSpec` from the Click-free

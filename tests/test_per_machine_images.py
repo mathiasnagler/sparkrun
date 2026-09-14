@@ -522,3 +522,10 @@ def test_model_pull_with_shared_cache_downloads_on_head_only():
         )
     m_node.assert_not_called()
     assert m_head.call_args.kwargs["skip_fan_out"] is True
+
+
+@pytest.mark.parametrize("index", [-1, 2, 100])
+def test_resolved_plan_rejects_invalid_node_index(index):
+    plan = ImagePlan(default_image="fallback", images_by_node=("a", "b"))
+    with pytest.raises(IndexError):
+        plan.image_for_node(index)

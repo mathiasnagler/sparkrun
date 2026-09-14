@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Literal, TypedDict
 
 if TYPE_CHECKING:
     from sparkrun.core.cluster_manager import ClusterDefinition
@@ -57,6 +57,45 @@ class ResumeMode(str, Enum):
 # --------------------------------------------------------------------------
 
 
+ProgressEventKind = Literal[
+    "banner",
+    "info",
+    "warning",
+    "error",
+    "progress_step",
+    "schedule_started",
+    "task_start",
+    "task_end",
+    "results_update",
+    "schedule_log",
+    "schedule_finished",
+    "run_complete",
+]
+
+
+class ProgressEventData(TypedDict, total=False):
+    """Builtin payload fields; required keys depend on the event kind.
+
+    See BENCHMARK_API.md for the per-kind schema. Consumers should ignore
+    additional fields so new observations do not break existing frontends.
+    """
+
+    line: str
+    msg: str
+    step: int
+    total: int
+    label: str
+    benchmark_id: str
+    total_tasks: int
+    title: str
+    index: int
+    success: bool
+    duration_s: float | None
+    results: dict[str, Any]
+    message: str
+    resumed: bool
+
+
 @dataclass(frozen=True)
 class ProgressEvent:
     """Event dispatched to :attr:`BenchmarkOptions.progress_callback` during a run.
@@ -68,10 +107,10 @@ class ProgressEvent:
     ``banner``, ``info``, ``warning``, ``error`` and ``progress_step``.
     """
 
-    kind: str
-    """Discriminator string (e.g. ``"launch_started"``, ``"run_complete"``)."""
-    data: dict[str, Any] = field(default_factory=dict)
-    """Free-form payload; schema varies by ``kind``."""
+    kind: ProgressEventKind
+    """Builtin event discriminator; new kinds may be added in future releases."""
+    data: ProgressEventData = field(default_factory=ProgressEventData)
+    """Per-kind payload documented in BENCHMARK_API.md; tolerate added fields."""
 
 
 @dataclass(frozen=True)
@@ -277,6 +316,8 @@ class BenchmarkResult:
 __all__ = [
     "ResumeMode",
     "ProgressEvent",
+    "ProgressEventKind",
+    "ProgressEventData",
     "BenchmarkDecision",
     "BenchmarkOptions",
     "BenchmarkResult",

@@ -20,7 +20,6 @@ from sparkrun.benchmarking.base import (
 )
 from sparkrun.benchmarking.scheduler import BenchTask
 from sparkrun.core.benchmark_profiles import BenchmarkError
-from sparkrun.utils.shell import quote_list
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +367,7 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
 
             cmd.extend([flag, str(value)])
 
-        return quote_list(cmd)
+        return cmd
 
     def interpret_arg(self, key: str, value: str) -> Any:
         """Interpret a CLI string arg into the correct type.

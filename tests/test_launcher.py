@@ -242,6 +242,7 @@ class _StubRuntime:
     """Minimal RuntimePlugin-ish stub that records ``run()`` kwargs."""
 
     runtime_name = "stub"
+    supports_heterogeneous_images = True
     requires_capability: frozenset = frozenset()
     last_kwargs: dict = {}
 
@@ -310,7 +311,9 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path)
     monkeypatch.setattr(
         "sparkrun.orchestration.executor.resolve_executor",
         lambda **kw: type(
-            "Ex", (), {"prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")}
+            "Ex",
+            (),
+            {"needs_image": True, "prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")},
         )(),
     )
 
@@ -633,7 +636,9 @@ def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tm
     monkeypatch.setattr(
         "sparkrun.orchestration.executor.resolve_executor",
         lambda **kw: type(
-            "Ex", (), {"prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")}
+            "Ex",
+            (),
+            {"needs_image": True, "prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")},
         )(),
     )
 
@@ -962,7 +967,9 @@ def test_launch_inference_metadata_failure_aborts_before_submission(monkeypatch,
     monkeypatch.setattr(
         "sparkrun.orchestration.executor.resolve_executor",
         lambda **kw: type(
-            "Ex", (), {"prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")}
+            "Ex",
+            (),
+            {"needs_image": True, "prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")},
         )(),
     )
     # Tuning sync/distribute are best-effort too; stub them to no-ops.
@@ -1069,7 +1076,9 @@ def test_launch_inference_records_cluster_and_ssh_user(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "sparkrun.orchestration.executor.resolve_executor",
         lambda **kw: type(
-            "Ex", (), {"prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")}
+            "Ex",
+            (),
+            {"needs_image": True, "prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")},
         )(),
     )
     monkeypatch.setattr("sparkrun.tuning.sync.sync_registry_tuning", lambda *a, **kw: 0)

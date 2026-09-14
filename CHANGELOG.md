@@ -43,7 +43,7 @@ system, gateway registry, and execution-strategy extension points shipped in
 - Added typed gateway model queries, a public supervisor import, and optional
   console/token protocols with specific operational errors. Failed enumeration
   raises `ProxyQueryFailed` and makes `proxy models` exit nonzero, while status
-  retains process diagnostics. Legacy providers are adapted. Gateway selection
+  retains process diagnostics. Maintained providers implement these contracts directly. Gateway selection
   without an explicit context initializes plugins and honors the saved pin.
 
 ### Added
@@ -58,6 +58,14 @@ system, gateway registry, and execution-strategy extension points shipped in
 - Added `setup plugins list` and JSON output for plugin/feature inventory.
 
 ### Changed
+
+- Upgraded tool-eval-bench to v2.6.0, with native JSON-file results, current
+  scenario/argument handling, and one resumable task per suite. All benchmark
+  frameworks now use scheduled execution; removed the single-call fallback and
+  internal `BenchmarkResult` alias. Published typed progress event fields.
+- Prepared images supersede unused defaults and obey final runtime constraints.
+  Local executors no longer require image defaults; generated image transfers
+  stay local to each preparation instead of mutating reusable recipes.
 
 - Made proxy CLI help and documentation gateway-neutral. Load/unload use the
   shared run/stop APIs, preserve cluster targeting, and update recipe bindings;

@@ -277,7 +277,7 @@ def test_plain_backend_exit_dumps_final_snapshot(capsys):
 
     out = capsys.readouterr().out
     # The "===" final marker must appear and both rows must be present in the output.
-    assert "Benchmark complete" in out
+    assert "Benchmark schedule finished" in out
     assert "a" in out and "b" in out
 
 

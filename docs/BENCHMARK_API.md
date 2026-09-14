@@ -50,7 +50,18 @@ tools. Resumes keep their saved execution policy and reacquire credentials.
 The API does not instantiate a terminal progress UI. `progress_callback` receives
 `ProgressEvent` objects synchronously on the invoking thread. GUI callers can
 forward them onto their own event loop; callbacks should return promptly.
-The CLI supplies its own terminal adapter.
+The CLI supplies a terminal renderer of the same `BenchmarkProgress` task
+notifications. `ProgressEventKind` enumerates built-in kinds and
+`ProgressEventData` describes their fields for Python clients. Required fields
+for each kind are listed below; consumers should tolerate additional fields and
+ignore unknown future kinds. `duration_s` may be `None`. `results_update` carries
+a detached result tree, so retaining or modifying it cannot change execution.
+
+Once schedule entry succeeds, `schedule_finished` signals exit, including failure.
+It is not a success notification; `run_complete` is emitted only on successful
+API return. A completed-result reuse can emit `run_complete` without task events.
+Callback failures propagate after owned cleanup, and cancellation remains an
+interrupt rather than becoming a successful result.
 
 | Event | Payload |
 | --- | --- |
@@ -65,7 +76,7 @@ The CLI supplies its own terminal adapter.
 | `progress_step` | `step`, `total`, `label` |
 
 Scheduled task notifications use the same vocabulary for initial runs and
-resumes. An unscheduled framework emits informational output without task events.
+resumes, including single-task frameworks such as tool-eval-bench.
 Logging continues to use Python logging; the embedding application controls its
 handlers. Returning from a progress callback does not make a decision.
 
@@ -194,15 +205,13 @@ the completion of the combined measurement. Legacy states lacking the interval
 pin their first observed pre-retry state timestamp as a best available fallback;
 that cannot reconstruct lost historical timing. Arena uses the same interval.
 
-Completed scheduled measurements can retry saved integrations without inference
+Completed measurements can retry saved integrations without inference
 running. Both `benchmark(..., resume=IF_EXISTS)` and `resume_benchmark(id)` reuse
 validated results without launch, readiness, stop, framework prerequisites, or
 inference credentials. The initial entry point resolves its inputs to find the
 measurement ID; resume-by-ID does not reload the recipe. Incomplete resumes by
 ID require a verified saved recipe specification and running inference.
-Unschedulable/single-call frameworks do
-not persist resumable task state, though their publication errors still carry
-completed measurements. An already-complete ID with no available integrations
+All frameworks persist resumable task state. An already-complete ID with no available integrations
 returns its validated saved result with `already_complete=True`. It does not
 rewrite saved state, reload the recipe, regenerate exports, or contact inference.
 The CLI renders the no-op message; API callers receive a normal successful result.
@@ -300,12 +309,13 @@ Session warmup is independent of inference ownership. The first successful task
 of a resumed measurement session still gets warmup; `BenchmarkOptions.skip_run`
 controls inference launch, not scheduler warmup.
 
-For single-call frameworks, any nonzero exit raises `BenchmarkFailed`, regardless
-of `exit_on_first_fail`, even if the command emitted valid partial measurements.
-Those outputs never trigger successful-completion/publication hooks. Inference
+A nonzero task exit cannot contribute measurements, even if it wrote valid
+partial output. `exit_on_first_fail=False` attempts remaining tasks; any failed
+tasks keep the schedule incomplete and raise `BenchmarkFailed`. Incomplete
+measurements never trigger successful-completion/publication hooks. Inference
 cleanup still runs on the failure path.
 
-Scheduled and single-call frameworks share one process runner. Each task's timeout
+All frameworks share one process runner. Each task's timeout
 covers process execution and output draining, with stdout/stderr drained together.
 On timeout, interruption, or output-callback failure, the runner terminates its
 owned POSIX process group and bounds its wait for the immediate child. Worker
@@ -429,3 +439,46 @@ digest supplied by their public result remains evidence even when job metadata
 omits the image. Fresh launches with a private handle record its actual serving
 recipe and overrides as the baseline. Pending-task recovery still requires matching
 job provenance; completed-artifact processing and publication-only retries do not.
+
+## tool-eval-bench 2.6.0
+
+The built-in `tool-eval-bench` framework defaults to upstream **v2.6.0**, using
+`tool-eval-bench run --json-file` inside its isolated `uvx` environment. The
+requested ref is part of saved benchmark arguments, so a changed default does
+not silently reuse measurements from another version. `-b ref=...` can select a
+compatible ref; older releases without native JSON-file support are not adapted.
+
+Each invocation is one scheduled task covering the selected suite. A schedule
+may contain one override entry; use upstream `trials` for repeated trials inside
+that suite. Failed tasks retry the suite, while completed tasks and publication
+retries reuse their artifacts. Framework authors can provide multiple tasks when
+their tool has a meaningful task/result consolidation contract.
+
+The default request timeout follows v2.6.0 at 120 seconds. This is separate from
+Sparkrun's whole-task timeout. Backend labeling is left to upstream detection;
+set `-b backend=sglang` or another label when needed. The release's endpoint-aware
+request handling and rate-limit retries apply without another Sparkrun adapter.
+
+Examples of upstream options passed through `-b`:
+
+- `hardmode=true`: 88 public scenarios; `hardmode_only=true`: 19 hard scenarios.
+  The normal suite remains 69; `short=true` selects 15, or 34 with hard mode.
+- `label="baseline, tuned"`: preserve one annotation, including commas/spaces.
+- `scenario_pack=/path/one,/path/two` and `pack_only=true`: repeat upstream's
+  scenario-pack option for each directory. Packs/custom categories have no fixed
+  built-in test-count estimate.
+- `format=openai` (or `auto`/`gemini`), `reference_date=2026-09-13`,
+  `fail_on_safety=true`, and `weight_by_difficulty=true` use the current options.
+- `depth=0,4096` and `concurrency=1,4` retain upstream's comma-separated scalar
+  syntax; `scenarios=TC-01,TC-02` becomes separate scenario arguments.
+
+Use `BenchmarkOptions.api_key_env` for credentials. Raw argv preserves spaces
+and quoting characters; `json_file`, model, and endpoint remain host-owned.
+JSON export preserves the complete version-1 envelope, including upstream version,
+completion/exclusion information and trial statistics. Scenario CSV includes
+`failure_kind` and `turn_budget_exceeded`; do not interpret infrastructure failures
+as model-quality scores. Unsupported future output schemas fail explicitly.
+
+Alignment was checked against upstream tag v2.6.0, commit
+[`992a6978ecbee2d72fa2ead9ccc509436769d088`](https://github.com/SeraphimSerapis/tool-eval-bench/tree/992a6978ecbee2d72fa2ead9ccc509436769d088),
+including its actual parser and JSON-file output against a local HTTP fixture.

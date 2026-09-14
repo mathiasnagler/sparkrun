@@ -399,7 +399,7 @@ class TestUploadFile:
 # ---------------------------------------------------------------------------
 
 
-class TestUploadBenchmarkResults:
+class TestUploadBenchmarkExecutions:
     def test_orchestration(self, tmp_path):
         csv_file = tmp_path / "benchmark.csv"
         csv_file.write_text("col1,col2\n1,2\n")
@@ -548,19 +548,19 @@ class TestArenaCLI:
 # ---------------------------------------------------------------------------
 
 
-class TestBenchmarkResult:
+class TestBenchmarkExecution:
     def test_defaults(self):
-        from sparkrun.benchmarking.base import BenchmarkResult
+        from sparkrun.benchmarking.base import BenchmarkExecution
 
-        r = BenchmarkResult()
+        r = BenchmarkExecution()
         assert r.success is False
         assert r.results is None
         assert r.outputs is None
 
     def test_populated(self):
-        from sparkrun.benchmarking.base import BenchmarkResult
+        from sparkrun.benchmarking.base import BenchmarkExecution
 
-        r = BenchmarkResult(
+        r = BenchmarkExecution(
             success=True,
             recipe_name="test-recipe",
         )

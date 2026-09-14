@@ -3,7 +3,7 @@
 Covers:
 - resolve_image_sha helper unit tests
 - BenchmarkRunState extras round-trip for SHA and longterm_ref
-- BenchmarkResult.generate_metadata prefers persisted longterm_image_ref over
+- BenchmarkExecution.generate_metadata prefers persisted longterm_image_ref over
   live builder resolution
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from sparkrun.benchmarking.base import BenchmarkResult
+from sparkrun.benchmarking.base import BenchmarkExecution
 from sparkrun.benchmarking.run_state import BenchmarkRunState
 from sparkrun.orchestration.primitives import resolve_image_sha
 from sparkrun.orchestration.ssh import RemoteResult
@@ -158,7 +158,7 @@ def test_longterm_ref_persists_in_state_extras(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# BenchmarkResult.generate_metadata — longterm_image_ref preference
+# BenchmarkExecution.generate_metadata — longterm_image_ref preference
 # ---------------------------------------------------------------------------
 
 
@@ -171,8 +171,8 @@ def _make_minimal_recipe(container: str = "myimage:latest") -> MagicMock:
     return recipe
 
 
-def _make_bench_result_with_launch(recipe: MagicMock, builder_return: tuple) -> BenchmarkResult:
-    """BenchmarkResult with a launch_result whose builder returns builder_return."""
+def _make_bench_result_with_launch(recipe: MagicMock, builder_return: tuple) -> BenchmarkExecution:
+    """BenchmarkExecution with a launch_result whose builder returns builder_return."""
     builder = MagicMock()
     builder.resolve_long_term_image.return_value = builder_return
 
@@ -185,7 +185,7 @@ def _make_bench_result_with_launch(recipe: MagicMock, builder_return: tuple) -> 
     launch_result.runtime_info = {}
     launch_result.builder = builder
 
-    br = BenchmarkResult()
+    br = BenchmarkExecution()
     br.launch_result = launch_result
     from datetime import datetime, timezone
 

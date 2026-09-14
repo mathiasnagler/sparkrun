@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 
-from sparkrun.benchmarking.base import BenchmarkResult, export_results, startup_timing_metadata
+from sparkrun.benchmarking.base import BenchmarkExecution, export_results, startup_timing_metadata
 from sparkrun.core.launcher import ServeReadiness
 from sparkrun.core.timing import Timeline
 
@@ -28,8 +28,8 @@ def _recipe() -> MagicMock:
     return recipe
 
 
-def _result(*, timeline=None, readiness=None, resumed=False) -> BenchmarkResult:
-    br = BenchmarkResult()
+def _result(*, timeline=None, readiness=None, resumed=False) -> BenchmarkExecution:
+    br = BenchmarkExecution()
     now = datetime.now(timezone.utc)
     br.start_time = now
     br.end_time = now

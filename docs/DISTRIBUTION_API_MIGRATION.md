@@ -318,10 +318,10 @@ from the shared graph, independent of insertion order.
 
 ## Measurement failure and setup targeting
 
-A nonzero single-call benchmark exit now raises `BenchmarkFailed` under either
-`exit_on_first_fail` setting, even when partial output parses. Successful-completion
-and publication hooks do not run. For schedules, false means attempt remaining
-tasks once per invocation; failed tasks stay resumable and retry on the next run.
+A nonzero task exit cannot contribute measurements, even when partial output
+parses. `exit_on_first_fail=False` attempts remaining tasks once per invocation;
+failed tasks stay resumable and retry on the next run. An incomplete schedule
+raises `BenchmarkFailed` without successful-completion or publication hooks.
 Timeouts follow the same rule. The bounded measurement-gap pass remains available.
 Scheduled retries clear their previous task artifact before command construction.
 Only usable JSON from successful attempts is aggregated, in schedule order;
@@ -704,3 +704,31 @@ See the [CLI retirement and stored-data migration plan](LEGACY_MIGRATION_PLAN.md
 for the 0.4.x/0.5.x support windows and required conversion/recovery work. Legacy
 ownership, benchmark results, Arena submission IDs, and recipe parsing remain
 readable until their migration paths are implemented and verified.
+
+### Internal benchmark result name
+
+The compatibility alias `sparkrun.benchmarking.base.BenchmarkResult` was removed.
+Internal orchestration tests use `BenchmarkExecution`; application callers use
+`sparkrun.api.BenchmarkResult`, and integrations consume `BenchmarkMeasurement`.
+The private execution record is not an integration or framework API.
+
+### Benchmark task and image preparation contracts
+
+Frameworks now implement `build_task_list` directly and return a nonempty list
+of contiguous, zero-based `BenchTask` records. The single-call `None` fallback
+has been removed. Commands return raw argv and write a JSON object to the supplied
+`result_file`; do not shell-quote individual arguments. See the framework example
+in [PLUGINS.md](PLUGINS.md) and [benchmark API details](BENCHMARK_API.md).
+
+`tool-eval-bench` defaults to v2.6.0 and uses its native JSON-file command. Its
+removed `experimental_async`, `llm_judge`, `perf_legacy`, and `perf_legacy_only`
+options have no translation aliases. Backend detection and the 120-second request
+timeout now follow upstream; explicit supported arguments still take precedence.
+
+Image preparation selects prepared overrides before unused defaults, and applies
+the same alignment/string/runtime validation to both. Image-less executors have
+no `PreparedImageSet.image_plan`; the image accessors return `None`/an empty tuple.
+Pass its `container_distribution` to `distribute_from_config` when staging images
+outside `stage_prepared_images`; generated transfer entries no longer mutate the
+recipe. The unused `prepare_images(strategy_name=...)` diagnostic input is removed.
+`ImagePlan.image_for_node` now raises `IndexError` for invalid resolved-node indices.

@@ -244,7 +244,9 @@ def _make_launch_monkeypatches(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "sparkrun.orchestration.executor.resolve_executor",
         lambda **kw: type(
-            "Ex", (), {"prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")}
+            "Ex",
+            (),
+            {"needs_image": True, "prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")},
         )(),
     )
 

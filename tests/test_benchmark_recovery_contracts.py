@@ -247,7 +247,7 @@ def test_early_benchmark_failure_honors_launch_ownership(bench_env, monkeypatch,
     elif failure == "progress":
 
         def progress(event):
-            if event.kind == "info" and event.data.get("msg") == "--- benchmark output ---":
+            if event.kind == "schedule_started":
                 raise RuntimeError("early failure")
 
         options = replace(options, progress_callback=progress)

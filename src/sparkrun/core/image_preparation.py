@@ -16,7 +16,14 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
-from sparkrun.core.images import ImagePlan, ImagePlanError, derive_container_entries, resolve_image_plan, resolve_runtime_image_plan
+from sparkrun.core.images import (
+    ImagePlan,
+    ImagePlanError,
+    derive_container_entries,
+    resolve_image_plan,
+    resolve_runtime_image_plan,
+    validate_runtime_image_plan,
+)
 
 if TYPE_CHECKING:
     from scitrera_app_framework import Variables
@@ -24,7 +31,7 @@ if TYPE_CHECKING:
     from sparkrun.builders.base import BuilderPlugin
     from sparkrun.core.cluster_manager import ClusterDefinition, ModelDistributionPrefs
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.core.recipe import Recipe
+    from sparkrun.core.recipe import Recipe, DistributionResourceConfig
     from sparkrun.core.timing import Timeline
     from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.runtimes.base import RuntimePlugin
@@ -43,21 +50,26 @@ class ImagePreparationError(RuntimeError):
 class PreparedImageSet:
     """Builder output and per-node launch image plan."""
 
-    source_image: str
-    image_plan: ImagePlan
+    source_image: str | None
+    image_plan: ImagePlan | None
     builder: BuilderPlugin | None = None
+    container_distribution: DistributionResourceConfig | None = None
+    """Launch-local transfer policy; never installed on the reusable recipe.
+
+    No image plan means the executor does not use container assets.
+    """
 
     @property
-    def default_image(self) -> str:
-        return self.image_plan.default_image
+    def default_image(self) -> str | None:
+        return self.image_plan.default_image if self.image_plan is not None else None
 
     @property
     def images_by_node(self) -> tuple[str, ...]:
-        return self.image_plan.images_by_node
+        return self.image_plan.images_by_node if self.image_plan is not None else ()
 
     @property
-    def head_image(self) -> str:
-        return self.image_plan.head_image()
+    def head_image(self) -> str | None:
+        return self.image_plan.head_image() if self.image_plan is not None else None
 
 
 @dataclass(frozen=True)
@@ -128,8 +140,8 @@ def prepare_images(
     transfer_mode: str = "local",
     ssh_kwargs: dict | None = None,
     run_builder: bool = True,
+    needs_image: bool = True,
     images_by_node: Sequence[str] | None = None,
-    strategy_name: str = "",
     validate: bool = True,
     transform_check: Callable[[Recipe, Variables | None], bool] = builder_transforms_image,
     builder_context: Mapping[str, Any] | None = None,
@@ -137,7 +149,7 @@ def prepare_images(
     """Run the optional builder and resolve the authoritative per-node plan."""
     if not host_list:
         raise ImagePreparationError("image preparation requires at least one target host")
-    if validate:
+    if validate and needs_image and images_by_node is None:
         validate_image_configuration(
             recipe,
             runtime,
@@ -146,27 +158,33 @@ def prepare_images(
             transform_check=transform_check,
         )
 
-    from sparkrun.core.recipe import RecipeError
+    from copy import deepcopy
+    from sparkrun.core.recipe import RecipeError, DistributionResourceConfig
 
     try:
-        image_plan = resolve_runtime_image_plan(recipe, runtime, host_list, cluster=cluster)
+        image_plan = (
+            resolve_runtime_image_plan(recipe, runtime, host_list, cluster=cluster, images_by_node=images_by_node) if needs_image else None
+        )
     except ImagePlanError as error:
         raise RecipeError(str(error)) from error
-    source = image_plan.head_image()
-    default_image = source
+    if not needs_image and images_by_node is not None:
+        raise RecipeError("prepared container images require an executor that uses images")
+    source = image_plan.head_image() if image_plan is not None else None
     builder: BuilderPlugin | None = None
     if getattr(recipe, "builder", "") and run_builder:
         from sparkrun.core.bootstrap import get_builder
 
-        # A recipe-selected builder is part of the launch contract. Unknown
-        # and unavailable builders are fatal; silently skipping would launch
-        # an image/environment the recipe did not describe.
         builder = get_builder(recipe.builder, v)
         if builder is not None:
-            if image_plan.heterogeneous and builder.transforms_image:
+            transforms = bool(getattr(builder, "transforms_image", True))
+            if transforms and image_plan is None:
+                raise RecipeError("An image-transforming builder requires an executor that uses images")
+            if transforms and images_by_node is not None:
+                raise RecipeError("Prepared images cannot be combined with an image-transforming builder; disable the builder")
+            if transforms and image_plan is not None and image_plan.heterogeneous:
                 raise RecipeError("A builder requires one source image; set `container:` or build per-host images separately")
-            default_image = builder.prepare(
-                default_image,
+            built_image = builder.prepare(
+                source or "",
                 recipe,
                 host_list,
                 config=config,
@@ -175,39 +193,26 @@ def prepare_images(
                 ssh_kwargs=ssh_kwargs,
                 builder_context=builder_context,
             )
+            if image_plan is not None and built_image != source:
+                try:
+                    image_plan = validate_runtime_image_plan(
+                        resolve_image_plan(recipe, built_image, host_list, cluster_hosts=list(cluster.hosts) if cluster else None),
+                        runtime,
+                        host_list,
+                    )
+                except ImagePlanError as error:
+                    raise RecipeError(str(error)) from error
 
-    if default_image != source:
-        try:
-            image_plan = resolve_image_plan(
-                recipe, default_image, host_list, cluster_hosts=list(cluster.hosts) if cluster is not None else None
-            )
-        except ImagePlanError as error:
-            raise RecipeError(str(error)) from error
-
-    if images_by_node is not None:
-        resolved = tuple(str(image).strip() for image in images_by_node)
-        if len(resolved) != len(host_list):
-            owner = "execution strategy %r" % strategy_name if strategy_name else "image preparation override"
-            raise RecipeError("%s prepared %d image(s) for %d host(s)" % (owner, len(resolved), len(host_list)))
-        if not all(resolved):
-            raise RecipeError("prepared image references must be non-empty")
-        image_plan = ImagePlan(default_image=resolved[0], images_by_node=resolved)
-
+    container_distribution = None
     containers = getattr(getattr(recipe, "distribution_config", None), "containers", None)
-    if containers is not None:
+    if image_plan is not None and (images_by_node is not None or (containers is not None and not containers.explicit)):
+        container_distribution = deepcopy(containers) if containers is not None else DistributionResourceConfig()
         if images_by_node is not None:
-            containers.enabled = True
-            containers.entries = derive_container_entries(image_plan, host_list)
-        elif image_plan.heterogeneous and not containers.explicit:
-            containers.entries = derive_container_entries(image_plan, host_list)
-
-    if image_plan.heterogeneous:
-        logger.info(
-            "Per-machine container images: %d distinct image(s) across %d host(s)",
-            len(image_plan.distinct),
-            len(host_list),
-        )
-    return PreparedImageSet(source_image=source, image_plan=image_plan, builder=builder)
+            container_distribution.enabled = True
+        container_distribution.entries = [*derive_container_entries(image_plan, host_list)]
+    if image_plan is not None and image_plan.heterogeneous:
+        logger.info("Per-machine container images: %d distinct image(s) across %d host(s)", len(image_plan.distinct), len(host_list))
+    return PreparedImageSet(source_image=source, image_plan=image_plan, builder=builder, container_distribution=container_distribution)
 
 
 def stage_prepared_images(
@@ -235,7 +240,7 @@ def stage_prepared_images(
 
     comm_env, ib_ip_map, mgmt_ip_map, ib_iface_map = distribute_from_config(
         recipe,
-        prepared.head_image,
+        prepared.head_image or "",
         host_list,
         cache_dir,
         config,
@@ -248,10 +253,11 @@ def stage_prepared_images(
         topology=topology,
         prefs=prefs,
         skip_model=not stage_models,
-        skip_container=False,
+        skip_container=prepared.image_plan is None,
+        container_distribution=prepared.container_distribution,
         timeline=timeline,
     )
-    if require_content_ids:
+    if require_content_ids and prepared.image_plan is not None:
         content_images = resolve_content_images(
             prepared.images_by_node,
             host_list,

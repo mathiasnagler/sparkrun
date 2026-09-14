@@ -40,6 +40,8 @@ from sparkrun.api._benchmark_models import (
     BenchmarkOptions,
     BenchmarkResult,
     ProgressEvent,
+    ProgressEventKind,
+    ProgressEventData,
     BenchmarkDecision,
     ResumeMode,
 )
@@ -183,6 +185,8 @@ __all__ = [
     "BenchmarkOptions",
     "BenchmarkResult",
     "ProgressEvent",
+    "ProgressEventKind",
+    "ProgressEventData",
     "BenchmarkDecision",
     "ResumeMode",
     # Errors

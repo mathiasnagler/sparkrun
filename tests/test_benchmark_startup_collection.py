@@ -16,6 +16,7 @@ from sparkrun.api import BenchmarkOptions, ResumeMode, benchmark
 from sparkrun.api._context import default_sctx
 from sparkrun.api._errors import BenchmarkFailed
 from sparkrun.benchmarking.base import BenchmarkingPlugin
+from sparkrun.benchmarking.scheduler import BenchTask
 from sparkrun.core.bootstrap import get_runtime
 from sparkrun.core.launcher import LaunchResult, ServeReadiness
 from sparkrun.core.recipe import Recipe
@@ -25,6 +26,10 @@ from sparkrun.orchestration.executors.docker import DockerExecutor
 
 # Share the local SSE fixture with the probe's contract tests.
 from test_startup_observation import streaming_server as streaming_server
+
+
+def _artifact_command(result_file, rows):
+    return [sys.executable, "-c", "from pathlib import Path; Path(%r).write_text(%r)" % (result_file, json.dumps(rows))]
 
 
 @pytest.fixture
@@ -65,9 +70,15 @@ def bench_env(tmp_path, monkeypatch):
     fw.get_default_args.return_value = {}
     fw.check_prerequisites.return_value = []
     fw.prepare_benchmark_args.return_value = {}
-    fw.build_task_list.return_value = None
+    fw.build_task_list.return_value = [BenchTask(0, "measurement")]
+    fw.detect_version.return_value = None
+    fw.result_filename_suffix.return_value = ""
+    fw.apply_session_warmup_state.side_effect = lambda args, **kw: dict(args)
+    fw.consolidate_per_task_results.side_effect = lambda rows: rows[0] if rows else {}
+    fw.consolidated_coverage_keys.return_value = None
+    monkeypatch.setattr("sparkrun.orchestration.primitives.resolve_image_sha", lambda *a, **kw: None)
     fw.estimate_test_count.return_value = None
-    fw.build_benchmark_command.return_value = [sys.executable, "-c", "print(" + repr(json.dumps(rows)) + ")"]
+    fw.build_benchmark_command.side_effect = lambda target_url, model, args, result_file: _artifact_command(result_file, rows)
     fw.parse_results.side_effect = lambda stdout, stderr, **kw: json.loads(stdout)
     fw.measured_nothing.return_value = False
     monkeypatch.setattr("sparkrun.core.bootstrap.get_benchmarking_framework", lambda *a, **kw: fw)
@@ -143,9 +154,9 @@ def test_benchmark_collects_one_startup_observation_and_exports_it(bench_env, mo
         del obs["first_token_unix_ns"], obs["first_token_field"]
 
     # Framework work starts only after the launch has its accepted observation.
-    def command(**kwargs):
+    def command(target_url, model, args, result_file):
         assert env.launch.startup_observation
-        return [sys.executable, "-c", "print(" + repr(json.dumps(env.rows)) + ")"]
+        return _artifact_command(result_file, env.rows)
 
     env.fw.build_benchmark_command.side_effect = command
     result, exported = _run(env)

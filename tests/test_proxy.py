@@ -1509,6 +1509,7 @@ class TestLaunchInferenceAutoPort:
         mock_recipe.build_config_chain.return_value = {"port": 8000}
         mock_recipe.readiness = {}
         mock_recipe.model = "test/model"
+        mock_recipe.container = "test:latest"
         mock_recipe.model_revision = None
         mock_recipe.name = "test"
         mock_recipe.env = {}

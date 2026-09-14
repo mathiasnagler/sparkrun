@@ -88,12 +88,10 @@ def get_config_root(v: Variables | None = None) -> Path:
         stateful_root = is_stateful_ready(v)
         if stateful_root:
             return Path(stateful_root)
-    if _application_config_path is not None:
-        return _application_config_path.parent
     override = product_env("CONFIG_DIR")
     if override is not None:
         return Path(override).expanduser()
-    return DEFAULT_CONFIG_DIR if get_application_profile().id == "sparkrun" else product_path("config")
+    return DEFAULT_CONFIG_DIR
 
 
 _application_config_path: Path | None = None

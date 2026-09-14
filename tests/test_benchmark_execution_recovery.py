@@ -99,16 +99,19 @@ def test_process_quiet_timeout_is_bounded():
     assert time.monotonic() - started < 2
 
 
-def test_unscheduled_drains_stderr_while_stdout_is_open(bench_env):
+def test_single_task_drains_stderr_while_stdout_is_open(bench_env):
     env = bench_env
-    env.fw.build_benchmark_command.return_value = [
-        sys.executable,
-        "-c",
-        "import sys; sys.stderr.write('x' * 1048576); print(%r)" % json.dumps(env.rows),
-    ]
+    original = env.fw.build_benchmark_command.side_effect
+
+    def command(*args, **kwargs):
+        cmd = original(*args, **kwargs)
+        return [*cmd[:-1], "import sys; sys.stderr.write('x' * 1048576); " + cmd[-1]]
+
+    env.fw.build_benchmark_command.side_effect = command
     result = benchmark(replace(env.options, timeout=3), sctx=env.sctx)
     assert result.success and result.results == env.rows
-    assert len(env.fw.parse_results.call_args.args[1]) == 1048576
+    log = next(Path(result.state_dir).glob("runs/*.log"))
+    assert log.read_text() == "x" * 1048576
 
 
 def test_output_redaction_covers_split_unicode_and_multiline_secret():
@@ -377,7 +380,11 @@ def test_process_preserves_unicode_separators_on_both_streams():
 def test_public_api_parses_json_with_literal_unicode_separators(bench_env):
     env = bench_env
     rows = {"text": "first\u2028second\u2029third\x85fourth"}
-    env.fw.build_benchmark_command.return_value = [sys.executable, "-c", "print(%r)" % json.dumps(rows, ensure_ascii=False)]
+    env.fw.build_benchmark_command.side_effect = lambda *args, result_file, **kw: [
+        sys.executable,
+        "-c",
+        "from pathlib import Path; Path(%r).write_text(%r)" % (result_file, json.dumps(rows, ensure_ascii=False)),
+    ]
     result = benchmark(env.options, sctx=env.sctx)
     assert result.success and result.results == rows
     env.stop.assert_called_once()

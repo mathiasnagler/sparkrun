@@ -111,3 +111,116 @@ def test_default_hook_errors_are_visible(monkeypatch):
     monkeypatch.setattr("sparkrun.platforms.resolve_platform", lambda hardware: platform)
     with pytest.raises(RuntimeError, match="broken platform"):
         VllmDistributedRuntime().resolve_container(_recipe(), host_hardware=HostHardware())
+
+
+class _NoDefaultRuntime(VllmDistributedRuntime):
+    def default_image_for(self, host_hardware=None):
+        raise AssertionError("unused default image hook")
+
+
+@pytest.mark.parametrize("images", [("org/resident:tag",) * 2, ("org/a:tag", "org/b:tag")])
+def test_prepared_images_replace_unused_declarations_and_defaults(images):
+    from dataclasses import replace
+    from sparkrun.api import materialize
+    from test_api_materialize import _fixture
+
+    options, plan, sctx = _fixture()
+    plan.recipe.container = ""
+    plan = replace(plan, runtime=_NoDefaultRuntime())
+    prepared = prepare_images(plan.recipe, plan.runtime, list(plan.host_list), run_builder=False, images_by_node=images)
+    spec = materialize(options, plan=plan, sctx=sctx, images_by_node=images)
+    assert prepared.images_by_node == tuple(unit.image for unit in spec.units) == images
+
+
+def test_uniform_prepared_images_replace_differing_ray_defaults():
+    cluster = _cluster()
+    images = ("org/shared:tag",) * 2
+    prepared = prepare_images(_recipe(), VllmRayRuntime(), cluster.hosts, cluster=cluster, run_builder=False, images_by_node=images)
+    assert prepared.images_by_node == images
+
+
+@pytest.mark.parametrize("images", [("org/a", "org/b"), ("org/a",), ("org/a", None), ("org/a", " "), "xx"])
+def test_prepared_images_share_alignment_type_and_runtime_validation(images):
+    from dataclasses import replace
+    from sparkrun.api import materialize
+    from test_api_materialize import _fixture
+
+    class UniformRuntime(VllmDistributedRuntime):
+        supports_heterogeneous_images = False
+
+    options, plan, sctx = _fixture()
+    plan = replace(plan, runtime=UniformRuntime())
+    with pytest.raises(ImagePlanError):
+        materialize(options, plan=plan, sctx=sctx, images_by_node=images)
+    with pytest.raises(RecipeError):
+        prepare_images(plan.recipe, plan.runtime, list(plan.host_list), images_by_node=images, run_builder=False)
+
+
+def test_preparation_reuses_recipe_without_retaining_distribution_targets():
+    from copy import deepcopy
+    from sparkrun.orchestration.distribution import _resolve_targets
+
+    recipe = _recipe()
+    original = deepcopy(recipe.__getstate__())
+    cluster = _cluster()
+    runtime = VllmDistributedRuntime()
+    for hosts in (cluster.hosts, ["generic"], list(reversed(cluster.hosts))):
+        prepared = prepare_images(recipe, runtime, hosts, cluster=cluster, run_builder=False)
+        transferred = {
+            host: entry.name for entry in prepared.container_distribution.entries for host in _resolve_targets(entry.target, hosts)
+        }
+        assert transferred == dict(zip(hosts, prepared.images_by_node, strict=True))
+        assert recipe.__getstate__() == original
+
+
+def test_explicit_container_distribution_is_preserved():
+    from copy import deepcopy
+
+    recipe = _recipe(distribution_config={"containers": {"enabled": False, "entries": [{"name": "org/manual", "target": [0]}]}})
+    assert recipe.distribution_config.containers.explicit
+    original = deepcopy(recipe.distribution_config)
+    prepared = prepare_images(recipe, VllmDistributedRuntime(), _cluster().hosts, cluster=_cluster(), run_builder=False)
+    assert prepared.container_distribution is None
+    assert recipe.distribution_config == original
+
+
+def test_containerless_preparation_runs_environment_builder_without_image(monkeypatch):
+    recipe = _recipe(builder="uv-venv")
+    builder = Mock(transforms_image=False)
+    builder.prepare.return_value = ""
+    monkeypatch.setattr("sparkrun.core.bootstrap.get_builder", lambda *args: builder)
+    prepared = prepare_images(recipe, _NoDefaultRuntime(), ["localhost"], needs_image=False)
+    assert prepared.image_plan is None and prepared.source_image is None
+    assert prepared.images_by_node == () and prepared.container_distribution is None
+    assert builder.prepare.call_args.args[0] == ""
+
+
+def test_containerless_launch_reuses_executor_and_never_resolves_image(monkeypatch, tmp_path):
+    from test_launcher import _builder_phase_harness
+    from sparkrun.application import initialize
+    from sparkrun.core.launcher import launch_inference
+    from sparkrun.orchestration.executors.local import LocalExecutor
+
+    _builder_phase_harness(monkeypatch, tmp_path)
+    sctx = initialize(config_path=tmp_path / "config.yaml")
+    recipe = _recipe(executor="local", defaults={"tensor_parallel": 1})
+    runtime = _NoDefaultRuntime()
+    runtime.run = Mock(return_value=0)
+    distribution = Mock(return_value=(None, {}, {}, {}))
+    monkeypatch.setattr("sparkrun.orchestration.distribution.distribute_from_config", distribution)
+    result = launch_inference(
+        recipe=recipe,
+        runtime=runtime,
+        host_list=["localhost"],
+        overrides={},
+        config=sctx.config,
+        v=sctx.variables,
+        is_solo=True,
+        dry_run=True,
+        sync_tuning=False,
+        trust=True,
+    )
+    assert result.rc == 0 and result.container_image == ""
+    assert isinstance(runtime.run.call_args.kwargs["executor"], LocalExecutor)
+    assert runtime.run.call_args.kwargs["image"] == ""
+    assert distribution.call_args.kwargs["skip_container"] is True

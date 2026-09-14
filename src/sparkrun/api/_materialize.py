@@ -86,16 +86,9 @@ def materialize(
     if world_size <= 0:
         raise ValueError("native materialization requires at least one worker")
 
-    from sparkrun.core.images import ImagePlan, resolve_runtime_image_plan
+    from sparkrun.core.images import resolve_runtime_image_plan
 
-    image_plan = resolve_runtime_image_plan(recipe, runtime, hosts, cluster=plan.cluster)
-    if images_by_node is not None:
-        prepared = tuple(str(image).strip() for image in images_by_node)
-        if len(prepared) != len(hosts):
-            raise ValueError("materialized image override has %d image(s) for %d host(s)" % (len(prepared), len(hosts)))
-        if not all(prepared):
-            raise ValueError("materialized image override contains an empty reference")
-        image_plan = ImagePlan(default_image=prepared[0], images_by_node=prepared)
+    image_plan = resolve_runtime_image_plan(recipe, runtime, hosts, cluster=plan.cluster, images_by_node=images_by_node)
 
     cache_dir = options.cache_dir or getattr(plan.cluster, "cache_dir", None) or str(sctx.config.hf_cache_dir)
     from sparkrun.orchestration.primitives import build_volumes, resolved_model_volume
