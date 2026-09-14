@@ -12,7 +12,7 @@ import urllib.request
 from datetime import datetime, timezone
 from logging import Logger
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Mapping
 
 from scitrera_app_framework import Variables, get_working_path
 
@@ -57,7 +57,7 @@ _BUILD_INDEX_VARIANTS = {
     GHCR_EUGR_NIGHTLY_B12X: "nightly-b12x",
 }
 
-# Local image names produced by prepare_image() for nightly builds. b12x keeps its
+# Local image names produced by prepare() for nightly builds. b12x keeps its
 # own tag (as upstream's default ``vllm-node-b12x`` does) so a b12x source build
 # can't overwrite the standard nightly's local image.
 LOCAL_EUGR_NIGHTLY = "sparkrun-eugr-vllm"
@@ -69,7 +69,7 @@ LOCAL_EUGR_NIGHTLY_B12X = "sparkrun-eugr-vllm-b12x"
 # above, which is what *sparkrun* tags a build it performs itself.
 #
 # Every recipe in the eugr registry names one of these, so this is *the* shape
-# that reaches the pull-first substitution in ``prepare_image`` — and reaching
+# that reaches the pull-first substitution in ``prepare`` — and reaching
 # it is not a misconfiguration. The tag exists only on a machine where the user
 # has run eugr's build script themselves; anywhere else there is nothing by that
 # name to run and our prebuilt nightly is the intended substitute. The
@@ -90,7 +90,7 @@ GHCR_EUGR_NIGHTLY_B12X_LATEST = GHCR_EUGR_NIGHTLY_B12X + ":latest"
 # pull-first switch, sparkrun PULLS our authoritative GHCR nightly
 # (``GHCR_EUGR_NIGHTLY_LATEST``) for these by default and only builds locally from
 # upstream wheels when the recipe opts in with ``--use-wheels`` (see
-# ``prepare_image``). All four forms — GHCR nightly, GHCR nightly-tf5, and the
+# ``prepare``). All four forms — GHCR nightly, GHCR nightly-tf5, and the
 # Docker Hub ``eugr/spark-vllm`` image in short and fully-qualified form — resolve
 # to the single non-tf5 build (tf5 and non-tf5 now build identically). The
 # official Docker Hub images are sentinels too, so we always substitute our own
@@ -390,7 +390,7 @@ class EugrBuilder(BuilderPlugin):
 
     builder_name = "eugr"
 
-    _v: Variables = None
+    _v: Variables | None = None
     _repo_dir: Path | None = None
 
     def initialize(self, v: Variables, logger_arg: Logger) -> EugrBuilder:
@@ -398,7 +398,7 @@ class EugrBuilder(BuilderPlugin):
         self._v = v
         return self
 
-    def prepare_image(
+    def prepare(
         self,
         image: str,
         recipe: Recipe,
@@ -407,6 +407,7 @@ class EugrBuilder(BuilderPlugin):
         dry_run: bool = False,
         transfer_mode: str = "local",
         ssh_kwargs: dict | None = None,
+        builder_context: Mapping[str, Any] | None = None,
     ) -> str:
         """Build the eugr container image when needed.
 
@@ -430,7 +431,7 @@ class EugrBuilder(BuilderPlugin):
             Final image name (may be unchanged).
         """
         delegated = transfer_mode == "delegated"
-        logger.debug("eugr prepare_image: transfer_mode=%s, delegated=%s", transfer_mode, delegated)
+        logger.debug("eugr prepare: transfer_mode=%s, delegated=%s", transfer_mode, delegated)
         head = hosts[0] if hosts else "localhost"
         build_args = recipe.runtime_config.get("build_args", [])
         needs_build = False  # assume False at first
@@ -707,7 +708,7 @@ class EugrBuilder(BuilderPlugin):
         """
         # Determine the target GHCR image and package path
         ghcr_image, ghcr_pkg = self._resolve_ghcr_target(container_image, recipe)
-        if not ghcr_image:
+        if not ghcr_image or not ghcr_pkg:
             return container_image, False
 
         # Extract the source commit hash — this is the primary match key
@@ -1218,6 +1219,8 @@ class EugrBuilder(BuilderPlugin):
                 log file under ``<cache_dir>/eugr-builds/``.  Default False —
                 output is still captured in memory for failure error context.
         """
+        if self._repo_dir is None:
+            raise RuntimeError("Eugr repository must be prepared before building")
         build_script = self._repo_dir / "build-and-copy.sh"
         if not build_script.exists():
             raise RuntimeError("build-and-copy.sh not found at %s" % build_script)

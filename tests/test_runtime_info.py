@@ -1,5 +1,7 @@
 """Tests for runtime version detection and metadata persistence."""
 
+from _runtime_fixtures import StubRuntime
+
 from unittest import mock
 
 from sparkrun.builders.base import _flatten_dict
@@ -22,7 +24,7 @@ class TestVersionCommands:
     """Test version_commands() returns expected keys for base and subclasses."""
 
     def test_base_has_common_keys(self):
-        cmds = RuntimePlugin.version_commands(RuntimePlugin())
+        cmds = RuntimePlugin.version_commands(StubRuntime())
         assert "cuda" in cmds
         assert "python" in cmds
         assert "torch" in cmds
@@ -640,7 +642,7 @@ def test_version_commands_reports_both_nccl_versions():
     doing the work — so a single ambiguous key named the wrong library in the
     job metadata and the benchmark artifact.
     """
-    cmds = RuntimePlugin.version_commands(RuntimePlugin.__new__(RuntimePlugin))
+    cmds = RuntimePlugin.version_commands(StubRuntime())
 
     assert "nccl" not in cmds, "the ambiguous key must not come back"
     assert "torch.cuda.nccl.version()" in cmds["nccl_torch"]

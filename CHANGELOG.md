@@ -12,6 +12,19 @@ first tagged release containing them, regardless of their original commit date.
 
 ### 0.4.0 application and API changes
 
+- Enforced required runtime command hooks and nonempty generated commands;
+  builders now use one `prepare()` hook. Removed the unused image-staging API
+  with competing transport inputs.
+- Typed model/container distribution entries and cluster update sentinels;
+  readiness and job host validation preserve their resolved types. Added a
+  full-source Pyright baseline gate to prevent renewed type debt.
+- RDMA readiness treats extra inactive ports as informational when active
+  links are available; inactive RDMA on an up, configured interface still warns.
+  The check distinguishes link state from connectivity/performance validation.
+- NaN Hub metadata budgets retain the default deadline. Directory plugin API
+  mismatches produce concise update instructions, with tracebacks in debug logs; completion
+  suppresses plugin-loading diagnostics.
+
 - Corrected public API, benchmark process, placement, and sudo result type
   contracts. Core launch and indirect sudo reject missing required context
   before execution; configuration files require a top-level mapping.

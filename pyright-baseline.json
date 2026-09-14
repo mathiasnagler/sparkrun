@@ -1,0 +1,1105 @@
+{
+  "schema": 1,
+  "pyright": "1.1.414",
+  "diagnostics": [
+    {
+      "file": "src/sparkrun/cli/_adv.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"hosts\" of type \"list[str]\" in function \"_check_remote_image_identities\"\n  Type \"Unknown | None\" is not assignable to type \"list[str]\"\n    \"None\" is not assignable to \"list[str]\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_adv.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"obj\" of type \"Sized\" in function \"len\"\n  Type \"Unknown | None\" is not assignable to type \"Sized\"\n    \"None\" is incompatible with protocol \"Sized\"\n      \"__len__\" is not present",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_adv.py",
+      "severity": "error",
+      "rule": "reportOptionalIterable",
+      "message": "Object of type \"None\" cannot be used as iterable value",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/cli/_cluster.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"cluster_id\" of type \"str\" in function \"load_job_metadata\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_common.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"list[Never]\" cannot be assigned to parameter \"hosts\" of type \"list[str]\" in function \"status\"\n  \"list[Never]\" is not assignable to \"list[str]\"\n    Type parameter \"_T@list\" is invariant, but \"Never\" is not the same as \"str\"\n    Consider switching from \"list\" to \"Sequence\" which is covariant",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_common.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"set[Never]\" cannot be assigned to parameter \"target_hosts\" of type \"set[str] | None\" in function \"_job_is_live\"\n  Type \"set[Never]\" is not assignable to type \"set[str] | None\"\n    \"set[Never]\" is not assignable to \"set[str]\"\n      Type parameter \"_T@set\" is invariant, but \"Never\" is not the same as \"str\"\n      Consider switching from \"set\" to \"Container\" which is covariant\n    \"set[Never]\" is not assignable to \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_common.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"name\" of type \"str\" in function \"get_registry\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_common.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Expression of type \"None\" cannot be assigned to parameter of type \"str\"\n  \"None\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_export.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"cluster_id\" of type \"str\" in function \"load_job_metadata\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/cli/_export.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"export\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_export.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"slug\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_monitor_tui.py",
+      "severity": "error",
+      "rule": "reportCallIssue",
+      "message": "Object of type \"object\" is not callable\n  Attribute \"__call__\" is unknown",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_proxy.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[_T_co@tuple]\" in function \"__new__\"\n  Type \"Unknown | None\" is not assignable to type \"Iterable[_T_co@tuple]\"\n    \"None\" is incompatible with protocol \"Iterable[_T_co@tuple]\"\n      \"__iter__\" is not present",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_proxy.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"recipe\" of type \"Recipe\" in function \"validate_for_launch\"\n  Type \"Unknown | None\" is not assignable to type \"Recipe\"\n    \"None\" is not assignable to \"Recipe\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_proxy.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"recipe\" of type \"str | Recipe\" in function \"__init__\"\n  Type \"Unknown | None\" is not assignable to type \"str | Recipe\"\n    Type \"None\" is not assignable to type \"str | Recipe\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is not assignable to \"Recipe\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_proxy.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"post_commands\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_proxy.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"post_exec\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_proxy.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"qualified_name\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_proxy.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"runtime\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_registry.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Path | None\" cannot be assigned to parameter \"other\" of type \"StrPath\" in function \"relative_to\"\n  Type \"Path | None\" is not assignable to type \"StrPath\"\n    Type \"None\" is not assignable to type \"StrPath\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"PathLike[str]\"\n        \"__fspath__\" is not present",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_registry.py",
+      "severity": "error",
+      "rule": "reportCallIssue",
+      "message": "No overloads for \"relative_to\" match the provided arguments",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Any | RunResult\" cannot be assigned to parameter \"result\" of type \"LaunchResult\" in function \"__init__\"\n  Type \"Any | RunResult\" is not assignable to type \"LaunchResult\"\n    \"RunResult\" is not assignable to \"LaunchResult\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Any | RunResult\" cannot be assigned to parameter \"result\" of type \"LaunchResult\" in function \"post_launch_lifecycle\"\n  Type \"Any | RunResult\" is not assignable to type \"LaunchResult\"\n    \"RunResult\" is not assignable to \"LaunchResult\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Any | Unknown | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[_T@list]\" in function \"__init__\"\n  Type \"Any | Unknown | None\" is not assignable to type \"Iterable[_T@list]\"\n    \"None\" is incompatible with protocol \"Iterable[_T@list]\"\n      \"__iter__\" is not present",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"hosts\" of type \"list[str] | tuple[str, ...]\" in function \"find_running_intent\"\n  Type \"Unknown | None\" is not assignable to type \"list[str] | tuple[str, ...]\"\n    Type \"None\" is not assignable to type \"list[str] | tuple[str, ...]\"\n      \"None\" is not assignable to \"list[str]\"\n      \"None\" is not assignable to \"tuple[str, ...]\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[_T_co@tuple]\" in function \"__new__\"\n  Type \"Unknown | None\" is not assignable to type \"Iterable[_T_co@tuple]\"\n    \"None\" is incompatible with protocol \"Iterable[_T_co@tuple]\"\n      \"__iter__\" is not present",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"recipe\" of type \"Recipe\" in function \"generate_intent_id\"\n  Type \"Unknown | None\" is not assignable to type \"Recipe\"\n    \"None\" is not assignable to \"Recipe\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"recipe\" of type \"Recipe\" in function \"validate_for_launch\"\n  Type \"Unknown | None\" is not assignable to type \"Recipe\"\n    \"None\" is not assignable to \"Recipe\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"recipe\" of type \"str | Recipe\" in function \"__init__\"\n  Type \"Unknown | None\" is not assignable to type \"str | Recipe\"\n    Type \"None\" is not assignable to type \"str | Recipe\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is not assignable to \"Recipe\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot assign to attribute \"rc\" for class \"RunResult\"\n  Attribute \"rc\" is read-only",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"builder_config\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"container\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"end\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"mode\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"model\" is not a known attribute of \"None\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"post_commands\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"post_exec\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"qualified_name\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_run.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"runtime\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_commands.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"CX7TopologyResult | None\" cannot be assigned to parameter \"topology_result\" of type \"CX7TopologyResult\" in function \"plan_ring_cx7\"\n  Type \"CX7TopologyResult | None\" is not assignable to type \"CX7TopologyResult\"\n    \"None\" is not assignable to \"CX7TopologyResult\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_commands.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot access attribute \"get_cluster\" for class \"ClusterManager\"\n  Attribute \"get_cluster\" is unknown",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_commands.py",
+      "severity": "error",
+      "rule": "reportCallIssue",
+      "message": "No parameter named \"cluster_mgr\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_commands.py",
+      "severity": "error",
+      "rule": "reportCallIssue",
+      "message": "No parameter named \"config\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_commands.py",
+      "severity": "error",
+      "rule": "reportOperatorIssue",
+      "message": "Operator \"+\" not supported for types \"str | Unbound\" and \"Literal['\\n']\"\n  Operator \"+\" not supported for types \"Unbound\" and \"Literal['\\n']\" when expected type is \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_gpu_clock.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"tuple[str, str, str, str, str, str, str]\" cannot be assigned to parameter \"object\" of type \"tuple[Literal['HOST'], Literal['GPU'], Literal['SM CLOCK'], Literal['MAX SM'], Literal['APPLICATIONS'], Literal['PERSISTENCE*'], Literal['AT BOOT']]\" in function \"append\"\n  \"str\" is not assignable to type \"Literal['HOST']\"\n  \"str\" is not assignable to type \"Literal['GPU']\"\n  \"str\" is not assignable to type \"Literal['SM CLOCK']\"\n  \"str\" is not assignable to type \"Literal['MAX SM']\"\n  \"str\" is not assignable to type \"Literal['APPLICATIONS']\"\n  \"str\" is not assignable to type \"Literal['PERSISTENCE*']\"\n  \"str\" is not assignable to type \"Literal['AT BOOT']\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_gpu_clock.py",
+      "severity": "error",
+      "rule": "reportOperatorIssue",
+      "message": "Operator \"<=\" not supported for types \"Literal[100]\" and \"Unknown | Literal[0] | None\"\n  Operator \"<=\" not supported for types \"Literal[100]\" and \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_gpu_clock.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"stdout\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_gpu_clock.py",
+      "severity": "error",
+      "rule": "reportOptionalOperand",
+      "message": "Operator \"<=\" not supported for \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_wizard.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"CX7TopologyResult | None\" cannot be assigned to parameter \"topology_result\" of type \"CX7TopologyResult\" in function \"plan_ring_cx7\"\n  Type \"CX7TopologyResult | None\" is not assignable to type \"CX7TopologyResult\"\n    \"None\" is not assignable to \"CX7TopologyResult\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_wizard.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"CheckContext | None\" cannot be assigned to parameter \"ctx\" of type \"CheckContext\" in function \"build_setup_plan\"\n  Type \"CheckContext | None\" is not assignable to type \"CheckContext\"\n    \"None\" is not assignable to \"CheckContext\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_wizard.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"interfaces\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_wizard.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"mgmt_ip\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_setup/_wizard.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"record_phase\" is not a known attribute of \"None\"",
+      "count": 3
+    },
+    {
+      "file": "src/sparkrun/cli/_stop_logs.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"cluster_id\" of type \"str\" in function \"load_job_metadata\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/cli/_tune.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"host_list\" of type \"list[str]\" in function \"resolve_effective_cache_dir\"\n  Type \"Unknown | None\" is not assignable to type \"list[str]\"\n    \"None\" is not assignable to \"list[str]\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/cli/_tune.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"obj\" of type \"Sized\" in function \"len\"\n  Type \"Unknown | None\" is not assignable to type \"Sized\"\n    \"None\" is incompatible with protocol \"Sized\"\n      \"__len__\" is not present",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/cli/_tune.py",
+      "severity": "error",
+      "rule": "reportOptionalSubscript",
+      "message": "Object of type \"None\" is not subscriptable",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/core/application_identity.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"resource_namespace\" of type \"str\" in function \"__init__\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/application_profile.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"new\" of type \"str\" in function \"replace\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/application_profile.py",
+      "severity": "error",
+      "rule": "reportOperatorIssue",
+      "message": "Operator \"+\" not supported for types \"str\" and \"str | None\"\n  Operator \"+\" not supported for types \"str\" and \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/application_profile.py",
+      "severity": "error",
+      "rule": "reportOptionalOperand",
+      "message": "Operator \"+\" not supported for \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/benchmark_integrations.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"success\" is not a known attribute of \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/bootstrap.py",
+      "severity": "error",
+      "rule": "reportOptionalOperand",
+      "message": "Operator \"+\" not supported for \"None\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/core/bootstrap.py",
+      "severity": "error",
+      "rule": "reportReturnType",
+      "message": "Type \"Variables | None\" is not assignable to return type \"Variables\"\n  Type \"Variables | None\" is not assignable to type \"Variables\"\n    \"None\" is not assignable to \"Variables\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/hosts.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | int\" cannot be assigned to parameter \"element\" of type \"str\" in function \"add\"\n  Type \"str | int\" is not assignable to type \"str\"\n    \"int\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/installed_plugins.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot access attribute \"load\" for class \"object\"\n  Attribute \"load\" is unknown",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/mods.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot assign to attribute \"_mods_resolved\" for class \"Recipe\"\n  Attribute \"_mods_resolved\" is unknown",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/plugin_inventory.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"feature\" of type \"str\" in function \"feature_gate_enabled\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/registry.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot access attribute \"get\" for class \"str\"\n  Attribute \"get\" is unknown",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/registry.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot access attribute \"get\" for class \"tuple[str | Any | Unknown | dict[Unknown, Unknown], str | Any | Unknown]\"\n  Attribute \"get\" is unknown",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/setup_runner.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"SparkrunConfig | None\" cannot be assigned to parameter \"config\" of type \"SparkrunConfig\" in function \"probe_setup_hosts\"\n  Type \"SparkrunConfig | None\" is not assignable to type \"SparkrunConfig\"\n    \"None\" is not assignable to \"SparkrunConfig\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/setup_runner.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"cluster_name\" of type \"str\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/setup_runner.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"cluster_name\" of type \"str\" in function \"record_phase\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/setup_steps.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"name\" of type \"str\" in function \"is_feature_enabled\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/setup_steps.py",
+      "severity": "error",
+      "rule": "reportOptionalCall",
+      "message": "Object of type \"None\" cannot be called",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/setup_undo.py",
+      "severity": "error",
+      "rule": "reportAssignmentType",
+      "message": "Type \"SetupManifest | None\" is not assignable to declared type \"SetupManifest\"\n  Type \"SetupManifest | None\" is not assignable to type \"SetupManifest\"\n    \"None\" is not assignable to \"SetupManifest\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/core/setup_undo.py",
+      "severity": "error",
+      "rule": "reportOptionalCall",
+      "message": "Object of type \"None\" cannot be called",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/core/setup_undo_actions.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"tuple[Any | str, ...] | tuple[()]\" cannot be assigned to parameter \"hosts\" of type \"list[str]\" in function \"run_remote_scripts_parallel\"\n  Type \"tuple[Any | str, ...] | tuple[()]\" is not assignable to type \"list[str]\"\n    \"tuple[Any | str, ...]\" is not assignable to \"list[str]\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/diagnostics/run_collector.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"iterable\" of type \"Iterable[str]\" in function \"join\"\n  Type \"str | None\" is not assignable to type \"Iterable[str]\"\n    \"None\" is incompatible with protocol \"Iterable[str]\"\n      \"__iter__\" is not present",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/diagnostics/run_collector.py",
+      "severity": "error",
+      "rule": "reportAssignmentType",
+      "message": "Type \"list[str]\" is not assignable to declared type \"str | None\"\n  Type \"list[str]\" is not assignable to type \"str | None\"\n    \"list[str]\" is not assignable to \"str\"\n    \"list[str]\" is not assignable to \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/diagnostics/run_collector.py",
+      "severity": "error",
+      "rule": "reportCallIssue",
+      "message": "No overloads for \"join\" match the provided arguments",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/models/download.py",
+      "severity": "error",
+      "rule": "reportPrivateImportUsage",
+      "message": "\"enable_progress_bars\" is not exported from module \"huggingface_hub.utils\"\n  Import from \"huggingface_hub.utils.tqdm\" instead",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/models/gguf.py",
+      "severity": "error",
+      "rule": "reportPrivateImportUsage",
+      "message": "\"build_hf_headers\" is not exported from module \"huggingface_hub.utils\"\n  Import from \"huggingface_hub.utils._headers\" instead",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/models/quantization.py",
+      "severity": "error",
+      "rule": "reportPrivateImportUsage",
+      "message": "\"disable_progress_bars\" is not exported from module \"huggingface_hub.utils\"\n  Import from \"huggingface_hub.utils.tqdm\" instead",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/models/quantization.py",
+      "severity": "error",
+      "rule": "reportPrivateImportUsage",
+      "message": "\"enable_progress_bars\" is not exported from module \"huggingface_hub.utils\"\n  Import from \"huggingface_hub.utils.tqdm\" instead",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/models/vram.py",
+      "severity": "error",
+      "rule": "reportPrivateImportUsage",
+      "message": "\"disable_progress_bars\" is not exported from module \"huggingface_hub.utils\"\n  Import from \"huggingface_hub.utils.tqdm\" instead",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/models/vram.py",
+      "severity": "error",
+      "rule": "reportPrivateImportUsage",
+      "message": "\"enable_progress_bars\" is not exported from module \"huggingface_hub.utils\"\n  Import from \"huggingface_hub.utils.tqdm\" instead",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/orchestration/executors/docker.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | list[_T@list] | Any | object | list[str]\" cannot be assigned to parameter \"iterable\" of type \"Iterable[_T@list]\" in function \"__init__\"\n  Type \"Unknown | list[_T@list] | Any | object | list[str]\" is not assignable to type \"Iterable[_T@list]\"\n    \"object\" is incompatible with protocol \"Iterable[_T@list]\"\n      \"__iter__\" is not present",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/orchestration/executors/docker.py",
+      "severity": "error",
+      "rule": "reportReturnType",
+      "message": "Type \"dict[tuple[str, str], TerminationInfo]\" is not assignable to return type \"dict[str, TerminationInfo]\"\n  \"dict[tuple[str, str], TerminationInfo]\" is not assignable to \"dict[str, TerminationInfo]\"\n    Type parameter \"_KT@dict\" is invariant, but \"tuple[str, str]\" is not the same as \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/orchestration/hooks.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"list[str]\" cannot be assigned to parameter \"commands\" of type \"list[str | dict[str, str]]\" in function \"render_hook_commands\"\n  \"list[str]\" is not assignable to \"list[str | dict[str, str]]\"\n    Type parameter \"_T@list\" is invariant, but \"str\" is not the same as \"str | dict[str, str]\"\n    Consider switching from \"list\" to \"Sequence\" which is covariant",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/orchestration/networking.py",
+      "severity": "error",
+      "rule": "reportOptionalOperand",
+      "message": "Operator \"+\" not supported for \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/orchestration/nv_monitor.py",
+      "severity": "error",
+      "rule": "reportOperatorIssue",
+      "message": "Operator \"+\" not supported for types \"Literal['.cache/']\" and \"str | None\"\n  Operator \"+\" not supported for types \"Literal['.cache/']\" and \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/orchestration/nv_monitor.py",
+      "severity": "warning",
+      "rule": "reportMissingImports",
+      "message": "Import \"sparkrun.bin\" could not be resolved",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/orchestration/ssh.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Overload[(key: str, default: None = None, /) -> (int | None), (key: str, default: int, /) -> int, (key: str, default: _T@get, /) -> (int | _T@get)]\" cannot be assigned to parameter \"key\" of type \"(_T@sorted) -> SupportsRichComparison\" in function \"sorted\"\n  No overloaded function matches type \"(str) -> SupportsRichComparison\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/orchestration/ssh.py",
+      "severity": "error",
+      "rule": "reportCallIssue",
+      "message": "No overloads for \"sorted\" match the provided arguments",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/api/_ops.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"None\" cannot be assigned to parameter \"client\" of type \"KubectlClient\" in function \"configure_service_account\"\n  \"None\" is not assignable to \"KubectlClient\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/api/_ops.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Expression of type \"None\" cannot be assigned to parameter of type \"str\"\n  \"None\" is not assignable to \"str\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/cli.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Iterator[LogLine]\" cannot be assigned to parameter \"thing\" of type \"_SupportsCloseT@closing\" in function \"__init__\"\n  Type \"Iterator[LogLine]\" is not assignable to type \"_SupportsClose\"\n    \"Iterator[LogLine]\" is incompatible with protocol \"_SupportsClose\"\n      \"close\" is not present",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/executor.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot access attribute \"k8s_context\" for class \"ExecutorConfig\"\n  Attribute \"k8s_context\" is unknown",
+      "count": 3
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/executor.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot access attribute \"k8s_image_pull_policy\" for class \"ExecutorConfig\"\n  Attribute \"k8s_image_pull_policy\" is unknown",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/executor.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot access attribute \"k8s_namespace\" for class \"ExecutorConfig\"\n  Attribute \"k8s_namespace\" is unknown",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/executor.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot access attribute \"k8s_node_selector\" for class \"ExecutorConfig\"\n  Attribute \"k8s_node_selector\" is unknown",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/executor.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot access attribute \"kubeconfig\" for class \"ExecutorConfig\"\n  Attribute \"kubeconfig\" is unknown",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/executor.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot access attribute \"kubectl_path\" for class \"ExecutorConfig\"\n  Attribute \"kubectl_path\" is unknown",
+      "count": 3
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/executor.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot assign to attribute \"k8s_context\" for class \"ExecutorConfig\"\n  Attribute \"k8s_context\" is unknown",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/executor.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot assign to attribute \"k8s_namespace\" for class \"ExecutorConfig\"\n  Attribute \"k8s_namespace\" is unknown",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/executor.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot assign to attribute \"kubeconfig\" for class \"ExecutorConfig\"\n  Attribute \"kubeconfig\" is unknown",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/executor.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot assign to attribute \"kubectl_path\" for class \"ExecutorConfig\"\n  Attribute \"kubectl_path\" is unknown",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/lifecycle.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"name\" of type \"str\" in function \"jobset_status\"\n  Type \"Unknown | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/lifecycle.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Unknown | None\" cannot be assigned to parameter \"name\" of type \"str\" in function \"validate_resource_name\"\n  Type \"Unknown | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/orchestration/jobset.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Expression of type \"None\" cannot be assigned to parameter of type \"str\"\n  \"None\" is not assignable to \"str\"",
+      "count": 3
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/orchestration/kueue.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Expression of type \"None\" cannot be assigned to parameter of type \"str\"\n  \"None\" is not assignable to \"str\"",
+      "count": 3
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/orchestration/launch.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Expression of type \"None\" cannot be assigned to parameter of type \"str\"\n  \"None\" is not assignable to \"str\"",
+      "count": 3
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/run.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"tuple[str, ...]\" cannot be assigned to parameter \"hosts\" of type \"list[str]\" in function \"resolve_runtime_image_plan\"\n  \"tuple[str, ...]\" is not assignable to \"list[str]\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/k8s/run.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot access attribute \"_client\" for class \"Executor\"\n  Attribute \"_client\" is unknown",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkarena/auth.py",
+      "severity": "error",
+      "rule": "reportReturnType",
+      "message": "Type \"tuple[str, str]\" is not assignable to return type \"str | None\"\n  Type \"tuple[str, str]\" is not assignable to type \"str | None\"\n    \"tuple[str, str]\" is not assignable to \"str\"\n    \"tuple[str, str]\" is not assignable to \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkarena/integration.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"refresh_token\" of type \"str\" in function \"upload_benchmark_results\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/engine.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | Any | None\" cannot be assigned to parameter \"args\" of type \"StrPath\" in function \"__init__\"\n  Type \"str | Any | None\" is not assignable to type \"StrPath\"\n    Type \"None\" is not assignable to type \"StrPath\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"PathLike[str]\"\n        \"__fspath__\" is not present",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/engine.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | Any | None\" cannot be assigned to parameter \"args\" of type \"StrPath\" in function \"__new__\"\n  Type \"str | Any | None\" is not assignable to type \"StrPath\"\n    Type \"None\" is not assignable to type \"StrPath\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is incompatible with protocol \"PathLike[str]\"\n        \"__fspath__\" is not present",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/jobs.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Binding | None\" cannot be assigned to parameter \"binding\" of type \"Binding\" in function \"_ensure_ready\"\n  Type \"Binding | None\" is not assignable to type \"Binding\"\n    \"None\" is not assignable to \"Binding\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/jobs.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"Binding | None\" cannot be assigned to parameter \"binding\" of type \"Binding\" in function \"_resolve_binding\"\n  Type \"Binding | None\" is not assignable to type \"Binding\"\n    \"None\" is not assignable to \"Binding\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/jobs.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"bool\" cannot be assigned to parameter \"cwd\" of type \"StrOrBytesPath | None\" in function \"__init__\"\n  Type \"bool\" is not assignable to type \"StrOrBytesPath | None\"\n    \"bool\" is not assignable to \"str\"\n    \"bool\" is not assignable to \"bytes\"\n    \"bool\" is incompatible with protocol \"PathLike[str]\"\n      \"__fspath__\" is not present\n    \"bool\" is incompatible with protocol \"PathLike[bytes]\"\n      \"__fspath__\" is not present\n    \"bool\" is not assignable to \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/jobs.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"bool\" cannot be assigned to parameter \"encoding\" of type \"str | None\" in function \"__init__\"\n  Type \"bool\" is not assignable to type \"str | None\"\n    \"bool\" is not assignable to \"str\"\n    \"bool\" is not assignable to \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/jobs.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"bool\" cannot be assigned to parameter \"errors\" of type \"str | None\" in function \"__init__\"\n  Type \"bool\" is not assignable to type \"str | None\"\n    \"bool\" is not assignable to \"str\"\n    \"bool\" is not assignable to \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/jobs.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"bool\" cannot be assigned to parameter \"executable\" of type \"StrOrBytesPath | None\" in function \"__init__\"\n  Type \"bool\" is not assignable to type \"StrOrBytesPath | None\"\n    \"bool\" is not assignable to \"str\"\n    \"bool\" is not assignable to \"bytes\"\n    \"bool\" is incompatible with protocol \"PathLike[str]\"\n      \"__fspath__\" is not present\n    \"bool\" is incompatible with protocol \"PathLike[bytes]\"\n      \"__fspath__\" is not present\n    \"bool\" is not assignable to \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/jobs.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"bool\" cannot be assigned to parameter \"extra_groups\" of type \"Iterable[str | int] | None\" in function \"__init__\"\n  Type \"bool\" is not assignable to type \"Iterable[str | int] | None\"\n    \"bool\" is incompatible with protocol \"Iterable[str | int]\"\n      \"__iter__\" is not present\n    \"bool\" is not assignable to \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/jobs.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"bool\" cannot be assigned to parameter \"pass_fds\" of type \"Collection[int]\" in function \"__init__\"\n  \"bool\" is incompatible with protocol \"Collection[int]\"\n    \"__len__\" is not present\n    \"__iter__\" is not present\n    \"__contains__\" is not present",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/jobs.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"bool\" cannot be assigned to parameter \"preexec_fn\" of type \"(() -> object) | None\" in function \"__init__\"\n  Type \"bool\" is not assignable to type \"(() -> object) | None\"\n    Type \"bool\" is not assignable to type \"() -> object\"\n    \"bool\" is not assignable to \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/jobs.py",
+      "severity": "error",
+      "rule": "reportCallIssue",
+      "message": "No overloads for \"__init__\" match the provided arguments",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/jobs.py",
+      "severity": "error",
+      "rule": "reportOptionalOperand",
+      "message": "Operator \"+\" not supported for \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/operations.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"CatalogRecipeDetails\" cannot be assigned to parameter \"details\" of type \"dict[str, Any]\" in function \"catalog_sparkroute\"\n  \"CatalogRecipeDetails\" is not assignable to \"dict[str, Any]\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/operations.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "Cannot assign to attribute \"_sparkroute_launch_overrides\" for class \"Recipe\"\n  Attribute \"_sparkroute_launch_overrides\" is unknown",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/operations.py",
+      "severity": "error",
+      "rule": "reportReturnType",
+      "message": "Type \"CatalogPage\" is not assignable to return type \"dict[str, Any]\"\n  \"CatalogPage\" is not assignable to \"dict[str, Any]\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/operations.py",
+      "severity": "error",
+      "rule": "reportReturnType",
+      "message": "Type \"CatalogRegistryResult\" is not assignable to return type \"dict[str, Any]\"\n  \"CatalogRegistryResult\" is not assignable to \"dict[str, Any]\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/plugins/sparkroute/workload_plugins.py",
+      "severity": "warning",
+      "rule": "reportMissingImports",
+      "message": "Import \"sparkrun.plugins.coldsnap.api\" could not be resolved",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/schedulers/_occupancy_base.py",
+      "severity": "error",
+      "rule": "reportOperatorIssue",
+      "message": "Operator \"-=\" not supported for types \"float | None\" and \"float\"\n  Operator \"-\" not supported for types \"None\" and \"float\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/schedulers/dense_pack.py",
+      "severity": "error",
+      "rule": "reportOperatorIssue",
+      "message": "Operator \"<\" not supported for types \"float | None\" and \"float | None\"\n  Operator \"<\" not supported for types \"float\" and \"None\"\n  Operator \"<\" not supported for types \"None\" and \"float\"\n  Operator \"<\" not supported for types \"None\" and \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/schedulers/dense_pack.py",
+      "severity": "error",
+      "rule": "reportOptionalOperand",
+      "message": "Operator \"+\" not supported for \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/schedulers/sparse_pack.py",
+      "severity": "error",
+      "rule": "reportOperatorIssue",
+      "message": "Operator \">\" not supported for types \"float | None\" and \"float | None\"\n  Operator \">\" not supported for types \"float\" and \"None\"\n  Operator \">\" not supported for types \"None\" and \"float\"\n  Operator \">\" not supported for types \"None\" and \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/schedulers/sparse_pack.py",
+      "severity": "error",
+      "rule": "reportOptionalOperand",
+      "message": "Operator \"+\" not supported for \"None\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/scripts/__init__.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"new\" of type \"str\" in function \"replace\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/scripts/__init__.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | None\" cannot be assigned to parameter \"package\" of type \"str\" in function \"load_resource\"\n  Type \"str | None\" is not assignable to type \"str\"\n    \"None\" is not assignable to \"str\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/telemetry/benchmark.py",
+      "severity": "error",
+      "rule": "reportAssignmentType",
+      "message": "Type \"dict[str, str | bool | list[str] | int | TelemetryEvent | None]\" is not assignable to declared type \"TelemetryEvent\"\n  Type \"list[str]\" is not assignable to type \"JsonValue\"\n    \"list[str]\" is not assignable to \"str\"\n    \"list[str]\" is not assignable to \"int\"\n    \"list[str]\" is not assignable to \"float\"\n    \"list[str]\" is not assignable to \"bool\"\n    \"list[str]\" is not assignable to \"None\"\n    \"list[str]\" is not assignable to \"list[JsonValue]\"\n      Type parameter \"_T@list\" is invariant, but \"str\" is not the same as \"JsonValue\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/tuning/_common.py",
+      "severity": "error",
+      "rule": "reportGeneralTypeIssues",
+      "message": "Expected class but received \"(obj: object, /) -> TypeIs[(...) -> object]\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/utils/cli_formatters.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"cpu_temp_c\" is not a known attribute of \"None\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/utils/cli_formatters.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"cpu_usage_pct\" is not a known attribute of \"None\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/utils/cli_formatters.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"gpu_power_w\" is not a known attribute of \"None\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/utils/cli_formatters.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"gpu_temp_c\" is not a known attribute of \"None\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/utils/cli_formatters.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"gpu_util_pct\" is not a known attribute of \"None\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/utils/cli_formatters.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"mem_used_pct\" is not a known attribute of \"None\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/utils/cli_formatters.py",
+      "severity": "error",
+      "rule": "reportOptionalMemberAccess",
+      "message": "\"sparkrun_jobs\" is not a known attribute of \"None\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/utils/json_helpers.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"DataclassInstance | type[DataclassInstance]\" cannot be assigned to parameter \"obj\" of type \"DataclassInstance\" in function \"asdict\"\n  Type \"DataclassInstance | type[DataclassInstance]\" is not assignable to type \"DataclassInstance\"\n    \"__dataclass_fields__\" is defined as a ClassVar in protocol",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/utils/process.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "\"WinDLL\" is not a known attribute of module \"ctypes\"",
+      "count": 1
+    },
+    {
+      "file": "src/sparkrun/utils/process.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "\"WinError\" is not a known attribute of module \"ctypes\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/utils/process.py",
+      "severity": "error",
+      "rule": "reportAttributeAccessIssue",
+      "message": "\"get_last_error\" is not a known attribute of module \"ctypes\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/utils/text.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"str | list[list[Unknown] | str | None] | None\" cannot be assigned to parameter \"value\" of type \"str\" in function \"unmask_braces\"\n  Type \"str | list[list[Unknown] | str | None] | None\" is not assignable to type \"str\"\n    \"list[list[Unknown] | str | None]\" is not assignable to \"str\"",
+      "count": 2
+    },
+    {
+      "file": "src/sparkrun/utils/yaml_helpers.py",
+      "severity": "error",
+      "rule": "reportArgumentType",
+      "message": "Argument of type \"(dumper: Dumper, data: str) -> ScalarNode\" cannot be assigned to parameter \"representer\" of type \"(LiteralBlockDumper, _T@add_representer) -> Node\" in function \"add_representer\"\n  Type \"(dumper: Dumper, data: str) -> ScalarNode\" is not assignable to type \"(LiteralBlockDumper, str) -> Node\"\n    Parameter 1: type \"LiteralBlockDumper\" is incompatible with type \"Dumper\"\n      \"LiteralBlockDumper\" is not assignable to \"Dumper\"",
+      "count": 1
+    }
+  ]
+}

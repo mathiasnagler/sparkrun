@@ -328,3 +328,24 @@ def check_required_service(state, context):
 A dependent step declares `requires=("my_service",)`. The runner reprobes after
 reported changes, so successful action status alone does not satisfy that
 requirement. Use `WARN` for optional recommendations that do not prevent use.
+
+
+### RDMA link readiness
+
+The RDMA readiness item checks current device link state. Additional inactive
+ports do not produce a warning when active devices are available: a switch
+configuration with one cable per host can leave other ports unused. No active
+devices, or an inactive RDMA device backing an interface that is up with an IP,
+still needs attention.
+
+An OK link-state result does not certify all-to-all connectivity or measured
+bandwidth. If those have not already been verified, run:
+
+```bash
+sparkrun setup rdma-test --cluster NAME
+```
+
+The normal readiness probe does not run transfers or persist a cluster-wide
+validation result. Structured API/JSON results include an optional validation
+hint; the text CLI shows guidance only for warnings and failures. The hint does
+not count as a readiness finding.

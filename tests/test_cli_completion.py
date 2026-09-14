@@ -683,3 +683,42 @@ def test_status_records_the_snapshot_for_completion(tmp_path, monkeypatch):
     # h2 failed, so it is not claimed as observed — otherwise a reader would
     # conclude "nothing running there" about a host nobody could reach.
     assert covered == {"h1"}
+
+
+@pytest.mark.parametrize("command, complete_var", [("sparkrun", "_SPARKRUN_COMPLETE"), ("jetson-run", "_JETSON_RUN_COMPLETE")])
+def test_completion_silences_plugin_failures_without_silencing_normal_commands(tmp_path, monkeypatch, caplog, command, complete_var):
+    import click
+    from click.testing import CliRunner
+    from sparkrun.cli import ext
+    from sparkrun.core.external_plugins import load_external_plugins
+    from sparkrun.core.bootstrap import get_variables
+
+    module_name = "completion_incompatible_" + command.replace("-", "_")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    (tmp_path / (module_name + ".py")).write_text("# no API declaration\n")
+    variables = get_variables()
+    monkeypatch.setattr(ext, "ensure_cli_extensions", lambda *_args, **_kwargs: load_external_plugins(variables, paths=[tmp_path]))
+    group = ext.PluggableGroup(command)
+    group.add_command(click.Command("start"))
+    runner = CliRunner()
+    result = runner.invoke(
+        group,
+        [],
+        prog_name=command,
+        complete_var=complete_var,
+        env={
+            complete_var: "bash_complete",
+            "COMP_WORDS": command + " st",
+            "COMP_CWORD": "1",
+        },
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "plain,start\n"
+    assert result.stderr == ""
+    assert "Skipping plugin" not in caplog.text
+    assert "Traceback" not in caplog.text
+
+    group._cli_ext_loaded = False
+    normal = runner.invoke(group, ["--help"], prog_name=command, complete_var=complete_var)
+    assert normal.exit_code == 0, normal.output
+    assert "Skipping plugin %s: missing API declaration" % module_name in caplog.text

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from enum import Enum, auto
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -38,8 +39,12 @@ class ClusterError(Exception):
     pass
 
 
-# Sentinel for "not provided" to distinguish from explicit None
-_UNSET = object()
+class _Unset(Enum):
+    VALUE = auto()
+
+
+# Omitted updates preserve the existing value; explicit None clears it.
+_UNSET = _Unset.VALUE
 
 # ``${VAR}`` reference in a cluster env value, resolved from ClusterDefinition.env_file.
 _ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -711,24 +716,24 @@ class ClusterManager:
         name: str,
         hosts: list[str] | None = None,
         description: str | None = None,
-        user: str | None = _UNSET,
-        cache_dir: str | None = _UNSET,
-        transfer_mode: str | None = _UNSET,
-        transfer_interface: str | None = _UNSET,
-        topology: str | None = _UNSET,
-        fabric_interfaces: list[str] | None = _UNSET,
-        mgmt_interface: str | None = _UNSET,
-        env: dict[str, str] | None = _UNSET,
-        env_file: str | None = _UNSET,
-        sync_source: str | None = _UNSET,
-        hosts_hardware: dict[str, HostHardware] | None = _UNSET,
-        executor: str | None = _UNSET,
-        executor_config: dict[str, Any] | None = _UNSET,
-        scheduler: str | None = _UNSET,
-        max_gpu_memory_utilization: float | None = _UNSET,
-        distribution: ClusterDistributionConfig | None = _UNSET,
-        sparkrun_cache_dir: str | None = _UNSET,
-        plugins: dict[str, dict[str, Any]] | None = _UNSET,
+        user: str | None | _Unset = _UNSET,
+        cache_dir: str | None | _Unset = _UNSET,
+        transfer_mode: str | None | _Unset = _UNSET,
+        transfer_interface: str | None | _Unset = _UNSET,
+        topology: str | None | _Unset = _UNSET,
+        fabric_interfaces: list[str] | None | _Unset = _UNSET,
+        mgmt_interface: str | None | _Unset = _UNSET,
+        env: dict[str, str] | None | _Unset = _UNSET,
+        env_file: str | None | _Unset = _UNSET,
+        sync_source: str | None | _Unset = _UNSET,
+        hosts_hardware: dict[str, HostHardware] | None | _Unset = _UNSET,
+        executor: str | None | _Unset = _UNSET,
+        executor_config: dict[str, Any] | None | _Unset = _UNSET,
+        scheduler: str | None | _Unset = _UNSET,
+        max_gpu_memory_utilization: float | None | _Unset = _UNSET,
+        distribution: ClusterDistributionConfig | None | _Unset = _UNSET,
+        sparkrun_cache_dir: str | None | _Unset = _UNSET,
+        plugins: dict[str, dict[str, Any]] | None | _Unset = _UNSET,
     ) -> None:
         """Update existing cluster definition.
 

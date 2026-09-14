@@ -349,8 +349,13 @@ as a literal integer, currently `1`. The host exposes the supported version as
 `sparkrun.core.registration.PLUGIN_API_VERSION`. Do not copy that constant into a
 plugin declaration dynamically: a newer host does not establish compatibility
 for an older plugin. Booleans, floats and strings are not version declarations.
-Installed plugins must declare a version; legacy directory and bundled modules
-may omit it, but any declaration is checked by the same loader.
+Every installed, directory, and bundled plugin module must declare this API
+version; all sources use the same compatibility check.
+
+An absent or unsupported declaration prevents registration. For directory
+plugins, the loader emits a concise update instruction and keeps the traceback
+in debug logs. Failure information remains in inventory. Shell completion
+suppresses host plugin-loading diagnostics.
 
 Plugin API compatibility, `APPLICATION_PROFILE_API_VERSION`, and the serialized
 controller `schema_version` are independent contracts. Also declare compatible

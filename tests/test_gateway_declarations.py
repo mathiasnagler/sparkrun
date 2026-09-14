@@ -7,6 +7,8 @@ can do, not how it is configured to serve.
 
 from __future__ import annotations
 
+from _runtime_fixtures import StubRuntime
+
 from sparkrun.core.recipe import Recipe
 from sparkrun.orchestration.job_metadata import derive_recipe_fingerprint
 
@@ -85,9 +87,8 @@ def test_capability_entries_are_coerced_to_strings():
 def test_native_protocols_are_fail_closed_by_default():
     """Over-claiming sends wrong-shaped bytes to a server that cannot parse
     them; under-claiming only costs a translation."""
-    from sparkrun.runtimes.base import RuntimePlugin
 
-    assert RuntimePlugin().native_protocols(_recipe()) == ["openai"]
+    assert StubRuntime().native_protocols(_recipe()) == ["openai"]
 
 
 def test_every_shipped_runtime_claims_only_dialects_it_serves():

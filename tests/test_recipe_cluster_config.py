@@ -7,6 +7,7 @@ applies the overrides (cache dirs, resolved_model_path → serve-arg + skip).
 
 from __future__ import annotations
 
+from sparkrun.core.recipe import DistributionConfig
 from sparkrun.orchestration.executors._base import ExecutorTarget
 
 from sparkrun.core.cluster_manager import ClusterDefinition
@@ -263,6 +264,7 @@ class _StubRuntime:
 
 
 class _Recipe:
+    distribution_config = DistributionConfig()
     runtime = "stub"
     model = "Qwen/Qwen3-1.7B"
     env: dict = {}

@@ -17,6 +17,8 @@ import yaml
 
 from sparkrun.orchestration.mpi import DEFAULT_CONTAINER_SSH_KEY, build_rsh_wrapper
 from sparkrun.runtimes._util import default_env_hf_offline, ptrace_executor_config
+from sparkrun.core.validation import RecipeIssue
+from sparkrun.utils.data import integer_setting, float_setting
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
@@ -269,7 +271,7 @@ class TrtllmRuntime(RuntimePlugin):
         kv_cache: dict[str, Any] = {}
         frac = config.get("free_gpu_memory_fraction")
         if frac is not None:
-            kv_cache["free_gpu_memory_fraction"] = float(frac)
+            kv_cache["free_gpu_memory_fraction"] = float_setting(frac, key="free_gpu_memory_fraction")
         kv_dtype = config.get("kv_cache_dtype")
         if kv_dtype is not None:
             kv_cache["dtype"] = str(kv_dtype)
@@ -286,7 +288,7 @@ class TrtllmRuntime(RuntimePlugin):
             cuda_graph["enable_padding"] = bool(padding)
         cg_max_batch = config.get("cuda_graph_max_batch_size")
         if cg_max_batch is not None:
-            cuda_graph["max_batch_size"] = int(cg_max_batch)
+            cuda_graph["max_batch_size"] = integer_setting(cg_max_batch, key="cuda_graph_max_batch_size")
         if cuda_graph:
             extra["cuda_graph_config"] = cuda_graph
 
@@ -434,7 +436,7 @@ class TrtllmRuntime(RuntimePlugin):
             else:
                 logger.info("Wrote extra-llm-api-config.yml into %s on %s", container_name, host)
 
-    def validate_recipe(self, recipe: Recipe) -> list[str]:
+    def validate_recipe(self, recipe: Recipe) -> list[str | RecipeIssue]:
         """Validate TRT-LLM-specific recipe fields."""
         issues = super().validate_recipe(recipe)
 
@@ -520,6 +522,7 @@ class TrtllmRuntime(RuntimePlugin):
         placement = kwargs.pop("placement", None)
         runtime_cache = kwargs.pop("runtime_cache", None)
 
+        executor = self._resolve_executor()
         ctx = ClusterContext.build(
             self,
             hosts,
@@ -554,7 +557,7 @@ class TrtllmRuntime(RuntimePlugin):
             progress.step("Cleaning up existing containers")
         else:
             logger.info("Step 1/7: Cleaning up existing containers for cluster '%s'...", cluster_id)
-        cleanup_ranked_containers(ctx, self.executor)
+        cleanup_ranked_containers(ctx, executor)
         logger.info("Step 1/7: Cleanup done (%.1fs)", time.monotonic() - t0)
 
         # Step 2: InfiniBand detection
@@ -603,7 +606,7 @@ class TrtllmRuntime(RuntimePlugin):
         rc = launch_containers_parallel(
             ctx,
             containers,
-            self.executor,
+            executor,
             comm_env,
             extra_docker_opts=combined_docker_opts or None,
             runtime=self,
@@ -632,7 +635,7 @@ class TrtllmRuntime(RuntimePlugin):
                     )
                     cleanup_after_failure(
                         ctx,
-                        self.executor,
+                        executor,
                         reason=f"container {container_name} not running on {host}",
                     )
                     return 1
@@ -676,7 +679,7 @@ class TrtllmRuntime(RuntimePlugin):
             logger.error("Failed to write rsh wrapper (rc=%d):", result.returncode)
             for line in (result.stderr or "").rstrip().splitlines():
                 logger.error("  %s", line)
-            cleanup_after_failure(ctx, self.executor, reason="rsh wrapper write failed")
+            cleanup_after_failure(ctx, executor, reason="rsh wrapper write failed")
             return 1
 
         # Write extra-llm-api-config.yml if needed
@@ -696,7 +699,7 @@ class TrtllmRuntime(RuntimePlugin):
                     logger.error("Failed to write extra config (rc=%d):", result.returncode)
                     for line in (result.stderr or "").rstrip().splitlines():
                         logger.error("  %s", line)
-                    cleanup_after_failure(ctx, self.executor, reason="extra LLM config write failed")
+                    cleanup_after_failure(ctx, executor, reason="extra LLM config write failed")
                     return 1
                 logger.info("  Extra LLM API config written to %s", _EXTRA_CONFIG_PATH)
 
@@ -765,7 +768,7 @@ class TrtllmRuntime(RuntimePlugin):
                 logger.error("mpirun stdout:")
                 for line in result.stdout.rstrip().splitlines():
                     logger.error("  %s", line)
-            cleanup_after_failure(ctx, self.executor, reason="mpirun exec failed")
+            cleanup_after_failure(ctx, executor, reason="mpirun exec failed")
             return 1
 
         self._print_connection_info(hosts, cluster_id, per_node_logs=True)

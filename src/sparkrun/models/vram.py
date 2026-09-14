@@ -391,12 +391,12 @@ def _fetch_safetensors_size(
             model_files = set(index.get("weight_map", {}).values())
             if model_files:
                 try:
-                    from huggingface_hub import list_repo_tree
+                    from huggingface_hub import list_repo_tree, RepoFile
 
                     file_total = 0
                     matched = 0
                     for entry in list_repo_tree(**tree_kwargs):
-                        if hasattr(entry, "rfilename") and entry.rfilename in model_files:
+                        if isinstance(entry, RepoFile) and entry.path in model_files:
                             if entry.size and entry.size > 0:
                                 file_total += entry.size
                                 matched += 1
@@ -426,10 +426,10 @@ def _fetch_safetensors_size(
         # quant formats (e.g. NVFP4) accurately, whereas the API's per-dtype
         # counts can mis-report for non-standard dtypes.
         try:
-            from huggingface_hub import list_repo_tree
+            from huggingface_hub import list_repo_tree, RepoFile
 
             for entry in list_repo_tree(**tree_kwargs):
-                if hasattr(entry, "rfilename") and entry.rfilename == "model.safetensors":
+                if isinstance(entry, RepoFile) and entry.path == "model.safetensors":
                     if entry.size and entry.size > 0:
                         logger.debug(
                             "Using single-file size %d from list_repo_tree for %s",

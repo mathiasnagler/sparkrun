@@ -1,5 +1,7 @@
 """Unit tests for sparkrun.runtimes.eugr_vllm_ray (EugrVllmRayRuntime)."""
 
+from _runtime_fixtures import StubRuntime
+
 from unittest import mock
 
 import pytest
@@ -109,7 +111,7 @@ def test_eugr_validate_recipe():
 
 
 class TestEugrPrepare:
-    """Test EugrBuilder.prepare_image() — container build and mod injection."""
+    """Test EugrBuilder.prepare() — container build and mod injection."""
 
     @pytest.fixture
     def eugr_builder(self, tmp_path):
@@ -128,7 +130,7 @@ class TestEugrPrepare:
         return builder, repo_dir
 
     def test_prepare_with_build_args(self, eugr_builder):
-        """prepare_image() calls build-and-copy.sh when build_args present."""
+        """prepare() calls build-and-copy.sh when build_args present."""
         builder, repo_dir = eugr_builder
         recipe = Recipe.from_dict(
             {
@@ -144,7 +146,7 @@ class TestEugrPrepare:
                 with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
                     with mock.patch.object(builder, "_verify_image_imports"):
                         with mock.patch.object(builder, "_save_build_metadata"):
-                            builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                            builder.prepare("my-image", recipe, ["10.0.0.1"])
 
                     cmd = mock_build.call_args[0][0]
                     assert str(repo_dir / "build-and-copy.sh") in cmd[0]
@@ -153,7 +155,7 @@ class TestEugrPrepare:
                     assert "--some-flag" in cmd
 
     def test_prepare_without_build_args_or_mods_image_exists(self, eugr_builder):
-        """prepare_image() is a no-op when no build_args/mods and image exists."""
+        """prepare() is a no-op when no build_args/mods and image exists."""
         builder, repo_dir = eugr_builder
         recipe = Recipe.from_dict(
             {
@@ -164,12 +166,12 @@ class TestEugrPrepare:
         )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
             with mock.patch.object(builder, "ensure_repo") as mock_ensure:
-                builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
+                builder.prepare("vllm-node", recipe, ["10.0.0.1"])
                 # ensure_repo should not be called when nothing to prepare
                 mock_ensure.assert_not_called()
 
     def test_prepare_builds_when_image_missing(self, eugr_builder):
-        """prepare_image() triggers a build when --use-wheels is set and image is missing.
+        """prepare() triggers a build when --use-wheels is set and image is missing.
 
         eugr is pull-first now; a missing image only builds when build_args request it
         (here via --use-wheels). Without it the image would be pulled instead.
@@ -190,7 +192,7 @@ class TestEugrPrepare:
                     with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
                         with mock.patch.object(builder, "_verify_image_imports"):
                             with mock.patch.object(builder, "_save_build_metadata"):
-                                builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                                builder.prepare("my-image", recipe, ["10.0.0.1"])
                     mock_build.assert_called_once()
                     cmd = mock_build.call_args[0][0]
                     assert str(repo_dir / "build-and-copy.sh") in cmd[0]
@@ -199,7 +201,7 @@ class TestEugrPrepare:
                     assert "--use-wheels" in cmd
 
     def test_prepare_dry_run(self, eugr_builder):
-        """prepare_image() in dry-run does not execute the build."""
+        """prepare() in dry-run does not execute the build."""
         builder, repo_dir = eugr_builder
         recipe = Recipe.from_dict(
             {
@@ -212,14 +214,14 @@ class TestEugrPrepare:
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
                 with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
-                    builder.prepare_image("vllm-node", recipe, ["10.0.0.1"], dry_run=True)
+                    builder.prepare("vllm-node", recipe, ["10.0.0.1"], dry_run=True)
                     mock_build.assert_not_called()
 
     # Note: mod -> pre_exec injection moved out of the eugr builder into the
     # generic core/mods.py resolver. See tests/test_mods.py for that coverage.
 
     def test_prepare_build_failure_raises(self, eugr_builder):
-        """prepare_image() raises RuntimeError on build failure."""
+        """prepare() raises RuntimeError on build failure."""
         builder, repo_dir = eugr_builder
         recipe = Recipe.from_dict(
             {
@@ -236,7 +238,7 @@ class TestEugrPrepare:
                     return_value=(1, "FlashInfer build failed — restoring previous wheels...\n"),
                 ):
                     with pytest.raises(RuntimeError, match="eugr container build failed"):
-                        builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
+                        builder.prepare("vllm-node", recipe, ["10.0.0.1"])
 
 
 class TestEugrPreServe:
@@ -244,9 +246,8 @@ class TestEugrPreServe:
 
     def test_pre_serve_with_pre_exec(self):
         """_pre_serve() runs pre_exec commands from recipe."""
-        from sparkrun.runtimes.base import RuntimePlugin
 
-        runtime = RuntimePlugin()
+        runtime = StubRuntime()
         recipe = Recipe.from_dict(
             {
                 "name": "test",
@@ -286,9 +287,8 @@ class TestEugrPreServe:
 
     def test_pre_serve_dry_run(self):
         """_pre_serve() passes dry_run through to hooks."""
-        from sparkrun.runtimes.base import RuntimePlugin
 
-        runtime = RuntimePlugin()
+        runtime = StubRuntime()
         recipe = Recipe.from_dict(
             {
                 "name": "test",

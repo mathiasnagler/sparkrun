@@ -502,3 +502,27 @@ def test_visibility_fails_closed_when_the_breaker_is_open(monkeypatch):
     hub._trip("test")
 
     assert vram.fetch_model_visibility("org/m") == vram.MODEL_VISIBILITY_UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "raw, expected", [(".nan", hub.DEFAULT_HUB_METADATA_BUDGET_S), ("0", math.inf), ("-1", math.inf), (".inf", math.inf), ("12.5", 12.5)]
+)
+def test_metadata_budget_numeric_policy(tmp_path, raw, expected):
+    from sparkrun.core.config import SparkrunConfig
+
+    path = tmp_path / "config.yaml"
+    path.write_text("hub:\n  metadata_budget_s: %s\n" % raw)
+    assert SparkrunConfig(config_path=path).hub_metadata_budget_s == expected
+
+
+def test_nan_budget_still_blocks_exhausted_metadata_phase(tmp_path, monkeypatch):
+    from sparkrun.core.config import SparkrunConfig
+
+    path = tmp_path / "config.yaml"
+    path.write_text("hub:\n  metadata_budget_s: .nan\n")
+    config = SparkrunConfig(config_path=path)
+    with hub._STATE.lock:
+        hub._STATE.spent_s = 10_000
+    monkeypatch.setattr(hub, "configure_hub_client", lambda *_args, **_kwargs: None)
+    result = hub.hub_metadata_call("budget-fixture", "fixture/model", None, lambda: pytest.fail("budget was bypassed"), config=config)
+    assert result is None

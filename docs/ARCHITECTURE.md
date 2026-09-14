@@ -217,3 +217,29 @@ and core feature maturity. Version diagnostics distinguish the running product,
 core dependency and loaded integrations. The public contract, path policy,
 legacy compatibility and wheel evidence are documented in
 [APPLICATION_PROFILES.md](APPLICATION_PROFILES.md).
+
+
+## Source type checks
+
+Run the pinned checker over all source with the locked development environment:
+
+```bash
+uv sync --locked --group dev
+uv run python scripts/check-types.py
+```
+
+The gate compares full Pyright diagnostics with `pyright-baseline.json`. It fails
+on additional diagnostics and on resolved entries still recorded in the baseline,
+so type cleanup ratchets the accepted debt downward. Line shifts alone do not
+invalidate entries; duplicate diagnostics in one file retain their counts.
+
+After fixing diagnostics, regenerate and review the baseline diff:
+
+```bash
+uv run python scripts/check-types.py --update-baseline
+```
+
+Regeneration records the current checker version and diagnostics; it is not
+permission to accept new errors. Direct `uv run pyright src/sparkrun` still reports every remaining issue.
+The separate source-type CI workflow checks the baseline with Python 3.12; runtime
+and installed-wheel tests continue covering both supported Python versions.

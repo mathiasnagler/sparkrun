@@ -672,7 +672,7 @@ def test_pin_comm_env_to_ib_flips_mgmt_first_env_onto_fabric():
         # Management interface is dropped from the NCCL list (it is the dead link).
         assert env["NCCL_SOCKET_IFNAME"] == "enp1s0f1np1"
         assert env["NODE_IP"] == ib_ip
-        # VLLM_HOST_IP is a runtime concern (see VllmMixin), not set here.
+        # VLLM_HOST_IP is a runtime concern (see VllmRuntimeBase), not set here.
         assert "VLLM_HOST_IP" not in env
         # Shared, non-interface keys are preserved.
         assert env["NCCL_NET"] == "IB"

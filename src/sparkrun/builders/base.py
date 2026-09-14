@@ -154,22 +154,12 @@ class BuilderPlugin(Plugin):
     ) -> str:
         """Prepare the execution environment. Returns the final image name.
 
-        This is the canonical hook the launcher calls in its builder
-        phase. The default implementation delegates to
-        :meth:`prepare_image`, so image builders keep overriding
-        ``prepare_image`` unchanged (back-compat). Environment builders
-        (e.g. a host-side python venv) override ``prepare`` directly to do
-        their host-side setup and return the image ref (usually unchanged).
+        Image builders return the built image reference; environment builders
+        perform host setup and return the reference unchanged. The base is a
+        no-op: distribution owns registry pulls. ``builder_context`` carries
+        operation-scoped inputs supplied by the execution strategy.
         """
-        return self.prepare_image(
-            image,
-            recipe,
-            hosts,
-            config=config,
-            dry_run=dry_run,
-            transfer_mode=transfer_mode,
-            ssh_kwargs=ssh_kwargs,
-        )
+        return image
 
     def default_env_file(self, recipe: Recipe) -> str | None:
         """Return a shell env_file this builder produces, or ``None``.
@@ -180,35 +170,6 @@ class BuilderPlugin(Plugin):
         recipe doesn't set one explicitly.
         """
         return None
-
-    def prepare_image(
-        self,
-        image: str,
-        recipe: Recipe,
-        hosts: list[str],
-        config: SparkrunConfig | None = None,
-        dry_run: bool = False,
-        transfer_mode: str = "local",
-        ssh_kwargs: dict | None = None,
-    ) -> str:
-        """Ensure image is available. Returns final image name.
-
-        Called before the distribution phase. After this returns,
-        the image should exist locally (or on the head node when
-        *transfer_mode* is ``"delegated"``) so distribution can sync
-        it to remote hosts.
-
-        Args:
-            image: Target image name.
-            recipe: The loaded recipe.
-            hosts: Target host list (first element is head).
-            config: SparkrunConfig for cache dir resolution.
-            dry_run: Show what would be done without executing.
-            transfer_mode: ``"local"`` (build locally) or
-                ``"delegated"`` (build on head node via SSH).
-            ssh_kwargs: SSH connection kwargs (needed for delegated mode).
-        """
-        return image
 
     def version_info_commands(self) -> dict[str, str]:
         """Return label→shell command pairs for raw data capture from container.

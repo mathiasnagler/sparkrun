@@ -367,6 +367,11 @@ def _check_rdma(state: "HostState", ctx: CheckContext) -> "CheckItem | None":
     and ``setup rdma-test`` falls back to its container image, so reporting it
     as a defect would fire on a host where nothing is wrong.
 
+    Inactive additional ports are informational when active devices exist:
+    switch and single-cable topologies need not cable every physical port.
+    An inactive device backing an UP, addressed CX7 interface remains a warning.
+    This probe does not carry all-to-all connectivity/performance evidence.
+
     Inter-node, so single-host clusters are skipped.
     """
     if not ctx.multi_host:
@@ -397,14 +402,35 @@ def _check_rdma(state: "HostState", ctx: CheckContext) -> "CheckItem | None":
         detail += "; perftest not installed (rdma-test will use its container image)"
 
     if inactive:
-        return CheckItem(
-            "rdma",
-            "RDMA fabric",
-            WARN,
-            "%s; %d not ACTIVE: %s" % (detail, len(inactive), ", ".join(d.name for d in inactive)),
-            guidance="verify performance with: sparkrun setup rdma-test%s" % ctx.cluster_flag,
+        configured_up = (
+            {interface.name for interface in state.cx7.interfaces if interface.state.lower() == "up" and interface.ip}
+            if state.cx7 is not None
+            else set()
         )
-    return CheckItem("rdma", "RDMA fabric", OK, detail)
+        required_inactive = [device for device in inactive if device.netdev and device.netdev in configured_up]
+        if required_inactive:
+            return CheckItem(
+                "rdma",
+                "RDMA fabric",
+                WARN,
+                "%s; configured interface(s) have inactive RDMA devices: %s"
+                % (
+                    detail,
+                    ", ".join("%s (%s)" % (device.name, device.netdev) for device in required_inactive),
+                ),
+                guidance="check RDMA link state on those interfaces, then: sparkrun setup rdma-test%s" % ctx.cluster_flag,
+            )
+        detail += "; %d additional device(s) inactive: %s (unused ports may remain down)" % (
+            len(inactive),
+            ", ".join(device.name for device in inactive),
+        )
+    return CheckItem(
+        "rdma",
+        "RDMA fabric",
+        OK,
+        detail + "; link state only",
+        guidance="if connectivity/performance are not yet verified: sparkrun setup rdma-test%s" % ctx.cluster_flag,
+    )
 
 
 #: Ordered registry of readiness checks. Order is the display/evaluation

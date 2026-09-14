@@ -1547,6 +1547,8 @@ def launch_inference(
         num_nodes=len(host_list),
         head_ip=None,  # determined during launch
     )
+    if not isinstance(serve_command, str) or not serve_command.strip():
+        raise ValueError("Runtime %r must generate a non-empty serve command" % runtime.runtime_name)
 
     # Best-effort page cache clear
     if not runtime.is_delegating_runtime() and (asset_policy is None or asset_policy.clear_page_cache):

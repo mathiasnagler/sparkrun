@@ -162,7 +162,7 @@ def _resolve_mixed_precision(quant_block: dict[str, Any]) -> tuple[str, int | No
     if not algo_counts:
         return "", None
 
-    dominant = max(algo_counts, key=algo_counts.get)
+    dominant = max(algo_counts, key=algo_counts.__getitem__)
     # Pick the most common group_size for the dominant algo
     gs_list = group_sizes.get(dominant)
     dominant_gs: int | None = None

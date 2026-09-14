@@ -1,4 +1,4 @@
-"""Shared mixin for vLLM runtimes (vllm-ray and vllm-distributed)."""
+"""Shared base for vLLM runtimes (vllm-ray and vllm-distributed)."""
 
 from __future__ import annotations
 
@@ -6,13 +6,14 @@ import json
 import re
 from typing import TYPE_CHECKING
 from sparkrun.core.readiness import OPENAI_CHAT_STREAM, OPENAI_RESPONSES_STREAM, ANTHROPIC_MESSAGES_STREAM
+from sparkrun.runtimes.base import RuntimePlugin
 from sparkrun.runtimes._util import default_env_hf_offline, ptrace_executor_config, resolve_api_key
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
 
 
-class VllmMixin:
+class VllmRuntimeBase(RuntimePlugin):
     """Shared methods for vLLM runtimes.
 
     Provides tuning config auto-mounting and version detection

@@ -342,6 +342,10 @@ def prom2json_to_sample(metrics_list: list[dict], hostname: str) -> MonitorSampl
     return prometheus_to_sample(flat, hostname)
 
 
+def _ssh_stderr(proc: subprocess.Popen[bytes]) -> str:
+    return proc.stderr.read().decode("utf-8", errors="replace").strip() if proc.stderr is not None else ""
+
+
 def _ssh_start_error(exc: OSError, proc) -> str:
     """Explain why a monitor's SSH died, not just how we noticed.
 
@@ -353,7 +357,7 @@ def _ssh_start_error(exc: OSError, proc) -> str:
     if proc is not None:
         try:
             proc.wait(timeout=2)
-            err = (proc.stderr.read() or "").strip()
+            err = _ssh_stderr(proc)
             if err:
                 return err.splitlines()[-1]
         except Exception:  # never let diagnosis raise over the original failure
@@ -417,11 +421,11 @@ class ClusterMonitor:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                text=False,
             )
-            # .buffer bypasses text-mode newline translation, which would
-            # CRLF-mangle the script when the control node is Windows.
-            proc.stdin.buffer.write(stdin_bytes(self._script))
+            # Binary stdin preserves script newlines on every controller platform.
+            assert proc.stdin is not None
+            proc.stdin.write(stdin_bytes(self._script))
             proc.stdin.close()
 
             self.states[host].process = proc
@@ -455,11 +459,12 @@ class ClusterMonitor:
                         pass
         self._started = False
 
-    def _reader(self, host: str, proc: subprocess.Popen) -> None:
+    def _reader(self, host: str, proc: subprocess.Popen[bytes]) -> None:
         """Read stdout from an SSH process line by line, updating state."""
         try:
+            assert proc.stdout is not None
             for raw_line in proc.stdout:
-                line = raw_line.strip()
+                line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
                 sample = parse_monitor_line(line)
@@ -474,7 +479,7 @@ class ClusterMonitor:
             if rc is not None and rc != 0:
                 stderr_text = ""
                 try:
-                    stderr_text = proc.stderr.read().strip() if proc.stderr else ""
+                    stderr_text = _ssh_stderr(proc)
                 except Exception:
                     pass
                 if self.states[host].latest is None:
@@ -669,11 +674,11 @@ class NvMonitorClusterMonitor:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                text=False,
             )
-            # .buffer bypasses text-mode newline translation, which would
-            # CRLF-mangle the script when the control node is Windows.
-            proc.stdin.buffer.write(stdin_bytes(self._script))
+            # Binary stdin preserves script newlines on every controller platform.
+            assert proc.stdin is not None
+            proc.stdin.write(stdin_bytes(self._script))
             proc.stdin.close()
 
             self.states[host].process = proc
@@ -703,13 +708,14 @@ class NvMonitorClusterMonitor:
         self._started = False
         self._restore_loggers(self._saved_log_levels)
 
-    def _reader(self, host: str, proc: subprocess.Popen) -> None:
+    def _reader(self, host: str, proc: subprocess.Popen[bytes]) -> None:
         """Read JSON lines from the wrapper script, updating state."""
         import json
 
         try:
+            assert proc.stdout is not None
             for raw_line in proc.stdout:
-                line = raw_line.strip()
+                line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
                 try:
@@ -739,7 +745,7 @@ class NvMonitorClusterMonitor:
             if rc is not None and rc != 0:
                 stderr_text = ""
                 try:
-                    stderr_text = proc.stderr.read().strip() if proc.stderr else ""
+                    stderr_text = _ssh_stderr(proc)
                 except Exception:
                     pass
                 if self.states[host].latest is None:

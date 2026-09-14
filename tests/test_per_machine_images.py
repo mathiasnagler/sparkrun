@@ -8,6 +8,7 @@ runtime guardrail, and the ``pull`` transfer mode's per-node dispatch.
 
 from __future__ import annotations
 
+from sparkrun.core.recipe import DistributionConfig
 from unittest.mock import patch
 
 import pytest
@@ -256,6 +257,7 @@ def _launch_harness(monkeypatch, tmp_path, runtime_supports, builder="", builder
             return type("R", (), {"containers": {}, "head_host": "h1"})()
 
     class _Recipe:
+        distribution_config = DistributionConfig()
         runtime = "stub"
         model = "stub-model"
         env = {}

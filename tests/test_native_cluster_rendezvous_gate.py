@@ -7,6 +7,7 @@ and waiting anyway burns the whole budget and then reports a healthy head as
 dead (issue #284).
 """
 
+from sparkrun.core.recipe import Recipe
 from unittest import mock
 
 import pytest
@@ -77,7 +78,12 @@ def test_rendezvous_gate_waits_when_a_store_exists(native_cluster):
     """The default (dp == 1 / tp across nodes) behaviour is unchanged."""
     build_runtime, ctx, calls = native_cluster
 
-    rc = _cluster_ops.run_native_cluster(runtime=build_runtime(25000), ctx=ctx, follow=False)
+    rc = _cluster_ops.run_native_cluster(
+        runtime=build_runtime(25000),
+        ctx=ctx,
+        follow=False,
+        recipe=Recipe.from_dict({"runtime": "vllm-distributed", "model": "fixture/model"}),
+    )
 
     assert rc == 0
     assert calls["wait_for_port"] == [("h1", 25000)]
@@ -94,7 +100,9 @@ def test_no_gate_when_runtime_reports_no_rendezvous(native_cluster):
     build_runtime, ctx, calls = native_cluster
     runtime = build_runtime(None)
 
-    rc = _cluster_ops.run_native_cluster(runtime=runtime, ctx=ctx, follow=False)
+    rc = _cluster_ops.run_native_cluster(
+        runtime=runtime, ctx=ctx, follow=False, recipe=Recipe.from_dict({"runtime": "vllm-distributed", "model": "fixture/model"})
+    )
 
     assert rc == 0
     assert calls["wait_for_port"] == []

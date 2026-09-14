@@ -101,7 +101,7 @@ def register(v):
     bad, good = inventory["recovery_bad"], inventory["recovery_good"]
     assert not bad.loaded
     if failure_phase == "api":
-        assert "Plugin API None" in bad.failure
+        assert "missing API declaration" in bad.failure
         assert "declare SPARKRUN_PLUGIN_API_VERSION = 1" in bad.failure
     else:
         assert bad.failure == "RuntimeError: bad " + ("import" if failure_phase == "import" else "registration")
@@ -190,7 +190,7 @@ def test_installed_plugin_api_is_integer_and_independent_of_profile_api(monkeypa
         assert row.failure is None
     else:
         module.register.assert_not_called()
-        assert "Plugin API" in row.failure
+        assert "API" in row.failure
 
 
 @pytest.mark.parametrize("declaration", [None, True, 1.0, "1", 0, 1, 2])

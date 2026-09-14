@@ -8,7 +8,7 @@ from typing import Any, TYPE_CHECKING
 from scitrera_app_framework import ext_parse_bool
 
 from sparkrun.runtimes.base import RuntimePlugin
-from sparkrun.runtimes._vllm_common import VllmMixin, VLLM_FLAG_MAP, VLLM_BOOL_FLAGS
+from sparkrun.runtimes._vllm_common import VllmRuntimeBase, VLLM_FLAG_MAP, VLLM_BOOL_FLAGS
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class VllmRayRuntime(VllmMixin, RuntimePlugin):
+class VllmRayRuntime(VllmRuntimeBase):
     """vLLM runtime using Ray for multi-node clustering.
 
     Uses Ray head/worker orchestration for distributed inference.

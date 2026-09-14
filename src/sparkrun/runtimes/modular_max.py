@@ -26,6 +26,8 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from sparkrun.runtimes._util import default_env_hf_offline
+from sparkrun.core.validation import RecipeIssue
+from sparkrun.utils.data import integer_setting
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
@@ -114,7 +116,7 @@ class ModularMaxRuntime(RuntimePlugin):
             return str(explicit)
         tp = config.get("tensor_parallel")
         try:
-            tp = int(tp) if tp is not None else 1
+            tp = integer_setting(tp, key="tensor_parallel") if tp is not None else 1
         except (TypeError, ValueError):
             tp = 1
         if tp > 1:
@@ -196,7 +198,7 @@ class ModularMaxRuntime(RuntimePlugin):
 
     # --- validation ---
 
-    def validate_recipe(self, recipe: "Recipe") -> list[str]:
+    def validate_recipe(self, recipe: "Recipe") -> list[str | RecipeIssue]:
         """Reject multi-node intent — MAX cannot span nodes."""
         issues = super().validate_recipe(recipe)
         if recipe.min_nodes and recipe.min_nodes > 1:
@@ -230,7 +232,7 @@ class ModularMaxRuntime(RuntimePlugin):
         config_chain = recipe.build_config_chain(overrides)
         tp = config_chain.get("tensor_parallel")
         try:
-            tp = int(tp) if tp is not None else 1
+            tp = integer_setting(tp, key="tensor_parallel") if tp is not None else 1
         except (TypeError, ValueError):
             tp = 1
         if tp <= 1 or dry_run or not hosts:

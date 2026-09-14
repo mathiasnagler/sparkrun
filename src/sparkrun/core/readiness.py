@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
-from scitrera_app_framework.api import EnvPlacement, Variables
 
 # Engine initialization, weight loading and graph capture can all precede port
 # binding. Generous budgets avoid mistaking a slow engine for a dead workload;
@@ -56,33 +55,45 @@ class ReadinessSettings:
     inference_prompt: str = "Reply with exactly: sparkrun-ready"
 
 
-def _normalize(key: str, value: Any) -> Any:
-    if key == "inference_style":
-        if not isinstance(value, str) or value not in INFERENCE_STYLES | {"auto"}:
-            raise ValueError("readiness.inference_style must be auto or a supported style: %s" % ", ".join(sorted(INFERENCE_STYLES)))
-        return value
-    if key == "inference":
-        if type(value) is not bool:
-            raise ValueError("readiness.inference must be a boolean")
-        return value
-    if key == "inference_prompt":
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("readiness.inference_prompt must be a non-empty string")
-        return value
-    if key in {"port_timeout_s", "health_timeout_s", "inference_timeout_s"}:
+def _style(value: object) -> str:
+    if not isinstance(value, str) or value not in INFERENCE_STYLES | {"auto"}:
+        raise ValueError("readiness.inference_style must be auto or a supported style: %s" % ", ".join(sorted(INFERENCE_STYLES)))
+    return value
+
+
+def _inference(value: object) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError("readiness.inference must be a boolean")
+    return value
+
+
+def _prompt(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("readiness.inference_prompt must be a non-empty string")
+    return value
+
+
+def _timeout(key: str, value: object) -> float:
+    seconds = math.nan
+    if isinstance(value, (str, int, float)) and not isinstance(value, bool):
         try:
             seconds = float(value)
-        except (TypeError, ValueError, OverflowError):
-            seconds = math.nan
-        if (
-            isinstance(value, bool)
-            or math.isnan(seconds)
-            or (key == "inference_timeout_s" and (not math.isfinite(seconds) or seconds <= 0))
-        ):
-            raise ValueError(
-                "readiness.%s must be %s" % (key, "a finite positive timeout" if key == "inference_timeout_s" else "a timeout")
-            )
-        return seconds if seconds > 0 else math.inf
+        except (ValueError, OverflowError):
+            pass
+    if math.isnan(seconds) or (key == "inference_timeout_s" and (not math.isfinite(seconds) or seconds <= 0)):
+        raise ValueError("readiness.%s must be %s" % (key, "a finite positive timeout" if key == "inference_timeout_s" else "a timeout"))
+    return seconds if seconds > 0 else math.inf
+
+
+def _normalize(key: str, value: object) -> str | bool | float:
+    if key == "inference_style":
+        return _style(value)
+    if key == "inference":
+        return _inference(value)
+    if key == "inference_prompt":
+        return _prompt(value)
+    if key in {"port_timeout_s", "health_timeout_s", "inference_timeout_s"}:
+        return _timeout(key, value)
     raise ValueError("unknown readiness setting %r" % key)
 
 
@@ -103,27 +114,40 @@ def resolve_readiness_settings(*, config=None, recipe=None) -> ReadinessSettings
     recipe errors fail at load time.
     Environment variables and runtime flag defaults do not enter this chain.
     """
-    defaults = asdict(ReadinessSettings())
+    defaults = ReadinessSettings()
     get = getattr(config, "get", None)
     raw_global = get("readiness", {}) if callable(get) else {}
-    global_layer = {}
-    if isinstance(raw_global, Mapping):
-        for key, value in raw_global.items():
-            if key == "inference_style":
-                # Validate the effective style, not a lower-priority value
-                # that the recipe may replace (including with auto).
-                global_layer[key] = value
-                continue
+    global_layer = raw_global if isinstance(raw_global, Mapping) else {}
+    recipe_layer = getattr(recipe, "readiness", {})
+    if not isinstance(recipe_layer, Mapping):
+        raise ValueError("readiness must be a mapping")
+    for key in recipe_layer:
+        if key not in ReadinessSettings.__dataclass_fields__:
+            raise ValueError("unknown readiness setting %r" % key)
+
+    def resolve[T](key: str, default: T, normalize: Callable[[object], T]) -> T:
+        if key in recipe_layer:
+            return normalize(recipe_layer[key])
+        if key in global_layer:
             try:
-                global_layer[key] = _normalize(key, value)
+                return normalize(global_layer[key])
             except ValueError:
-                continue
-    raw_recipe = getattr(recipe, "readiness", {})
-    recipe_layer = {key: _normalize(key, value) for key, value in parse_recipe_readiness(raw_recipe).items()}
-    chain = Variables(sources=(recipe_layer, global_layer, defaults), env_placement=EnvPlacement.IGNORED)
-    resolved = {key: chain.get(key) for key in defaults}
-    resolved["inference_style"] = _normalize("inference_style", resolved["inference_style"])
-    return ReadinessSettings(**resolved)
+                # An explicit effective style must fail; other malformed global
+                # fields fall back. Recipe overrides bypass their global values.
+                if key == "inference_style":
+                    raise
+        return default
+
+    return ReadinessSettings(
+        port_timeout_s=resolve("port_timeout_s", defaults.port_timeout_s, lambda value: _timeout("port_timeout_s", value)),
+        health_timeout_s=resolve("health_timeout_s", defaults.health_timeout_s, lambda value: _timeout("health_timeout_s", value)),
+        inference=resolve("inference", defaults.inference, _inference),
+        inference_style=resolve("inference_style", defaults.inference_style, _style),
+        inference_timeout_s=resolve(
+            "inference_timeout_s", defaults.inference_timeout_s, lambda value: _timeout("inference_timeout_s", value)
+        ),
+        inference_prompt=resolve("inference_prompt", defaults.inference_prompt, _prompt),
+    )
 
 
 def resolve_inference_style(settings: ReadinessSettings, runtime, *, recipe=None) -> str | None:
@@ -141,6 +165,8 @@ def resolve_inference_style(settings: ReadinessSettings, runtime, *, recipe=None
     styles = getattr(runtime, "readiness_styles", ())
     styles = tuple(s for s in styles if isinstance(s, str) and s in INFERENCE_STYLES) if isinstance(styles, (tuple, list)) else ()
     if apis is not None:
+        if not isinstance(apis, (list, tuple, set, frozenset)) or any(not isinstance(api, str) for api in apis):
+            raise ValueError("Runtime native_apis must return a sequence of API names")
         styles = tuple(style for style in styles if INFERENCE_STYLE_APIS[style] in apis)
     if settings.inference_style == "auto":
         return styles[0] if styles else None

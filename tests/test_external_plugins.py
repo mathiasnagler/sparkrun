@@ -230,3 +230,26 @@ def test_feature_flag_registered_and_off_by_default():
     assert flag is not None
     for channel in (CHANNEL_STABLE, CHANNEL_BETA, CHANNEL_ALPHA):
         assert flag.default_for_channel(channel) is False
+
+
+@pytest.mark.parametrize(
+    "declaration, message", [(None, "missing API declaration"), (2, "unsupported API 2"), ("1", "unsupported API '1'")]
+)
+def test_incompatible_plugin_warning_is_concise_and_debug_retains_traceback(tmp_path, clean_sys, caplog, declaration, message):
+    import logging
+
+    plugin = tmp_path / "concise_plugin.py"
+    plugin.write_text("" if declaration is None else "SPARKRUN_PLUGIN_API_VERSION = %r\n" % declaration)
+    v = init_sparkrun()
+    with caplog.at_level(logging.DEBUG, logger="sparkrun.core.external_plugins"):
+        assert load_external_plugins(v, paths=[tmp_path]) == []
+    warnings = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    warning = warnings[0]
+    assert "Skipping plugin concise_plugin:" in warning.getMessage()
+    assert message in warning.getMessage()
+    assert "declare SPARKRUN_PLUGIN_API_VERSION = 1" in warning.getMessage()
+    assert warning.exc_info is None
+    assert str(tmp_path) not in warning.getMessage()
+    assert "\n" not in warning.getMessage()
+    assert any(record.levelno == logging.DEBUG and record.exc_info for record in caplog.records)

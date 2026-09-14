@@ -408,6 +408,8 @@ class SparkrunConfig:
             val = float(raw)
         except (TypeError, ValueError):
             return DEFAULT_HUB_METADATA_BUDGET_S
+        if math.isnan(val):
+            return DEFAULT_HUB_METADATA_BUDGET_S
         return val if val > 0 else math.inf
 
     @property

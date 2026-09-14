@@ -1,5 +1,7 @@
 """Unit tests for sparkrun.runtimes base class and cross-cutting orchestration helpers."""
 
+from _runtime_fixtures import StubRuntime
+
 import re
 
 from scitrera_app_framework import Variables
@@ -76,7 +78,7 @@ def test_base_resolve_api_key_returns_none():
 
 def test_base_runtime_is_enabled_false():
     """RuntimePlugin.is_enabled() returns False (critical for multi-extension)."""
-    runtime = RuntimePlugin()
+    runtime = StubRuntime()
     v = Variables()
 
     # is_enabled must return False for multi-extension plugins
@@ -85,7 +87,7 @@ def test_base_runtime_is_enabled_false():
 
 def test_base_runtime_is_multi_extension_true():
     """RuntimePlugin.is_multi_extension() returns True."""
-    runtime = RuntimePlugin()
+    runtime = StubRuntime()
     v = Variables()
 
     assert runtime.is_multi_extension(v) is True
@@ -93,7 +95,7 @@ def test_base_runtime_is_multi_extension_true():
 
 def test_base_runtime_is_not_delegating():
     """Base RuntimePlugin.is_delegating_runtime() returns False."""
-    runtime = RuntimePlugin()
+    runtime = StubRuntime()
     assert runtime.is_delegating_runtime() is False
 
 
@@ -561,3 +563,23 @@ class TestRuntimeWorldSize:
         recipe = Recipe({"sparkrun_version": "2", "runtime": "stub", "model": "m"})
         # Base default uses total_gpus = tp * pp * dp = 2 * 1 * 1 = 2 (ep absent).
         assert runtime.world_size(parallelism, recipe=recipe, cluster=cluster) == 2
+
+
+def test_incomplete_runtime_is_abstract_and_not_discovered():
+    import inspect
+    from types import ModuleType
+
+    import pytest
+
+    from sparkrun.core.external_plugins import _scan_module_for_plugins
+
+    class IncompleteRuntime(RuntimePlugin):
+        runtime_name = "incomplete"
+
+    module = ModuleType("runtime_contract_fixture")
+    module.IncompleteRuntime = IncompleteRuntime
+    module.CompleteRuntime = StubRuntime
+    assert inspect.isabstract(IncompleteRuntime)
+    with pytest.raises(TypeError, match="generate_command"):
+        IncompleteRuntime()
+    assert _scan_module_for_plugins(module, RuntimePlugin) == [StubRuntime]

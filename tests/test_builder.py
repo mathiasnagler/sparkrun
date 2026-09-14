@@ -41,15 +41,15 @@ class TestBuilderPluginBase:
         assert plugin.is_multi_extension(v) is True
 
     def test_builder_plugin_prepare_image_returns_unchanged(self):
-        """Default prepare_image returns the image arg unchanged."""
+        """Default prepare returns the image arg unchanged."""
         plugin = self._make_plugin()
         recipe = Recipe.from_dict({"name": "test", "model": "some/model", "runtime": "vllm"})
-        result = plugin.prepare_image("my-image:latest", recipe, ["10.0.0.1"])
+        result = plugin.prepare("my-image:latest", recipe, ["10.0.0.1"])
         assert result == "my-image:latest"
 
     def test_builder_plugin_prepare_delegates_to_prepare_image(self):
-        """Default prepare() delegates to prepare_image — a subclass overriding
-        only prepare_image is still exercised through the canonical prepare hook."""
+        """Default prepare() delegates to prepare — a subclass overriding
+        only prepare is still exercised through the canonical prepare hook."""
         recipe = Recipe.from_dict({"name": "test", "model": "some/model", "runtime": "vllm"})
 
         from sparkrun.builders.base import BuilderPlugin
@@ -57,7 +57,7 @@ class TestBuilderPluginBase:
         class _ImageBuilder(BuilderPlugin):
             builder_name = "img"
 
-            def prepare_image(self, image, recipe, hosts, config=None, dry_run=False, transfer_mode="local", ssh_kwargs=None):
+            def prepare(self, image, recipe, hosts, config=None, dry_run=False, transfer_mode="local", ssh_kwargs=None):
                 return image + ":built"
 
         result = _ImageBuilder().prepare("my-image", recipe, ["10.0.0.1"])
@@ -104,11 +104,11 @@ class TestDockerPullBuilder:
         assert self._make_builder().builder_name == "docker-pull"
 
     def test_docker_pull_prepare_image_noop(self):
-        """prepare_image returns image unchanged (no subprocess calls)."""
+        """prepare returns image unchanged (no subprocess calls)."""
         builder = self._make_builder()
         recipe = Recipe.from_dict({"name": "test", "model": "some/model", "runtime": "vllm"})
         with mock.patch("subprocess.run") as mock_run:
-            result = builder.prepare_image("docker-image:latest", recipe, ["10.0.0.1"])
+            result = builder.prepare("docker-image:latest", recipe, ["10.0.0.1"])
         assert result == "docker-image:latest"
         mock_run.assert_not_called()
 
@@ -146,10 +146,10 @@ class TestEugrBuilderName:
 
 
 class TestEugrPrepareImage:
-    """Test EugrBuilder.prepare_image() — build and mod injection."""
+    """Test EugrBuilder.prepare() — build and mod injection."""
 
     def test_eugr_prepare_with_build_args(self, eugr_builder_with_repo):
-        """prepare_image() calls build-and-copy.sh when --use-wheels is present and image missing."""
+        """prepare() calls build-and-copy.sh when --use-wheels is present and image missing."""
         builder, repo_dir = eugr_builder_with_repo
         recipe = Recipe.from_dict(
             {
@@ -165,7 +165,7 @@ class TestEugrPrepareImage:
                 with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
                     with mock.patch.object(builder, "_verify_image_imports"):
                         with mock.patch.object(builder, "_save_build_metadata"):
-                            result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                            result = builder.prepare("my-image", recipe, ["10.0.0.1"])
 
         assert result == "my-image"
         mock_build.assert_called_once()
@@ -178,7 +178,7 @@ class TestEugrPrepareImage:
         assert "--cleanup" in cmd
 
     def test_eugr_prepare_without_build_args_image_exists(self, eugr_builder_with_repo):
-        """prepare_image() is a no-op when no build_args/mods and image exists locally."""
+        """prepare() is a no-op when no build_args/mods and image exists locally."""
         builder, repo_dir = eugr_builder_with_repo
         recipe = Recipe.from_dict(
             {
@@ -189,7 +189,7 @@ class TestEugrPrepareImage:
         )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
             with mock.patch.object(builder, "ensure_repo") as mock_ensure:
-                result = builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
+                result = builder.prepare("vllm-node", recipe, ["10.0.0.1"])
                 mock_ensure.assert_not_called()
 
         assert result == "vllm-node"
@@ -226,7 +226,7 @@ class TestEugrPrepareImage:
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo") as mock_ensure:
                 with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
-                    result = builder.prepare_image(image, recipe, ["10.0.0.1"])
+                    result = builder.prepare(image, recipe, ["10.0.0.1"])
 
         assert result == image
         mock_build.assert_not_called()
@@ -252,7 +252,7 @@ class TestEugrPrepareImage:
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo") as mock_ensure:
                 with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
-                    result = builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
+                    result = builder.prepare("vllm-node", recipe, ["10.0.0.1"])
 
         assert result == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest"
         mock_build.assert_not_called()
@@ -272,7 +272,7 @@ class TestEugrPrepareImage:
         with caplog.at_level(logging.WARNING, logger="sparkrun.builders.eugr"):
             with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
                 with mock.patch.object(builder, "ensure_repo"):
-                    builder.prepare_image(container, recipe, ["10.0.0.1"])
+                    builder.prepare(container, recipe, ["10.0.0.1"])
 
         message = caplog.text
         assert "This is the expected path" in message
@@ -286,7 +286,7 @@ class TestEugrPrepareImage:
         with caplog.at_level(logging.WARNING, logger="sparkrun.builders.eugr"):
             with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
                 with mock.patch.object(builder, "ensure_repo"):
-                    builder.prepare_image("my-typo-image", recipe, ["10.0.0.1"])
+                    builder.prepare("my-typo-image", recipe, ["10.0.0.1"])
 
         assert "spell it as a full reference" in caplog.text
 
@@ -302,7 +302,7 @@ class TestEugrPrepareImage:
         assert not _is_eugr_local_build_tag("ghcr.io/other/vllm-node")
 
     def test_eugr_prepare_builds_when_use_wheels_and_image_missing(self, eugr_builder_with_repo):
-        """prepare_image() triggers a wheels build for a custom image name with --use-wheels."""
+        """prepare() triggers a wheels build for a custom image name with --use-wheels."""
         builder, repo_dir = eugr_builder_with_repo
         recipe = Recipe.from_dict(
             {
@@ -319,7 +319,7 @@ class TestEugrPrepareImage:
                     with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
                         with mock.patch.object(builder, "_verify_image_imports"):
                             with mock.patch.object(builder, "_save_build_metadata"):
-                                result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                                result = builder.prepare("my-image", recipe, ["10.0.0.1"])
 
         mock_build.assert_called_once()
         cmd = mock_build.call_args[0][0]
@@ -364,7 +364,7 @@ class TestEugrPrepareImage:
                     with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
                         with mock.patch.object(builder, "_verify_image_imports"):
                             with mock.patch.object(builder, "_save_build_metadata"):
-                                result = builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
+                                result = builder.prepare("vllm-node", recipe, ["10.0.0.1"])
 
         # Built as the recipe's own image name (not substituted with our nightly).
         assert result == "vllm-node"
@@ -376,7 +376,7 @@ class TestEugrPrepareImage:
             assert tok in cmd
 
     def test_eugr_prepare_dry_run(self, eugr_builder_with_repo):
-        """prepare_image() in dry-run does not execute subprocess (build script)."""
+        """prepare() in dry-run does not execute subprocess (build script)."""
         builder, repo_dir = eugr_builder_with_repo
         recipe = Recipe.from_dict(
             {
@@ -390,7 +390,7 @@ class TestEugrPrepareImage:
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
                 with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
                     with mock.patch.object(builder, "_verify_image_imports") as mock_verify:
-                        builder.prepare_image("vllm-node", recipe, ["10.0.0.1"], dry_run=True)
+                        builder.prepare("vllm-node", recipe, ["10.0.0.1"], dry_run=True)
 
         mock_build.assert_not_called()
         mock_verify.assert_not_called()
@@ -399,7 +399,7 @@ class TestEugrPrepareImage:
     # generic core/mods.py resolver. See tests/test_mods.py for that coverage.
 
     def test_eugr_prepare_build_failure_raises(self, eugr_builder_with_repo):
-        """prepare_image() raises RuntimeError when the build exits non-zero."""
+        """prepare() raises RuntimeError when the build exits non-zero."""
         builder, repo_dir = eugr_builder_with_repo
         recipe = Recipe.from_dict(
             {
@@ -423,7 +423,7 @@ class TestEugrPrepareImage:
                     return_value=(1, captured_output),
                 ):
                     with pytest.raises(RuntimeError) as excinfo:
-                        builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
+                        builder.prepare("vllm-node", recipe, ["10.0.0.1"])
 
         msg = str(excinfo.value)
         assert "eugr container build failed" in msg
@@ -447,7 +447,7 @@ class TestEugrPrepareImage:
                 with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
                     with mock.patch.object(builder, "_verify_image_imports"):
                         with mock.patch.object(builder, "_save_build_metadata"):
-                            builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                            builder.prepare("my-image", recipe, ["10.0.0.1"])
 
         cmd = mock_build.call_args[0][0]
         # Exactly one --cleanup, regardless of recipe ordering.
@@ -475,7 +475,7 @@ class TestEugrPrepareImage:
                 with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")):
                     with mock.patch.object(builder, "_verify_image_imports"):
                         with mock.patch.object(builder, "_save_build_metadata") as mock_save:
-                            builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                            builder.prepare("my-image", recipe, ["10.0.0.1"])
 
         # _save_build_metadata is called with the normalized cache args (no --cleanup,
         # no deprecated --tf5) — just the meaningful --use-wheels.
@@ -505,7 +505,7 @@ class TestEugrPrepareImage:
                         with mock.patch("subprocess.run", return_value=smoke_proc):
                             with mock.patch.object(builder, "_save_build_metadata") as mock_save:
                                 with pytest.raises(RuntimeError, match="without flashinfer"):
-                                    builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                                    builder.prepare("my-image", recipe, ["10.0.0.1"])
 
         mock_rmi.assert_called_once_with("my-image", host=None, ssh_kwargs=None)
         mock_save.assert_not_called()
@@ -531,7 +531,7 @@ class TestEugrPrepareImage:
         with mock.patch.object(builder, "ensure_repo") as mock_ensure:
             with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
                 with mock.patch.object(builder, "_verify_image_imports") as mock_verify:
-                    result = builder.prepare_image(
+                    result = builder.prepare(
                         "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest",
                         recipe,
                         ["10.0.0.1"],
@@ -566,7 +566,7 @@ class TestEugrPrepareImage:
                 with mock.patch.object(builder, "_build_image") as mock_build:
                     with mock.patch.object(builder, "_verify_image_imports"):
                         with mock.patch.object(builder, "_save_build_metadata"):
-                            builder.prepare_image("my-image", recipe, ["10.0.0.1"], config=config)
+                            builder.prepare("my-image", recipe, ["10.0.0.1"], config=config)
 
         mock_build.assert_called_once()
         assert mock_build.call_args.kwargs["save_logs"] is False
@@ -592,7 +592,7 @@ class TestEugrPrepareImage:
                 with mock.patch.object(builder, "_build_image") as mock_build:
                     with mock.patch.object(builder, "_verify_image_imports"):
                         with mock.patch.object(builder, "_save_build_metadata"):
-                            builder.prepare_image("my-image", recipe, ["10.0.0.1"], config=config)
+                            builder.prepare("my-image", recipe, ["10.0.0.1"], config=config)
 
         assert mock_build.call_args.kwargs["save_logs"] is True
 
@@ -628,7 +628,7 @@ class TestEugrPrepareImage:
         with mock.patch.object(builder, "ensure_repo") as mock_ensure:
             with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
                 with mock.patch.object(builder, "_verify_image_imports") as mock_verify:
-                    result = builder.prepare_image(sentinel_image, recipe, ["10.0.0.1"], config=config)
+                    result = builder.prepare(sentinel_image, recipe, ["10.0.0.1"], config=config)
 
         # Remapped to our authoritative nightly and pulled (no build path taken).
         assert result == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest"
@@ -668,7 +668,7 @@ class TestEugrPrepareImage:
                     with mock.patch.object(builder, "_can_skip_build", return_value=False):
                         with mock.patch.object(builder, "_verify_image_imports"):
                             with mock.patch.object(builder, "_save_build_metadata"):
-                                result = builder.prepare_image(sentinel_image, recipe, ["10.0.0.1"], config=config)
+                                result = builder.prepare(sentinel_image, recipe, ["10.0.0.1"], config=config)
 
         # Sentinel remap fired: image renamed to the standard (non-tf5) local tag.
         assert result == "sparkrun-eugr-vllm"
@@ -698,7 +698,7 @@ class TestEugrPrepareImage:
         # Not a known registry prefix and present locally → no build, returned unchanged.
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
             with mock.patch.object(builder, "ensure_repo") as mock_ensure:
-                result = builder.prepare_image("eugr/spark-vllm:latest", recipe, ["10.0.0.1"], config=config)
+                result = builder.prepare("eugr/spark-vllm:latest", recipe, ["10.0.0.1"], config=config)
                 mock_ensure.assert_not_called()
 
         assert result == "eugr/spark-vllm:latest"
@@ -749,7 +749,7 @@ class TestEugrB12x:
         with mock.patch.object(builder, "ensure_repo") as mock_ensure:
             with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
                 with mock.patch.object(builder, "_verify_image_imports") as mock_verify:
-                    result = builder.prepare_image(sentinel_image, recipe, ["10.0.0.1"], config=self._config(tmp_path))
+                    result = builder.prepare(sentinel_image, recipe, ["10.0.0.1"], config=self._config(tmp_path))
 
         assert result == self.B12X_LATEST
         mock_ensure.assert_not_called()
@@ -772,7 +772,7 @@ class TestEugrB12x:
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo") as mock_ensure:
                 with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
-                    result = builder.prepare_image("vllm-node", recipe, ["10.0.0.1"], config=self._config(tmp_path))
+                    result = builder.prepare("vllm-node", recipe, ["10.0.0.1"], config=self._config(tmp_path))
 
         assert result == self.B12X_LATEST
         mock_ensure.assert_not_called()
@@ -812,7 +812,7 @@ class TestEugrB12x:
                     with mock.patch.object(builder, "_can_skip_build", return_value=False):
                         with mock.patch.object(builder, "_verify_image_imports"):
                             with mock.patch.object(builder, "_save_build_metadata"):
-                                result = builder.prepare_image(sentinel, recipe, ["10.0.0.1"], config=self._config(tmp_path))
+                                result = builder.prepare(sentinel, recipe, ["10.0.0.1"], config=self._config(tmp_path))
 
         assert result == "sparkrun-eugr-vllm-b12x"
         cmd = mock_build.call_args[0][0]
@@ -844,7 +844,7 @@ class TestEugrB12x:
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo") as mock_ensure:
                 with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
-                    result = builder.prepare_image(b12x_image, recipe, ["10.0.0.1"], config=self._config(tmp_path))
+                    result = builder.prepare(b12x_image, recipe, ["10.0.0.1"], config=self._config(tmp_path))
 
         assert result == self.B12X_LATEST
         mock_ensure.assert_not_called()
@@ -872,7 +872,7 @@ class TestEugrRebuild:
                 with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
                     with mock.patch.object(builder, "_verify_image_imports"):
                         with mock.patch.object(builder, "_save_build_metadata"):
-                            result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                            result = builder.prepare("my-image", recipe, ["10.0.0.1"])
 
         assert result == "my-image"
         mock_build.assert_called_once()
@@ -897,7 +897,7 @@ class TestEugrRebuild:
                     with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
                         with mock.patch.object(builder, "_verify_image_imports"):
                             with mock.patch.object(builder, "_save_build_metadata"):
-                                builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                                builder.prepare("my-image", recipe, ["10.0.0.1"])
 
         mock_skip.assert_not_called()
         mock_build.assert_called_once()
@@ -917,7 +917,7 @@ class TestEugrRebuild:
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
                 with mock.patch.object(builder, "_can_skip_build", return_value=True):
                     with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
-                        builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                        builder.prepare("my-image", recipe, ["10.0.0.1"])
 
         mock_build.assert_not_called()
 
@@ -935,7 +935,7 @@ class TestEugrRebuild:
         )
         with mock.patch("sparkrun.containers.registry.ensure_image", return_value=0) as mock_ensure:
             with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
-                result = builder.prepare_image("ghcr.io/someorg/vllm:latest", recipe, ["10.0.0.1"])
+                result = builder.prepare("ghcr.io/someorg/vllm:latest", recipe, ["10.0.0.1"])
 
         assert result == "ghcr.io/someorg/vllm:latest"
         mock_build.assert_not_called()
@@ -958,7 +958,7 @@ class TestEugrRebuild:
         remote_result = mock.Mock(success=True)
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=remote_result) as mock_remote:
             with mock.patch("sparkrun.containers.registry.ensure_image") as mock_ensure:
-                result = builder.prepare_image(
+                result = builder.prepare(
                     "ghcr.io/someorg/vllm:latest",
                     recipe,
                     ["10.0.0.1"],
@@ -984,7 +984,7 @@ class TestEugrRebuild:
             }
         )
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host") as mock_remote:
-            builder.prepare_image(
+            builder.prepare(
                 "ghcr.io/someorg/vllm:latest",
                 recipe,
                 ["10.0.0.1"],
@@ -1008,7 +1008,7 @@ class TestEugrRebuild:
             }
         )
         with mock.patch("sparkrun.containers.registry.pull_image") as mock_pull:
-            result = builder.prepare_image("ghcr.io/someorg/vllm:latest", recipe, ["10.0.0.1"], dry_run=True)
+            result = builder.prepare("ghcr.io/someorg/vllm:latest", recipe, ["10.0.0.1"], dry_run=True)
 
         assert result == "ghcr.io/someorg/vllm:latest"
         mock_pull.assert_not_called()
@@ -1016,7 +1016,7 @@ class TestEugrRebuild:
     def test_no_rebuild_suppresses_recipe_rebuild(self, eugr_builder_with_repo):
         """builder_config.rebuild=False (from --no-rebuild) suppresses a rebuild.
 
-        With an image already present and no rebuild forced, prepare_image must
+        With an image already present and no rebuild forced, prepare must
         stay a no-op even though a recipe could otherwise have requested rebuild.
         """
         builder, repo_dir = eugr_builder_with_repo
@@ -1031,7 +1031,7 @@ class TestEugrRebuild:
         )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
             with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
-                result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                result = builder.prepare("my-image", recipe, ["10.0.0.1"])
 
         assert result == "my-image"
         mock_build.assert_not_called()
@@ -1054,7 +1054,7 @@ class TestEugrRebuild:
         )
         with mock.patch("sparkrun.containers.registry.ensure_image", return_value=0) as mock_ensure:
             with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
-                result = builder.prepare_image("eugr/spark-vllm:latest", recipe, ["10.0.0.1"])
+                result = builder.prepare("eugr/spark-vllm:latest", recipe, ["10.0.0.1"])
 
         # Remapped to our authoritative nightly and force-pulled; no wheels build.
         assert result == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest"
@@ -1082,7 +1082,7 @@ class TestEugrRebuild:
                     with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
                         with mock.patch.object(builder, "_verify_image_imports"):
                             with mock.patch.object(builder, "_save_build_metadata"):
-                                result = builder.prepare_image(
+                                result = builder.prepare(
                                     "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest",
                                     recipe,
                                     ["10.0.0.1"],
@@ -1093,7 +1093,7 @@ class TestEugrRebuild:
         mock_build.assert_called_once()
 
     def test_docker_pull_rebuild_is_noop(self):
-        """docker-pull ignores rebuild — prepare_image stays a pure no-op."""
+        """docker-pull ignores rebuild — prepare stays a pure no-op."""
         from sparkrun.builders.docker_pull import DockerPullBuilder
 
         builder = DockerPullBuilder()
@@ -1106,7 +1106,7 @@ class TestEugrRebuild:
             }
         )
         with mock.patch("subprocess.run") as mock_run:
-            result = builder.prepare_image("docker-image:latest", recipe, ["10.0.0.1"])
+            result = builder.prepare("docker-image:latest", recipe, ["10.0.0.1"])
         assert result == "docker-image:latest"
         mock_run.assert_not_called()
 
@@ -1256,7 +1256,7 @@ class TestEugrDelegatedMode:
         )
         with mock.patch.object(builder, "_image_exists_on_host", return_value=True) as mock_check:
             with mock.patch.object(builder, "_ensure_repo_remote"):
-                result = builder.prepare_image(
+                result = builder.prepare(
                     "vllm-node",
                     recipe,
                     ["head-host", "worker-host"],
@@ -1283,7 +1283,7 @@ class TestEugrDelegatedMode:
             with mock.patch.object(builder, "_build_image_remote") as mock_remote_build:
                 with mock.patch.object(builder, "_verify_image_imports"):
                     with mock.patch.object(builder, "_save_build_metadata"):
-                        result = builder.prepare_image(
+                        result = builder.prepare(
                             "my-image",
                             recipe,
                             ["head-host"],
@@ -1431,7 +1431,7 @@ class TestEugrDelegatedMode:
         )
         with mock.patch.object(builder, "_image_exists_on_host", return_value=True) as mock_check:
             with mock.patch.object(builder, "_build_image_remote") as mock_build:
-                result = builder.prepare_image(
+                result = builder.prepare(
                     "my-image",
                     recipe,
                     ["head-host"],
@@ -1456,7 +1456,7 @@ class TestEugrDelegatedMode:
         )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
             with mock.patch("subprocess.run") as mock_run:
-                result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                result = builder.prepare("my-image", recipe, ["10.0.0.1"])
         mock_run.assert_not_called()
         assert result == "my-image"
 

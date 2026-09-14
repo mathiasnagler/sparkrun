@@ -168,7 +168,7 @@ def test_make_node_command_args_no_hosts_fallback_to_head_ip():
     assert args["master_port"] == "29500"
 
 
-# --- VllmMixin._build_command ---
+# --- VllmRuntimeBase._build_command ---
 
 
 def test_vllm_mixin_build_command_solo():

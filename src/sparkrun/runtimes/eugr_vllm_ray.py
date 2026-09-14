@@ -37,7 +37,7 @@ class EugrVllmRayRuntime(VllmRayRuntime):
     It exists for backward compatibility with v1 recipes.
     """
 
-    _v: Variables = None
+    _v: Variables | None = None
 
     runtime_name = "eugr-vllm"
     default_image_prefix = ""  # eugr uses local builds
@@ -104,7 +104,7 @@ class EugrVllmRayRuntime(VllmRayRuntime):
             return
 
         image = self.resolve_container(recipe)
-        builder.prepare_image(
+        builder.prepare(
             image,
             recipe,
             hosts,

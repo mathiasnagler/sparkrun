@@ -853,3 +853,25 @@ def test_metadata_update_failure_keeps_previous_record(tmp_path, mock_recipe, mo
         save_job_metadata(cid, mock_recipe, ["new-host"], cache_dir=str(tmp_path))
     assert next((tmp_path / "jobs").glob("*.yaml")).read_bytes() == before
     assert len(list((tmp_path / "jobs").iterdir())) == 1
+
+
+@pytest.mark.parametrize("hosts", [[], (), None])
+def test_check_job_without_host_evidence_does_not_query(tmp_path, monkeypatch, hosts):
+    from sparkrun.orchestration.job_metadata import check_job_running
+
+    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **_kwargs: pytest.fail("no host evidence"))
+    result = check_job_running(cluster_id="missing", hosts=hosts, cache_dir=str(tmp_path))
+    assert result.running is False
+    assert result.hosts == []
+
+
+@pytest.mark.parametrize("hosts", ["node-a", [""], [None], ["node-a", " "]])
+def test_check_job_rejects_malformed_metadata_hosts(monkeypatch, hosts):
+    from sparkrun.orchestration.job_metadata import check_job_running
+
+    monkeypatch.setattr("sparkrun.orchestration.job_metadata.load_job_metadata", lambda *_args, **_kwargs: {"hosts": hosts})
+    monkeypatch.setattr(
+        "sparkrun.orchestration.executor.resolve_executor", lambda **_kwargs: pytest.fail("invalid hosts reached transport")
+    )
+    with pytest.raises(ValueError, match="non-empty host names"):
+        check_job_running(cluster_id="invalid-hosts")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sparkrun.core.recipe import Recipe
 from unittest import mock
 
 import pytest
@@ -248,6 +249,8 @@ def test_native_cluster_threads_backends_to_detect_ib_with_ips(monkeypatch):
         config=None,
     )
     backends = {"h1": BackendBundle(accelerator_vendor="nvidia", collective=NcclBackend())}
-    _cluster_ops.run_native_cluster(runtime=runtime, ctx=ctx, backends=backends)
+    _cluster_ops.run_native_cluster(
+        runtime=runtime, ctx=ctx, backends=backends, recipe=Recipe.from_dict({"runtime": "vllm-distributed", "model": "fixture/model"})
+    )
 
     assert captured["backends"] is backends

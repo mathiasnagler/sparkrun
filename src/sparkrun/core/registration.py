@@ -21,6 +21,22 @@ if TYPE_CHECKING:
 # Module entry-point compatibility, independent of application profile schemas.
 PLUGIN_API_VERSION = 1
 
+
+class PluginCompatibilityError(ValueError):
+    """A plugin needs an API update before this host can register it."""
+
+    def __init__(self, module: str, api_version: object):
+        declaration = (
+            "missing API declaration"
+            if api_version is None
+            else "unsupported API %r (host requires %s)" % (api_version, PLUGIN_API_VERSION)
+        )
+        super().__init__(
+            "%s: %s. Update the plugin for this host and declare SPARKRUN_PLUGIN_API_VERSION = %s."
+            % (module, declaration, PLUGIN_API_VERSION)
+        )
+
+
 K = TypeVar("K")
 V = TypeVar("V")
 _SOURCES: list[tuple[dict[str, Any], str]] = []
@@ -114,6 +130,8 @@ def clear_plugin_load_failures() -> None:
 
 
 def format_plugin_failure(error: BaseException) -> str:
+    if isinstance(error, PluginCompatibilityError):
+        return str(error)
     return "%s: %s" % (type(error).__name__, error)
 
 
@@ -140,11 +158,7 @@ def load_and_register_plugin(
                 raise TypeError("Plugin loaders must return a module")
             api_version = getattr(module, "SPARKRUN_PLUGIN_API_VERSION", None)
             if type(api_version) is not int or api_version != PLUGIN_API_VERSION:
-                raise ValueError(
-                    "Plugin API %r in %s is incompatible with supported API %s; "
-                    "update the plugin for this host and declare SPARKRUN_PLUGIN_API_VERSION = %s"
-                    % (api_version, module.__name__, PLUGIN_API_VERSION, PLUGIN_API_VERSION)
-                )
+                raise PluginCompatibilityError(module.__name__, api_version)
             _register_plugin_module(module, v, tier=tier)
             from sparkrun.core.setup_steps import all_setup_steps
 

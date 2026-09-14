@@ -733,9 +733,11 @@ rejected before launch; use `llama-benchy` for performance measurements.
 Image preparation selects prepared overrides before unused defaults, and applies
 the same alignment/string/runtime validation to both. Image-less executors have
 no `PreparedImageSet.image_plan`; the image accessors return `None`/an empty tuple.
-Pass its `container_distribution` to `distribute_from_config` when staging images
-outside `stage_prepared_images`; generated transfer entries no longer mutate the
-recipe. The unused `prepare_images(strategy_name=...)` diagnostic input is removed.
+Pass its `container_distribution` to `distribute_from_config` when staging images;
+generated transfer entries no longer mutate the recipe. The unused
+`stage_prepared_images`, `StagedImageSet`, and `resolve_content_images` surface has
+been removed. Standalone staging uses the shared distribution function and one
+operation-scoped configuration for transport. The unused `prepare_images(strategy_name=...)` diagnostic input is removed.
 `ImagePlan.image_for_node` now raises `IndexError` for invalid resolved-node indices.
 
 
@@ -763,3 +765,27 @@ Placement resolution advertises `RankAssignment | None`, and sudo orchestration
 returns `RemoteResult` objects. Benchmark process handling and catalog/Tailscale
 result annotations now match their runtime shapes. Recipe validation hooks may
 return both plain suggestion strings and structured `RecipeIssue` records.
+
+
+## Required runtime hooks and builder preparation
+
+`RuntimePlugin` is an abstract base. Implement `generate_command()` before a
+runtime can be instantiated or discovered. Command generation must return a
+nonempty string; invalid values fail before runtime submission. Direct users of
+`run_native_cluster()` must supply a recipe; omitted overrides still mean an
+empty override mapping.
+
+Builders implement `prepare(..., builder_context=None)` for both image and host
+environment preparation. The `prepare_image()` hook and its forwarding adapter
+are removed. Migrate overrides and direct calls to `prepare`; the base remains a
+no-op, and registry pulls belong to distribution. Eugr implements the same hook.
+
+`DistributionResourceConfig` is now generic in its entry type. Model resources
+contain `DistributionModelEntry`; container resources contain
+`DistributionContainerEntry`. `DistributionConfig` validates kinds at
+construction and again before resolution, including resources edited by plugins.
+Mismatched entry kinds raise `RecipeError` instead of being silently skipped.
+
+Plugin API mismatches retain registration rollback and inventory failure details.
+Normal CLI calls show a concise update instruction; debug logs include the
+traceback. Shell completion suppresses plugin diagnostics for that invocation.

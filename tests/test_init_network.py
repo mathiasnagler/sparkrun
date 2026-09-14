@@ -1,5 +1,6 @@
 """Tests for native-cluster distributed-init network selection."""
 
+from sparkrun.core.recipe import Recipe
 from unittest import mock
 
 from sparkrun.core.scheduler import RankAssignment, RankSlot
@@ -124,7 +125,9 @@ def test_native_cluster_threads_reachable_ib_selection_into_node_commands(monkey
     runtime.get_extra_docker_opts = lambda: []
     runtime._print_cluster_banner = mock.MagicMock()
 
-    rc = _cluster_ops.run_native_cluster(runtime=runtime, ctx=ctx)
+    rc = _cluster_ops.run_native_cluster(
+        runtime=runtime, ctx=ctx, recipe=Recipe.from_dict({"runtime": "vllm-distributed", "model": "fixture/model"})
+    )
 
     assert rc == 1
     call = runtime.generate_node_command.call_args
@@ -179,7 +182,9 @@ def test_native_cluster_pins_comm_env_to_fabric_on_ib_fallback(monkeypatch):
     runtime.get_extra_docker_opts = lambda: []
     runtime._print_cluster_banner = mock.MagicMock()
 
-    rc = _cluster_ops.run_native_cluster(runtime=runtime, ctx=ctx)
+    rc = _cluster_ops.run_native_cluster(
+        runtime=runtime, ctx=ctx, recipe=Recipe.from_dict({"runtime": "vllm-distributed", "model": "fixture/model"})
+    )
 
     assert rc == 1
     pinned = captured["comm_env"]
@@ -234,7 +239,9 @@ def test_native_cluster_leaves_comm_env_untouched_when_mgmt_reachable(monkeypatc
     runtime.get_extra_docker_opts = lambda: []
     runtime._print_cluster_banner = mock.MagicMock()
 
-    _cluster_ops.run_native_cluster(runtime=runtime, ctx=ctx)
+    _cluster_ops.run_native_cluster(
+        runtime=runtime, ctx=ctx, recipe=Recipe.from_dict({"runtime": "vllm-distributed", "model": "fixture/model"})
+    )
 
     env = captured["comm_env"].get_env("node-1")
     assert env["GLOO_SOCKET_IFNAME"] == "wlan0"
@@ -366,7 +373,9 @@ def test_native_cluster_remaps_loopback_placement_to_routable_head(monkeypatch):
     runtime.get_extra_docker_opts = lambda: []
     runtime._print_cluster_banner = mock.MagicMock()
 
-    _cluster_ops.run_native_cluster(runtime=runtime, ctx=ctx)
+    _cluster_ops.run_native_cluster(
+        runtime=runtime, ctx=ctx, recipe=Recipe.from_dict({"runtime": "vllm-distributed", "model": "fixture/model"})
+    )
 
     call = runtime.generate_node_command.call_args
     assert call.kwargs["head_ip"] == "10.113.145.138"
@@ -406,7 +415,9 @@ def test_native_cluster_remaps_placement_onto_fabric_on_ib_fallback(monkeypatch)
     runtime.get_extra_docker_opts = lambda: []
     runtime._print_cluster_banner = mock.MagicMock()
 
-    _cluster_ops.run_native_cluster(runtime=runtime, ctx=ctx)
+    _cluster_ops.run_native_cluster(
+        runtime=runtime, ctx=ctx, recipe=Recipe.from_dict({"runtime": "vllm-distributed", "model": "fixture/model"})
+    )
 
     call = runtime.generate_node_command.call_args
     assert call.kwargs["placement"].host_for_rank(0) == "192.168.100.10"

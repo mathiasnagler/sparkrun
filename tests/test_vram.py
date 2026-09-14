@@ -823,10 +823,10 @@ class TestFetchSafetensorsSizeOrder:
             api_called.append(1)
             return _FakeModelInfo(safetensors=None)
 
-        class _Entry:
-            def __init__(self, rfilename, size):
-                self.rfilename = rfilename
-                self.size = size
+        from huggingface_hub import RepoFile
+
+        def _Entry(rfilename, size):
+            return RepoFile(path=rfilename, size=size, oid="fixture")
 
         tree = [
             _Entry("config.json", 1024),
@@ -881,10 +881,10 @@ class TestFetchSafetensorsSizeOrder:
             downloaded.append(kwargs.get("filename", ""))
             raise FileNotFoundError("no index here")
 
-        class _Entry:
-            def __init__(self, rfilename, size):
-                self.rfilename = rfilename
-                self.size = size
+        from huggingface_hub import RepoFile
+
+        def _Entry(rfilename, size):
+            return RepoFile(path=rfilename, size=size, oid="fixture")
 
         tree = [
             _Entry("config.json", 1024),

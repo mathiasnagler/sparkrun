@@ -7,6 +7,7 @@ from typing import Any, TYPE_CHECKING
 
 from sparkrun.core.config import SparkrunConfig
 from sparkrun.runtimes._util import resolve_api_key
+from sparkrun.core.validation import RecipeIssue
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
@@ -324,7 +325,8 @@ class LlamaCppRuntime(RuntimePlugin):
                 )
             # Auto-inject the multimodal projector when the recipe didn't
             # reference it explicitly (literal --mmproj or {mmproj}).
-            rendered = self._inject_mmproj(rendered, config.get("_mmproj_path"))
+            mmproj_path = config.get("_mmproj_path")
+            rendered = self._inject_mmproj(rendered, str(mmproj_path) if mmproj_path is not None else None)
             return rendered
 
         # Otherwise, build command from structured defaults
@@ -401,7 +403,7 @@ class LlamaCppRuntime(RuntimePlugin):
         cmds["llama_cpp"] = "llama-server --version 2>/dev/null | head -1 || echo unknown"
         return cmds
 
-    def validate_recipe(self, recipe: Recipe) -> list[str]:
+    def validate_recipe(self, recipe: Recipe) -> list[str | RecipeIssue]:
         """Validate llama.cpp-specific recipe fields.
 
         llama.cpp distributes across nodes via ``--split-mode row`` (TP)
@@ -517,6 +519,8 @@ class LlamaCppRuntime(RuntimePlugin):
 
         .. note:: Experimental. The llama.cpp RPC backend is still evolving.
         """
+        if recipe is None:
+            raise ValueError("RPC cluster launch requires a recipe")
         import time
         from sparkrun.runtimes._cluster_ops import (
             ClusterContext,
@@ -541,6 +545,7 @@ class LlamaCppRuntime(RuntimePlugin):
         runtime_cache = kwargs.pop("runtime_cache", None)
         images_by_node = kwargs.pop("images_by_node", None)
 
+        executor = self._resolve_executor()
         ctx = ClusterContext.build(
             self,
             hosts,
@@ -619,7 +624,7 @@ class LlamaCppRuntime(RuntimePlugin):
         rc = launch_containers_parallel(
             ctx,
             all_containers,
-            self.executor,
+            executor,
             comm_env,
             extra_docker_opts=combined_docker_opts or None,
             runtime=self,
@@ -693,7 +698,7 @@ class LlamaCppRuntime(RuntimePlugin):
                             logger.error("  %s", line)
                     cleanup_after_failure(
                         ctx,
-                        self.executor,
+                        executor,
                         container_names=[head_container, worker_container_name],
                         reason=f"{len(worker_failures)} RPC worker(s) failed exec",
                     )
@@ -723,7 +728,7 @@ class LlamaCppRuntime(RuntimePlugin):
                         dump_serve_log(host, worker_container_name, ctx.ssh_kwargs, dry_run=dry_run)
                         cleanup_after_failure(
                             ctx,
-                            self.executor,
+                            executor,
                             container_names=[head_container, worker_container_name],
                             reason=f"RPC worker on {host} did not open port",
                         )
@@ -753,12 +758,12 @@ class LlamaCppRuntime(RuntimePlugin):
             logger.info("Step 6/6: Executing llama-server on head %s...", ctx.head_host)
         logger.info("  Command: %s", head_command[:120])
 
-        rc = exec_serve_on_container(ctx, self.executor, ctx.head_host, head_container, head_command)
+        rc = exec_serve_on_container(ctx, executor, ctx.head_host, head_container, head_command)
         if rc != 0:
             dump_serve_log(ctx.head_host, head_container, ctx.ssh_kwargs, dry_run=dry_run)
             cleanup_after_failure(
                 ctx,
-                self.executor,
+                executor,
                 container_names=[head_container, worker_container_name],
                 reason="llama-server head exec failed",
             )

@@ -695,7 +695,7 @@ class SglangRuntime(RuntimePlugin):
         safe to share across images.
 
         ``FLASHINFER_WORKSPACE_BASE`` and the CuTeDSL pair carry the same
-        rationale they do in :meth:`VllmMixin.runtime_cache_paths`, and for the
+        rationale they do in :meth:`VllmRuntimeBase.runtime_cache_paths`, and for the
         same libraries — ``FLASHINFER_CACHE_DIR`` is not an env var upstream
         reads, and the CuTeDSL generated-IR cache defaults into ``$TMPDIR``.
 

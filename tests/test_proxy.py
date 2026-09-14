@@ -1518,6 +1518,7 @@ class TestLaunchInferenceAutoPort:
         mock_recipe.max_nodes = None
 
         mock_runtime = MagicMock()
+        mock_runtime.native_apis.return_value = []
         mock_runtime.resolve_container.return_value = "test:latest"
         mock_runtime.is_delegating_runtime.return_value = True
         mock_runtime.generate_command.return_value = "serve cmd"
@@ -1689,6 +1690,7 @@ class TestAutoPortDoesNotMoveIdentity:
         from sparkrun.core.launcher import launch_inference
 
         mock_runtime = MagicMock()
+        mock_runtime.native_apis.return_value = []
         mock_runtime.resolve_container.return_value = "test:latest"
         mock_runtime.is_delegating_runtime.return_value = True
         mock_runtime.generate_command.return_value = "serve cmd"

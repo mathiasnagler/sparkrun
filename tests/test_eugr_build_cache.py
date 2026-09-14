@@ -475,7 +475,7 @@ class TestSaveBuildMetadataDelegated:
 
 
 # ---------------------------------------------------------------------------
-# Integration: prepare_image skip path
+# Integration: prepare skip path
 # ---------------------------------------------------------------------------
 
 
@@ -498,7 +498,7 @@ class TestPrepareImageCacheIntegration:
             mock.patch.object(builder, "_build_image") as mock_build,
             mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False),
         ):
-            result = builder.prepare_image(
+            result = builder.prepare(
                 "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest",
                 recipe,
                 ["host1"],
@@ -526,7 +526,7 @@ class TestPrepareImageCacheIntegration:
             mock.patch.object(builder, "_save_build_metadata") as mock_save,
             mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False),
         ):
-            result = builder.prepare_image(
+            result = builder.prepare(
                 "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest",
                 recipe,
                 ["host1"],
@@ -553,7 +553,7 @@ class TestPrepareImageCacheIntegration:
             mock.patch.object(builder, "_build_image"),
             mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False),
         ):
-            builder.prepare_image(
+            builder.prepare(
                 "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest",
                 recipe,
                 ["host1"],
@@ -583,7 +583,7 @@ class TestPrepareImageCacheIntegration:
             mock.patch.object(builder, "_can_skip_build", return_value=True) as mock_skip,
             mock.patch.object(builder, "_build_image_remote") as mock_build,
         ):
-            builder.prepare_image(
+            builder.prepare(
                 "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest",
                 recipe,
                 ["host1"],
@@ -624,7 +624,7 @@ class TestPrepareImageCacheIntegration:
             mock.patch.object(builder, "_save_build_metadata") as mock_save,
             mock.patch.object(builder, "_image_exists_on_host", return_value=False),
         ):
-            builder.prepare_image(
+            builder.prepare(
                 "my-image",
                 recipe,
                 ["head1"],

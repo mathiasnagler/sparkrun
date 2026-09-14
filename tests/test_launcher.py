@@ -12,7 +12,7 @@ from sparkrun.core.launcher import (
     resolve_per_host_backends,
     resolve_platform_env_defaults,
 )
-from sparkrun.core.recipe import Recipe
+from sparkrun.core.recipe import Recipe, DistributionConfig
 from sparkrun.orchestration.collectives import NcclBackend, RcclBackend
 from sparkrun.orchestration.executors._base import ExecutorTarget
 
@@ -351,6 +351,7 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path)
         name = "stub-recipe"
         container = "stub:latest"
         model_revision = None
+        distribution_config = DistributionConfig()
 
         def build_config_chain(self, overrides=None):
             class _CC:
@@ -686,6 +687,7 @@ def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tm
         name = "stub-recipe"
         container = "stub:latest"
         model_revision = None
+        distribution_config = DistributionConfig()
         requires_capability: frozenset = frozenset()
 
         def build_config_chain(self, overrides=None):
@@ -1008,6 +1010,7 @@ def test_launch_inference_metadata_failure_aborts_before_submission(monkeypatch,
         name = "stub-recipe"
         container = "stub:latest"
         model_revision = None
+        distribution_config = DistributionConfig()
         requires_capability: frozenset = frozenset()
 
         def build_config_chain(self, overrides=None):
@@ -1118,6 +1121,7 @@ def test_launch_inference_records_cluster_and_ssh_user(monkeypatch, tmp_path):
         name = "stub-recipe"
         container = "stub:latest"
         model_revision = None
+        distribution_config = DistributionConfig()
         requires_capability: frozenset = frozenset()
 
         def build_config_chain(self, overrides=None):
@@ -1346,6 +1350,7 @@ def _builder_phase_harness(monkeypatch, tmp_path):
         name = "stub-recipe"
         container = "stub:latest"
         model_revision = None
+        distribution_config = DistributionConfig()
 
         def build_config_chain(self, overrides=None):
             merged = dict(self.defaults)

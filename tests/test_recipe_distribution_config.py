@@ -177,3 +177,32 @@ def test_revision_survives_state_round_trip():
     restored = Recipe._deserialize(r.__getstate__())
     entries = {e.name: e.revision for e in restored.distribution_config.models.entries}
     assert entries == {"{model}": "deadbeef", "org/draft": None}
+
+
+def test_resource_entry_types_survive_roundtrip_and_keep_model_revisions():
+    from dataclasses import asdict
+    from sparkrun.core.recipe import DistributionConfig, DistributionModelEntry, DistributionContainerEntry
+
+    original = _recipe().distribution_config
+    original.add_model("org/draft", revision="draft-sha")
+    restored = DistributionConfig.from_dict(asdict(original))
+    assert all(isinstance(entry, DistributionModelEntry) for entry in restored.models.entries)
+    assert all(isinstance(entry, DistributionContainerEntry) for entry in restored.containers.entries)
+    assert restored.models.entries[-1].revision == "draft-sha"
+    restored.add_model("org/draft", revision="updated-sha")
+    assert restored.models.entries[-1].revision == "updated-sha"
+
+
+def test_cross_kind_entries_fail_at_construction_and_after_mutation():
+    import pytest
+    from sparkrun.core.recipe import DistributionConfig, DistributionResourceConfig, DistributionContainerEntry, RecipeError
+
+    wrong = DistributionContainerEntry("image:tag")
+    with pytest.raises(RecipeError, match="models.*DistributionModelEntry"):
+        DistributionConfig(models=DistributionResourceConfig(entries=[wrong]))
+    with pytest.raises(RecipeError, match="DistributionModelEntry"):
+        DistributionConfig.from_dict({"models": {"entries": [wrong]}})
+    config = DistributionConfig()
+    config.models.entries.append(wrong)
+    with pytest.raises(RecipeError, match="models.*DistributionModelEntry"):
+        config.resolve(_recipe())

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sparkrun.core.recipe import DistributionConfig
 from sparkrun.orchestration.executors._base import ExecutorTarget
 
 import pytest
@@ -302,6 +303,7 @@ class _FakeConfig:
 
 
 class _FakeRecipe:
+    distribution_config = DistributionConfig()
     runtime = "stub"
     model = "stub-model"
     env = {}

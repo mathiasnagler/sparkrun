@@ -48,6 +48,7 @@ def test_run_with_name_override(monkeypatch):
     monkeypatch.setattr("sparkrun.cli._run.resolve_cluster_config", lambda *args, **kwargs: mock_ret)
 
     mock_runtime = MagicMock()
+    mock_runtime.native_apis.return_value = []
     mock_runtime.runtime_name = "vllm"
     mock_runtime.resolve_container.return_value = "img:latest"
     mock_runtime.validate_recipe.return_value = []

@@ -826,7 +826,7 @@ def _attach_foreground(runtime: RuntimePlugin, ctx: ClusterContext, follow: bool
 def run_native_cluster(
     runtime: RuntimePlugin,
     ctx: ClusterContext,
-    recipe: Recipe | None = None,
+    recipe: Recipe,
     overrides: dict[str, Any] | None = None,
     *,
     comm_env: ClusterCommEnv | None = None,
@@ -867,6 +867,9 @@ def run_native_cluster(
         stop_log_capture,
     )
 
+    if recipe is None:
+        raise ValueError("Native cluster launch requires a recipe")
+    overrides = overrides if overrides is not None else {}
     executor = runtime._resolve_executor()
 
     if progress:

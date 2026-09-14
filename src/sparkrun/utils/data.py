@@ -1,7 +1,7 @@
 """Detached data values for configuration and public snapshots; no I/O."""
 
 from __future__ import annotations
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import date
 from pathlib import PurePath
 from types import MappingProxyType
@@ -49,11 +49,20 @@ def normalize_data(value: Any, *, path: str = "data") -> Any:
     raise TypeError("Unsupported %s value: %s" % (path, type(value).__name__))
 
 
-def integer_setting(value: object, *, key: str) -> int:
-    """Convert a numeric configuration scalar, naming invalid input in errors."""
+def _numeric_setting[T](value: object, key: str, parse: Callable[[int | float | str], T]) -> T:
     if not isinstance(value, (int, float, str)) or isinstance(value, bool):
         raise ValueError("Configuration %r must be numeric" % key)
     try:
-        return int(value)
+        return parse(value)
     except (ValueError, OverflowError) as error:
         raise ValueError("Configuration %r must be numeric" % key) from error
+
+
+def integer_setting(value: object, *, key: str) -> int:
+    """Convert a numeric configuration scalar, naming invalid input in errors."""
+    return _numeric_setting(value, key, int)
+
+
+def float_setting(value: object, *, key: str) -> float:
+    """Convert a numeric scalar; the consumer owns finite/range policy."""
+    return _numeric_setting(value, key, float)

@@ -41,7 +41,7 @@ developer's real config (see ``_DISABLE_ENV`` below).
 
 from __future__ import annotations
 
-from sparkrun.core.registration import enlist_registry_state, load_and_register_plugin
+from sparkrun.core.registration import enlist_registry_state, load_and_register_plugin, PluginCompatibilityError
 
 import importlib
 from functools import partial
@@ -318,6 +318,10 @@ def load_external_plugins(v: "Variables", paths: "list[Path] | None" = None) -> 
                 load_and_register_plugin(
                     partial(_import_directory_plugin, name, path, origins[name]), v, source=("external", name, str(path))
                 )
+            except PluginCompatibilityError as error:
+                logger.warning("Skipping plugin %s", error)
+                logger.debug("Plugin compatibility failure in %s from %s", name, path, exc_info=True)
+                continue
             except Exception:  # one broken plugin must not prevent independent loading
                 logger.exception("Failed to load external plugin module %r from %s", name, path)
                 continue

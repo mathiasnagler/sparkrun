@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from logging import Logger
 from typing import Any, Mapping, TYPE_CHECKING
 
@@ -82,7 +82,7 @@ BASE_CONSUMED_CONFIG_KEYS = frozenset(
 )
 
 
-class RuntimePlugin(Plugin):
+class RuntimePlugin(Plugin, ABC):
     """Abstract base class for sparkrun inference runtimes.
 
     Each runtime is an SAF Plugin that registers as a multi-extension
@@ -1893,6 +1893,8 @@ class RuntimePlugin(Plugin):
             runtime_cache=runtime_cache,
             images_by_node=images_by_node,
         )
+        if recipe is None:
+            raise ValueError("Native cluster launch requires a recipe")
         return run_native_cluster(
             runtime=self,
             ctx=ctx,

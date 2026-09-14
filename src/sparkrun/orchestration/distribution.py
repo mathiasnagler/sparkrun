@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.orchestration.infiniband import IBDetectionResult
     from sparkrun.orchestration.transfer import TransferFailure
-    from sparkrun.core.recipe import Recipe, DistributionResourceConfig
+    from sparkrun.core.recipe import Recipe, DistributionResourceConfig, DistributionContainerEntry
     from sparkrun.core.timing import Timeline
 
 logger = logging.getLogger(__name__)
@@ -763,7 +763,7 @@ def distribute_from_config(
     timeline: "Timeline | None" = None,
     job_cluster_id: str = "",
     cluster_name: str = "",
-    container_distribution: "DistributionResourceConfig | None" = None,
+    container_distribution: "DistributionResourceConfig[DistributionContainerEntry] | None" = None,
 ) -> tuple["ClusterCommEnv | None", dict[str, str], dict[str, str], dict[str, str]]:
     """Distribute resources based on recipe ``distribution_config``.
 
@@ -804,7 +804,6 @@ def distribute_from_config(
     Returns:
         Tuple of (comm_env, ib_ip_map, mgmt_ip_map, ib_iface_map).
     """
-    from sparkrun.core.recipe import DistributionModelEntry, DistributionContainerEntry
     from sparkrun.orchestration.primitives import build_ssh_kwargs
     from sparkrun.orchestration.infiniband import detect_ib_for_hosts, validate_ib_connectivity
     from sparkrun.containers.registry import ensure_image
@@ -836,7 +835,7 @@ def distribute_from_config(
         [
             (entry.name or image, targets)
             for entry in dist_cfg.containers.entries
-            if isinstance(entry, DistributionContainerEntry) and (targets := _resolve_targets(entry.target or [-1], host_list))
+            if (targets := _resolve_targets(entry.target or [-1], host_list))
         ]
         if dist_cfg.containers.enabled and not skip_container
         else []
@@ -845,7 +844,7 @@ def distribute_from_config(
         [
             (entry, targets)
             for entry in dist_cfg.models.entries
-            if isinstance(entry, DistributionModelEntry) and entry.name and (targets := _resolve_targets(entry.target or [-1], host_list))
+            if entry.name and (targets := _resolve_targets(entry.target or [-1], host_list))
         ]
         if dist_cfg.models.enabled and not skip_model
         else []

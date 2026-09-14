@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass, field, asdict as dataclass_asdict
 from json import dumps as json_dumps
 from pathlib import Path
-from typing import Any, TYPE_CHECKING, Optional
+from typing import Any, TYPE_CHECKING, Optional, Generic, TypeVar, Callable
 
 import yaml
 
@@ -149,12 +149,15 @@ class DistributionContainerEntry:
     """Node indices to distribute to. ``[-1]`` means all nodes."""
 
 
+_Entry = TypeVar("_Entry", bound=DistributionModelEntry | DistributionContainerEntry)
+
+
 @dataclass
-class DistributionResourceConfig:
+class DistributionResourceConfig(Generic[_Entry]):
     """Distribution settings for a resource type (models or containers)."""
 
     enabled: bool = True
-    entries: list[DistributionModelEntry | DistributionContainerEntry] = field(default_factory=list)
+    entries: list[_Entry] = field(default_factory=list)
 
     explicit: bool = False
     """True when the recipe wrote this resource's block itself.
@@ -177,9 +180,25 @@ class DistributionConfig:
     by runtimes during ``prepare()``.
     """
 
-    models: DistributionResourceConfig = field(default_factory=DistributionResourceConfig)
-    containers: DistributionResourceConfig = field(default_factory=DistributionResourceConfig)
+    models: DistributionResourceConfig[DistributionModelEntry] = field(default_factory=DistributionResourceConfig[DistributionModelEntry])
+    containers: DistributionResourceConfig[DistributionContainerEntry] = field(
+        default_factory=DistributionResourceConfig[DistributionContainerEntry]
+    )
     externally_provided: bool = True
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Reject cross-kind entries, including edits made after construction."""
+        for kind, resource, entry_type in (
+            ("models", self.models, DistributionModelEntry),
+            ("containers", self.containers, DistributionContainerEntry),
+        ):
+            if not isinstance(resource, DistributionResourceConfig):
+                raise RecipeError("distribution_config.%s must be a resource configuration" % kind)
+            if any(not isinstance(entry, entry_type) for entry in resource.entries):
+                raise RecipeError("distribution_config.%s requires %s entries" % (kind, entry_type.__name__))
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DistributionConfig":
@@ -199,38 +218,31 @@ class DistributionConfig:
             )
 
         def resource_config_from_dict(
-            raw: dict[str, Any] | None,
-            entry_factory,
-        ) -> DistributionResourceConfig:
+            raw: dict[str, Any] | DistributionResourceConfig[_Entry] | None,
+            entry_type: type[_Entry],
+            entry_factory: Callable[[dict[str, Any]], _Entry],
+        ) -> DistributionResourceConfig[_Entry]:
+            if isinstance(raw, DistributionResourceConfig):
+                return raw
             if raw is None:
                 return DistributionResourceConfig()
-
+            entries: list[_Entry] = []
+            for entry in raw.get("entries", []):
+                if isinstance(entry, entry_type):
+                    entries.append(entry)
+                elif isinstance(entry, dict):
+                    entries.append(entry_factory(entry))
+                else:
+                    raise RecipeError("distribution_config requires %s entries" % entry_type.__name__)
             return DistributionResourceConfig(
                 enabled=raw.get("enabled", True),
-                entries=[
-                    entry if isinstance(entry, (DistributionModelEntry, DistributionContainerEntry)) else entry_factory(entry)
-                    for entry in raw.get("entries", [])
-                ],
+                entries=entries,
                 explicit=bool(raw.get("explicit", False)),
             )
 
         return cls(
-            models=(
-                data["models"]
-                if isinstance(data.get("models"), DistributionResourceConfig)
-                else resource_config_from_dict(
-                    data.get("models"),
-                    model_entry_from_dict,
-                )
-            ),
-            containers=(
-                data["containers"]
-                if isinstance(data.get("containers"), DistributionResourceConfig)
-                else resource_config_from_dict(
-                    data.get("containers"),
-                    container_entry_from_dict,
-                )
-            ),
+            models=resource_config_from_dict(data.get("models"), DistributionModelEntry, model_entry_from_dict),
+            containers=resource_config_from_dict(data.get("containers"), DistributionContainerEntry, container_entry_from_dict),
             externally_provided=data.get("externally_provided", True),
         )
 
@@ -256,7 +268,9 @@ class DistributionConfig:
     def add_container(self, model_container_config: DistributionContainerEntry):
         self.containers.entries.append(model_container_config)
 
-    def resolve(self, recipe: "Recipe", resolved_container: str = None, overrides: dict[str, Any] | None = None) -> "DistributionConfig":
+    def resolve(
+        self, recipe: "Recipe", resolved_container: str | None = None, overrides: dict[str, Any] | None = None
+    ) -> "DistributionConfig":
         """Resolve templated names in distribution config using the config chain.
 
         Replaces ``{model}``, ``{container}`` placeholders in entry names with
@@ -266,6 +280,7 @@ class DistributionConfig:
         Args:
             overrides: CLI overrides dict (optional, uses applied overrides if not given).
         """
+        self.validate()
         # noinspection PyProtectedMember
         effective_overrides = overrides or recipe._applied_overrides
         config_chain = recipe.build_config_chain(effective_overrides)
@@ -276,12 +291,10 @@ class DistributionConfig:
         config_chain["model"] = recipe.model
 
         for entry in self.models.entries:
-            if isinstance(entry, DistributionModelEntry):
-                entry.name = render_template(entry.name, config_chain)
+            entry.name = render_template(entry.name, config_chain)
 
         for entry in self.containers.entries:
-            if isinstance(entry, DistributionContainerEntry):
-                entry.name = render_template(entry.name, config_chain)
+            entry.name = render_template(entry.name, config_chain)
 
         return self
 
@@ -334,13 +347,13 @@ def _parse_distribution_config(data: dict[str, Any]) -> DistributionConfig:
 
     default = _default_distribution_config(model_revision=model_revision)
 
-    def _parse_models(models_raw: Any) -> DistributionResourceConfig:
+    def _parse_models(models_raw: Any) -> DistributionResourceConfig[DistributionModelEntry]:
         if not isinstance(models_raw, dict):
             models_raw = {}
         entries_raw = models_raw.get("entries", [])
         if not isinstance(entries_raw, list):
             entries_raw = []
-        entries: list[DistributionModelEntry | DistributionContainerEntry] = []
+        entries: list[DistributionModelEntry] = []
         for e in entries_raw:
             if isinstance(e, dict):
                 entries.append(
@@ -354,13 +367,13 @@ def _parse_distribution_config(data: dict[str, Any]) -> DistributionConfig:
                 entries.append(DistributionModelEntry(name=e))
         return DistributionResourceConfig(enabled=models_raw.get("enabled", True), entries=entries, explicit=True)
 
-    def _parse_containers(containers_raw: Any) -> DistributionResourceConfig:
+    def _parse_containers(containers_raw: Any) -> DistributionResourceConfig[DistributionContainerEntry]:
         if not isinstance(containers_raw, dict):
             containers_raw = {}
         entries_raw = containers_raw.get("entries", [])
         if not isinstance(entries_raw, list):
             entries_raw = []
-        entries: list[DistributionModelEntry | DistributionContainerEntry] = []
+        entries: list[DistributionContainerEntry] = []
         for e in entries_raw:
             if isinstance(e, dict):
                 entries.append(
@@ -901,7 +914,7 @@ def fetch_and_cache_recipe(url: str, *, allow_untrusted_host: bool = False) -> P
         return cache_path
     except (HTTPError, URLError, OSError) as e:
         if cache_path.exists():
-            reason = e.code if isinstance(e, HTTPError) else e.reason
+            reason = e.code if isinstance(e, HTTPError) else e.reason if isinstance(e, URLError) else str(e)
             logger.warning(
                 "Failed to fetch recipe (using cached copy): %s",
                 reason,
@@ -1745,19 +1758,21 @@ class Recipe:
                 if api_params is not None:
                     model_params = api_params
 
+        from sparkrun.utils.data import integer_setting, float_setting
+
         # Get effective max_model_len and tensor_parallel from config chain
         max_model_len = config.get("max_model_len")
         if max_model_len is not None:
             if str(max_model_len).lower() == "auto":
                 max_model_len = None
             else:
-                max_model_len = int(max_model_len)
+                max_model_len = integer_setting(max_model_len, key="max_model_len")
 
         tp_val = config.get("tensor_parallel")
-        tensor_parallel = int(tp_val) if tp_val is not None else 1
+        tensor_parallel = integer_setting(tp_val, key="tensor_parallel") if tp_val is not None else 1
 
         pp_val = config.get("pipeline_parallel")
-        pipeline_parallel = int(pp_val) if pp_val is not None else 1
+        pipeline_parallel = integer_setting(pp_val, key="pipeline_parallel") if pp_val is not None else 1
 
         # Check for kv_cache_dtype in defaults (runtime-specific).
         if not kv_dtype:
@@ -1780,7 +1795,7 @@ class Recipe:
 
         # GPU memory utilization (runtime budget fraction)
         gpu_mem_val = config.get("gpu_memory_utilization")
-        gpu_memory_utilization = float(gpu_mem_val) if gpu_mem_val is not None else None
+        gpu_memory_utilization = float_setting(gpu_mem_val, key="gpu_memory_utilization") if gpu_mem_val is not None else None
 
         result = _estimate_vram(
             model_params=model_params,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from _runtime_fixtures import StubRuntime
+
 from unittest import mock
 
 import yaml
@@ -748,17 +750,15 @@ def test_stop_cluster_delegates_to_native():
 
 def test_base_get_extra_docker_opts_default():
     """Base RuntimePlugin.get_extra_docker_opts() returns empty list."""
-    from sparkrun.runtimes.base import RuntimePlugin
 
-    runtime = RuntimePlugin()
+    runtime = StubRuntime()
     assert runtime.get_extra_docker_opts() == []
 
 
 def test_generate_node_script_extra_docker_opts():
     """_generate_node_script passes extra_docker_opts to docker_run_cmd."""
-    from sparkrun.runtimes.base import RuntimePlugin
 
-    runtime = RuntimePlugin()
+    runtime = StubRuntime()
     script = runtime._generate_node_script(
         image="test:latest",
         container_name="test_node_0",
@@ -771,9 +771,8 @@ def test_generate_node_script_extra_docker_opts():
 
 def test_generate_node_script_no_extra_opts():
     """_generate_node_script works without extra_docker_opts."""
-    from sparkrun.runtimes.base import RuntimePlugin
 
-    runtime = RuntimePlugin()
+    runtime = StubRuntime()
     script = runtime._generate_node_script(
         image="test:latest",
         container_name="test_node_0",

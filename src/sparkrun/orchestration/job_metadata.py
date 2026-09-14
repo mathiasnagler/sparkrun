@@ -127,12 +127,16 @@ def check_job_running(
     # Load metadata
     meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
 
-    # Resolve hosts
-    if hosts is None:
-        if meta and meta.get("hosts"):
-            hosts = meta["hosts"]
-        else:
-            return JobStatus(running=False, cluster_id=cluster_id, metadata=meta, hosts=[])
+    # Metadata supplies hosts only when the caller omitted them. No evidence
+    # means no query; malformed evidence must not silently select another host.
+    resolved_hosts = hosts if hosts is not None else (meta.get("hosts") if meta else None)
+    if resolved_hosts is None:
+        return JobStatus(running=False, cluster_id=cluster_id, metadata=meta, hosts=[])
+    if not isinstance(resolved_hosts, (list, tuple)) or any(not isinstance(host, str) or not host.strip() for host in resolved_hosts):
+        raise ValueError("Job hosts must be a sequence of non-empty host names")
+    hosts = list(resolved_hosts)
+    if not hosts:
+        return JobStatus(running=False, cluster_id=cluster_id, metadata=meta, hosts=[])
 
     head_host = hosts[0]
     is_solo = len(hosts) == 1
@@ -370,7 +374,8 @@ def derive_recipe_fingerprint(recipe: "Recipe", overrides: dict | None = None) -
     ):
         parts.append("%s=%s" % (attr, _val(getattr(recipe, attr, None))))
 
-    layout = recipe.layout.to_dict() if getattr(recipe, "layout", None) is not None else None
+    recipe_layout = getattr(recipe, "layout", None)
+    layout = recipe_layout.to_dict() if recipe_layout is not None else None
     parts.append("layout=%s" % _val(layout))
 
     # Per-machine images, appended only when declared.  Kept out of the attr

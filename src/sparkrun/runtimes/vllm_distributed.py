@@ -11,7 +11,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from sparkrun.runtimes.base import RuntimePlugin
-from sparkrun.runtimes._vllm_common import VllmMixin, VLLM_FLAG_MAP, VLLM_BOOL_FLAGS
+from sparkrun.runtimes._vllm_common import VllmRuntimeBase, VLLM_FLAG_MAP, VLLM_BOOL_FLAGS
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
+class VllmDistributedRuntime(VllmRuntimeBase):
     """vLLM runtime using native distributed mode (no Ray).
 
     Each node runs the full ``vllm serve`` command with node-specific
@@ -33,7 +33,7 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
     default_image_prefix = "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5"
 
     # See SglangRuntime: native distribution, so per-machine tuned images work.
-    # vllm-ray is a *sibling* (both are VllmMixin + RuntimePlugin), not a
+    # vllm-ray is a *sibling* (both inherit VllmRuntimeBase), not a
     # subclass, so it does not pick this up — which is what we want: Ray needs
     # one build across head and workers.
     supports_heterogeneous_images = True

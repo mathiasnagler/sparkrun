@@ -1,5 +1,7 @@
 """Image defaults must agree across per-host planning and image preparation."""
 
+from _runtime_fixtures import StubRuntime
+
 from unittest.mock import Mock
 
 import pytest
@@ -9,7 +11,6 @@ from sparkrun.core.hardware import AcceleratorSpec, HostHardware
 from sparkrun.core.image_preparation import prepare_images
 from sparkrun.core.images import ImagePlanError, resolve_runtime_image_plan
 from sparkrun.core.recipe import Recipe, RecipeError
-from sparkrun.runtimes.base import RuntimePlugin
 from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
 from sparkrun.runtimes.vllm_ray import VllmRayRuntime
 
@@ -99,7 +100,7 @@ def test_unknown_hardware_uses_runtime_prefix():
 
 
 def test_absent_default_requires_an_explicit_image():
-    runtime = RuntimePlugin()
+    runtime = StubRuntime()
     assert runtime.resolve_container(_recipe()) == ""
     with pytest.raises(ImagePlanError, match="No container image"):
         resolve_runtime_image_plan(_recipe(), runtime, ["host"])
@@ -253,3 +254,27 @@ def test_container_launch_still_requires_image_before_distribution(monkeypatch, 
             trust=True,
         )
     distribution.assert_not_called()
+
+
+@pytest.mark.parametrize("command", [None, "", "   "])
+def test_launcher_rejects_invalid_runtime_command_before_submission(tmp_path, monkeypatch, command):
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.launcher import launch_inference
+    from sparkrun.runtimes.modular_max import ModularMaxRuntime
+
+    runtime = ModularMaxRuntime()
+    monkeypatch.setattr(runtime, "generate_command", Mock(return_value=command))
+    submit = Mock(side_effect=AssertionError("invalid command submitted"))
+    monkeypatch.setattr(runtime, "run", submit)
+    with pytest.raises(ValueError, match="non-empty serve command"):
+        launch_inference(
+            recipe=_recipe(runtime="modular-max", executor="local"),
+            runtime=runtime,
+            host_list=["localhost"],
+            overrides={},
+            config=SparkrunConfig(tmp_path / "config.yaml"),
+            is_solo=True,
+            dry_run=True,
+            sync_tuning=False,
+        )
+    submit.assert_not_called()

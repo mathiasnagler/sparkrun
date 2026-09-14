@@ -1092,3 +1092,62 @@ def test_a_gated_suite_still_parses_so_the_error_can_name_the_flag(runner, monke
     assert "is not one of" not in result.output
     assert "Testing RDMA fabric" not in result.output
     api_call.assert_not_called()
+
+
+def test_setup_rdma_accepts_single_cable_switch_ports_without_warning():
+    from sparkrun.core.setup_checks import OK, _check_rdma
+
+    state = _check_state(
+        RDMA_PERFTEST="1",
+        RDMA_DEV_COUNT="4",
+        RDMA_DEV_0_NAME="rocep1s0f0",
+        RDMA_DEV_0_STATE="4: ACTIVE",
+        RDMA_DEV_0_RATE="200 Gb/sec",
+        RDMA_DEV_0_NETDEV="enp1s0f0np0",
+        RDMA_DEV_1_NAME="roceP2p1s0f0",
+        RDMA_DEV_1_STATE="4: ACTIVE",
+        RDMA_DEV_1_RATE="200 Gb/sec",
+        RDMA_DEV_1_NETDEV="enP2p1s0f0np0",
+        RDMA_DEV_2_NAME="rocep1s0f1",
+        RDMA_DEV_2_STATE="1: DOWN",
+        RDMA_DEV_2_NETDEV="enp1s0f1np1",
+        RDMA_DEV_3_NAME="roceP2p1s0f1",
+        RDMA_DEV_3_STATE="1: DOWN",
+        RDMA_DEV_3_NETDEV="enP2p1s0f1np1",
+    )
+    state.cx7 = _det(
+        "h1",
+        [
+            _iface("enp1s0f0np0", "192.168.11.1", "192.168.11.0/24", "rocep1s0f0"),
+            _iface("enP2p1s0f0np0", "192.168.12.1", "192.168.12.0/24", "roceP2p1s0f0"),
+        ],
+    )
+    context = _check_ctx()
+    context.cluster_name = "sparks25"
+    item = _check_rdma(state, context)
+    assert item.status == OK
+    assert "2 device(s) ACTIVE" in item.detail
+    assert "200 Gb/s" in item.detail
+    assert "2 additional device(s) inactive" in item.detail
+    assert "link state only" in item.detail
+    assert "if connectivity/performance are not yet verified" in item.guidance
+    assert "--cluster sparks25" in item.guidance
+
+
+def test_setup_rdma_still_warns_for_inactive_device_on_a_configured_interface():
+    from sparkrun.core.setup_checks import WARN, _check_rdma
+
+    state = _check_state(
+        RDMA_PERFTEST="1",
+        RDMA_DEV_COUNT="2",
+        RDMA_DEV_0_NAME="active",
+        RDMA_DEV_0_STATE="4: ACTIVE",
+        RDMA_DEV_0_NETDEV="eth0",
+        RDMA_DEV_1_NAME="inactive",
+        RDMA_DEV_1_STATE="1: DOWN",
+        RDMA_DEV_1_NETDEV="eth1",
+    )
+    state.cx7 = _det("h1", [_iface("eth1", "192.168.13.1", "192.168.13.0/24", "inactive")])
+    item = _check_rdma(state, _check_ctx())
+    assert item.status == WARN
+    assert "configured interface(s) have inactive RDMA devices: inactive (eth1)" in item.detail

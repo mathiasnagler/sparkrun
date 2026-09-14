@@ -32,6 +32,8 @@ gating (feature flags, ``hidden=``) is the command's own concern.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import click
 
@@ -117,6 +119,36 @@ def ensure_cli_extensions(root: click.Group, *, ctx: click.Context | None = None
     render_command_identity(root)
 
 
+_COMPLETING = ContextVar("sparkrun_cli_completing", default=False)
+_PLUGIN_LOGGERS = (
+    "sparkrun.core.bootstrap",
+    "sparkrun.core.external_plugins",
+    "sparkrun.core.in_tree_plugins",
+    "sparkrun.core.installed_plugins",
+    "sparkrun.core.registration",
+    __name__,
+)
+
+
+@contextmanager
+def _completion_diagnostics():
+    """Completion emits candidates only; other invocations keep their logging."""
+
+    def allow_record(_record):
+        return not _COMPLETING.get()
+
+    loggers = [logging.getLogger(name) for name in _PLUGIN_LOGGERS]
+    token = _COMPLETING.set(True)
+    try:
+        for target in loggers:
+            target.addFilter(allow_record)
+        yield
+    finally:
+        for target in loggers:
+            target.removeFilter(allow_record)
+        _COMPLETING.reset(token)
+
+
 class PluggableGroup(click.Group):
     """A Click group that lazily merges plugin-contributed commands.
 
@@ -126,6 +158,12 @@ class PluggableGroup(click.Group):
     one. The load is guarded per-instance. Discovery failures are logged so
     built-in recovery commands remain dispatchable.
     """
+
+    def _main_shell_completion(self, *args, **kwargs):
+        # Click owns the completion flag and enters this hook before building
+        # contexts. Avoid loading an application profile merely to detect TAB.
+        with _completion_diagnostics():
+            return super()._main_shell_completion(*args, **kwargs)
 
     def _ensure_cli_extensions_loaded(self, ctx: click.Context) -> None:
         from sparkrun.cli._common import _bind_application_config

@@ -7,6 +7,7 @@ on launch failure and to surface the real error from the serve log file.
 
 from __future__ import annotations
 
+from sparkrun.core.recipe import Recipe
 import logging
 from unittest import mock
 
@@ -330,7 +331,9 @@ def test_native_cluster_step6_head_serve_failure_triggers_cleanup(monkeypatch):
         config=None,
     )
 
-    rc = _cluster_ops.run_native_cluster(runtime=runtime, ctx=ctx)
+    rc = _cluster_ops.run_native_cluster(
+        runtime=runtime, ctx=ctx, recipe=Recipe.from_dict({"runtime": "vllm-distributed", "model": "fixture/model"})
+    )
 
     assert rc == 1
     assert cleanup_calls, "cleanup_after_failure should be invoked on head serve exec failure"

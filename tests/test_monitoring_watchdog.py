@@ -288,7 +288,7 @@ def test_recovered_host_restores_sample_and_clears_error():
 
     line = ",".join("42" for _ in monitoring.MONITOR_COLUMNS)
     proc = mock.MagicMock()
-    proc.stdout = iter([line + "\n"])
+    proc.stdout = iter([(line + "\n").encode()])
     proc.poll.return_value = 0
 
     mon._reader("h1", proc)
@@ -325,3 +325,17 @@ def test_start_host_stamps_connect_started_even_when_spawn_fails(monkeypatch):
 
     assert mon.states["h1"].connect_started is not None
     assert "SSH failed" in mon.states["h1"].error
+
+
+@pytest.mark.parametrize("monitor_type", [monitoring.ClusterMonitor, monitoring.NvMonitorClusterMonitor])
+def test_monitor_binary_stderr_is_reported_as_text(monitor_type):
+    from io import BytesIO
+
+    monitor = monitor_type(["node-a"], {})
+    proc = mock.Mock()
+    proc.stdout = iter([])
+    proc.stderr = BytesIO(b"ssh diagnostic\nPermission denied (publickey)\n")
+    proc.poll.return_value = 255
+    monitor._reader("node-a", proc)
+    assert isinstance(monitor.states["node-a"].error, str)
+    assert monitor.states["node-a"].error.endswith("Permission denied (publickey)")
