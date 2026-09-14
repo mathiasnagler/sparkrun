@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from typing import TypedDict
 
 from sparkrun.api.setup._errors import RdmaTestError
 from sparkrun.core.progress import PROGRESS
@@ -143,7 +144,12 @@ def available_suites(config=None) -> tuple[str, ...]:
     """
     from sparkrun.core.features import is_feature_enabled
 
-    return tuple(s for s in ALL_SUITES if suite_feature_flag(s) is None or is_feature_enabled(suite_feature_flag(s), config=config))
+    return tuple(s for s in ALL_SUITES if (flag := suite_feature_flag(s)) is None or is_feature_enabled(flag, config=config))
+
+
+class _PerftestOptions(TypedDict, total=False):
+    queue_pairs: int
+    duration: int
 
 
 STATUS_OK = "ok"
@@ -590,10 +596,11 @@ def _run_pair(
         raw_parts: list[str] = []
         failures: list[str] = []
 
-        for tool, kwargs in (
+        rounds: tuple[tuple[str, _PerftestOptions], ...] = (
             ("ib_write_lat", {}),
             ("ib_write_bw", {"queue_pairs": queue_pairs, "duration": duration}),
-        ):
+        )
+        for tool, kwargs in rounds:
             _say("  %s: %s", tool, link.describe())
             server_cmd = build_perftest_cmd(tool, link.hca_b, port=port, gid_index=gid_index, link_type=link_type, **kwargs)
             client_cmd = build_perftest_cmd(

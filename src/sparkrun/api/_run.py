@@ -391,7 +391,9 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         else:
             preparation_receipts = {}
             prepared_execution = None
-        if execution_strategy is not None and prepared_execution.strategy != execution_strategy.name:
+        if execution_strategy is not None and prepared_execution is None:
+            raise ValueError("execution strategy must return a prepared execution")
+        if execution_strategy is not None and prepared_execution is not None and prepared_execution.strategy != execution_strategy.name:
             raise ValueError(
                 "execution strategy prepared itself as %r, expected %r" % (prepared_execution.strategy, execution_strategy.name)
             )
@@ -464,7 +466,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
             )
         except ExecutorUnavailableError:
             _executor_name = None
-        handler = run_handlers.get(_executor_name)
+        handler = run_handlers.get(_executor_name) if _executor_name is not None else None
         if handler is not None:
             if execution_strategy is not None:
                 raise SparkrunError(

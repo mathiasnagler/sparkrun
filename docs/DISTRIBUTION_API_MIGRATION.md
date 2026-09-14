@@ -749,3 +749,17 @@ Native `run()` and `benchmark()` calls require no unused image defaults.
 `BenchmarkOptions.timeout=None` uses the benchmark-spec timeout, then 14,400
 seconds. Framework request deadlines (tool-eval-bench: 120 seconds by default)
 are independent; see [BENCHMARK_API.md](BENCHMARK_API.md) for a combined example.
+
+### Typed configuration and operation results
+
+Configuration paths accept `str` or `Path`. A present configuration file must
+contain a mapping (an empty file is valid). The core `launch_inference()` helper
+requires `config` or an `sctx` that supplies it; application callers normally use
+`api.run()`. Omitting a registry manager skips registry tuning synchronization.
+Indirect sudo requires a password for its selected sudo user and rejects an
+absent password before transport.
+
+Placement resolution advertises `RankAssignment | None`, and sudo orchestration
+returns `RemoteResult` objects. Benchmark process handling and catalog/Tailscale
+result annotations now match their runtime shapes. Recipe validation hooks may
+return both plain suggestion strings and structured `RecipeIssue` records.

@@ -21,6 +21,7 @@ from sparkrun.runtimes.vllm_ray import VllmRayRuntime
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe
+    from sparkrun.core.validation import RecipeIssue
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class EugrVllmRayRuntime(VllmRayRuntime):
         """Eugr local builds use an untagged image name."""
         return "vllm-node"
 
-    def validate_recipe(self, recipe: Recipe) -> list[str]:
+    def validate_recipe(self, recipe: Recipe) -> list[str | RecipeIssue]:
         """Validate eugr-vllm-specific recipe fields."""
         issues = super().validate_recipe(recipe)
         if not recipe.command:

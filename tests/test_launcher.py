@@ -1520,3 +1520,21 @@ def test_wait_for_serve_ready_marks_the_stage_that_failed(monkeypatch):
     # The health stage never ran, so it must not appear at all — a zero-duration
     # span there would read as an instantaneous health check.
     assert "serve.health_ok" not in names
+
+
+def test_core_launcher_requires_configuration_before_preparation(monkeypatch):
+    from unittest.mock import Mock
+    from sparkrun.core.launcher import launch_inference
+    from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
+
+    prepare = Mock(side_effect=AssertionError("missing config must fail before preparation"))
+    monkeypatch.setattr("sparkrun.core.image_preparation.prepare_images", prepare)
+    with pytest.raises(ValueError, match="requires config or sctx"):
+        launch_inference(
+            recipe=Recipe.from_dict({"model": "test/model", "runtime": "vllm-distributed"}),
+            runtime=VllmDistributedRuntime(),
+            host_list=["localhost"],
+            overrides={},
+            dry_run=True,
+        )
+    prepare.assert_not_called()

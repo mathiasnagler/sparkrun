@@ -12,6 +12,7 @@ from sparkrun.runtimes._vllm_common import VllmMixin, VLLM_FLAG_MAP, VLLM_BOOL_F
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
+    from sparkrun.core.validation import RecipeIssue
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.comm_env import ClusterCommEnv
 
@@ -32,7 +33,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
     def get_family(self) -> str:
         return "vllm"
 
-    def validate_recipe(self, recipe: Recipe) -> list[str]:
+    def validate_recipe(self, recipe: Recipe) -> list[str | RecipeIssue]:
         issues = super().validate_recipe(recipe)
         dp = recipe.defaults.get("data_parallel")
         if dp is not None and int(dp) > 1:

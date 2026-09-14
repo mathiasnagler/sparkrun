@@ -12,6 +12,10 @@ first tagged release containing them, regardless of their original commit date.
 
 ### 0.4.0 application and API changes
 
+- Corrected public API, benchmark process, placement, and sudo result type
+  contracts. Core launch and indirect sudo reject missing required context
+  before execution; configuration files require a top-level mapping.
+
 - Completed native benchmark asset handling: image provenance comes from launch
   or captured deployment context. `materialize()` explicitly targets containers.
 - Local and remote distribution honor the same resource entries and node targets,

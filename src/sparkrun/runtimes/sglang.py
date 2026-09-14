@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.parallelism import ParallelismConfig
     from sparkrun.core.recipe import Recipe
+    from sparkrun.core.validation import RecipeIssue
     from sparkrun.orchestration.comm_env import ClusterCommEnv
 
 logger = logging.getLogger(__name__)
@@ -579,7 +580,7 @@ class SglangRuntime(RuntimePlugin):
             "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "0",  # confirmed for v0.5.9 on 20260205 by DB
         }
 
-    def validate_recipe(self, recipe: Recipe) -> list[str]:
+    def validate_recipe(self, recipe: Recipe) -> list[str | RecipeIssue]:
         """Validate SGLang-specific recipe fields."""
         from sparkrun.models.download import is_gguf_model
 

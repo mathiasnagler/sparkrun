@@ -1297,12 +1297,12 @@ def _execute_benchmark(
 
 def _config_integer(value: object, *, key: str) -> int:
     """Convert numeric configuration scalars, with an actionable API error."""
-    if not isinstance(value, (int, float, str)) or isinstance(value, bool):
-        raise BenchmarkFailed("Benchmark configuration %r must be numeric" % key)
+    from sparkrun.utils.data import integer_setting
+
     try:
-        return int(value)
-    except (ValueError, OverflowError) as error:
-        raise BenchmarkFailed("Benchmark configuration %r must be numeric" % key) from error
+        return integer_setting(value, key=key)
+    except ValueError as error:
+        raise BenchmarkFailed(str(error)) from error
 
 
 def _notify_interrupted(emitter: _ProgressEmitter, *, state_preserved: bool) -> None:

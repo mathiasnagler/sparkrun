@@ -165,8 +165,8 @@ def join(
     settings = _resolve_settings(sctx, tag=tag, ephemeral=ephemeral)
 
     if dry_run:
-        hosts = tuple(HostJoinState(host=h, ok=False, install=None, ip=None, message="dry-run") for h in host_list)
-        return JoinResult(tag=settings.tag, ephemeral=settings.ephemeral, hosts=hosts, dry_run=True)
+        dry_run_hosts = tuple(HostJoinState(host=h, ok=False, install=None, ip=None, message="dry-run") for h in host_list)
+        return JoinResult(tag=settings.tag, ephemeral=settings.ephemeral, hosts=dry_run_hosts, dry_run=True)
 
     try:
         token = ts.fetch_access_token(settings)
@@ -278,6 +278,7 @@ def expose(
 
     if proxy:
         return _expose_proxy(sctx, port=port, set_proxy_host=set_proxy_host)
+    assert head_host is not None  # exactly one target was required above
     return _expose_head(sctx, head_host, ssh_kwargs or {}, port=port, sudo_password=sudo_password)
 
 
@@ -374,8 +375,8 @@ def down(
 ) -> DownResult:
     """Log hosts out of the tailnet; with *remove*, also delete their devices."""
     if dry_run:
-        hosts = tuple(HostDownState(host=h, state="dry-run") for h in host_list)
-        return DownResult(hosts=hosts, dry_run=True)
+        dry_run_hosts = tuple(HostDownState(host=h, state="dry-run") for h in host_list)
+        return DownResult(hosts=dry_run_hosts, dry_run=True)
 
     # For --remove, resolve the joined hostnames AND the OAuth token/devices
     # *before* logging anyone out: a logged-out node no longer reports its

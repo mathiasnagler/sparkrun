@@ -235,8 +235,7 @@ def catalog_recipes(
             continue  # an ambiguous/orphaned cache alias is not a local recipe
         row["registry"] = source.name if source else None
         row["reference"] = _reference(path, source, sctx, imported=is_catalog_import(path, sctx.config))
-        row.update(_declared_facets(path))
-        rows.append(row)
+        rows.append({**row, **_declared_facets(path)})
     rows.sort(key=lambda row: (bool(row["registry"]), str(row["name"]), row["source_path"]))
     facets = {key: sorted({str(row.get(key)) if row.get(key) is not None else "unknown" for row in rows}) for key in CATALOG_FACETS}
     rows = [
@@ -283,7 +282,7 @@ def _resolve_selected_recipe(
         values = {str(key): coerce_value(value) if isinstance(value, str) else value for key, value in (overrides or {}).items()}
         image = values.pop("image", None)
         env = ["%s=%s" % (key, values.pop(key)) for key in list(values) if key.startswith("env.")]
-        recipe, values = apply_recipe_overrides(env, image=image, recipe=recipe, **values)
+        _, values = apply_recipe_overrides(env, image=image, recipe=recipe, **values)
         return recipe, values
 
 

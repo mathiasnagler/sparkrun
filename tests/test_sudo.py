@@ -148,3 +148,14 @@ def test_ownership_repair_can_use_manager_host_session():
     assert failed == ["h2"]
     assert [call[0] for call in session.calls] == ["h1", "h2"]
     assert all(call[1][:2] == ["bash", "-c"] for call in session.calls)
+
+
+def test_indirect_dispatch_requires_password_before_transport(monkeypatch):
+    from unittest.mock import Mock
+    from sparkrun.orchestration.sudo import dispatch_sudo_script
+
+    transport = Mock(side_effect=AssertionError("missing password must not reach SSH"))
+    monkeypatch.setattr("sparkrun.orchestration.sudo.run_indirect_sudo_script", transport)
+    with pytest.raises(ValueError, match="Indirect sudo requires a password"):
+        dispatch_sudo_script("test-host", "true", None, indirect_sudo_user="admin")
+    transport.assert_not_called()

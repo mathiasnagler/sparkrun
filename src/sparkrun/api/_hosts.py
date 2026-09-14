@@ -26,6 +26,7 @@ from sparkrun.api._errors import HostsUnreachable, InsufficientCapacity, Sparkru
 
 if TYPE_CHECKING:
     from sparkrun.core.context import SparkrunContext
+    from sparkrun.core.scheduler import RankAssignment
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def resolve_effective_hosts(
     solo: bool = False,
     scheduler: str | None = None,
     exclude_intent_id: str | None = None,
-) -> tuple[list[str], bool, list[str], "object | None"]:
+) -> tuple[list[str], bool, list[str], RankAssignment | None]:
     """Compute the effective host list + solo flag via the scheduler.
 
     This is the single placement authority shared by ``api.run``, the

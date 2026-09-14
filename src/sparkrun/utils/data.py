@@ -47,3 +47,13 @@ def normalize_data(value: Any, *, path: str = "data") -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise TypeError("Unsupported %s value: %s" % (path, type(value).__name__))
+
+
+def integer_setting(value: object, *, key: str) -> int:
+    """Convert a numeric configuration scalar, naming invalid input in errors."""
+    if not isinstance(value, (int, float, str)) or isinstance(value, bool):
+        raise ValueError("Configuration %r must be numeric" % key)
+    try:
+        return int(value)
+    except (ValueError, OverflowError) as error:
+        raise ValueError("Configuration %r must be numeric" % key) from error

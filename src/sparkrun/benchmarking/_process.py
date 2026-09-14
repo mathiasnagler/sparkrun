@@ -79,16 +79,16 @@ def run_benchmark_process(
     try:
         with selectors.DefaultSelector() as selector:
             for stream, sink in ((proc.stdout, stdout), (proc.stderr, stderr)):
-                if stream is not None:
+                if stream is not None and sink is not None:
                     os.set_blocking(stream.fileno(), False)
                     selector.register(stream, selectors.EVENT_READ, _Output(sink, credentials))
             while proc.poll() is None or selector.get_map():
                 remaining = deadline - time.monotonic() if deadline is not None else None
-                if remaining is not None and remaining <= 0:
+                if remaining is not None and remaining <= 0 and timeout is not None:
                     # Avoid attaching secret-bearing command arguments to the exception.
                     raise subprocess.TimeoutExpired("benchmark", timeout)
                 for key, _ in selector.select(min(remaining, 0.1) if remaining is not None else 0.1):
-                    data = os.read(key.fileobj.fileno(), 65536)
+                    data = os.read(key.fd, 65536)
                     key.data.feed(data, final=not data)
                     if not data:
                         selector.unregister(key.fileobj)
@@ -105,6 +105,7 @@ def run_benchmark_process(
         except subprocess.TimeoutExpired:
             logger.warning("Benchmark process did not exit after termination")
         finally:
-            proc.stdout.close()
+            if proc.stdout is not None:
+                proc.stdout.close()
             if proc.stderr is not None:
                 proc.stderr.close()

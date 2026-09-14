@@ -981,3 +981,20 @@ def test_intent_discovery_confirms_absence_on_complete_empty_status(monkeypatch)
     monkeypatch.setattr("sparkrun.orchestration.executor.query_status_for_cluster", lambda *a, **kw: status)
     with pytest.raises(api.JobNotFound):
         discover_cluster_id_by_intent("intent", ["h1"], cluster_def=ClusterDefinition(name="c", hosts=["h1"]))
+
+
+def test_strategy_must_return_prepared_execution_before_launch(monkeypatch):
+    from unittest.mock import Mock
+    from sparkrun.core.recipe import Recipe
+
+    recipe = Recipe({"runtime": "vllm-distributed", "model": "test/model"})
+    strategy = Mock()
+    strategy.name = "test-strategy"
+    strategy.finalize_preparation.return_value = None
+    monkeypatch.setattr("sparkrun.core.execution.resolve_recipe_execution", lambda context: (strategy, ()))
+    launch = Mock(side_effect=AssertionError("invalid strategy output must not reach launch"))
+    monkeypatch.setattr("sparkrun.core.launcher.launch_inference", launch)
+    with pytest.raises(api.SparkrunError, match="must return a prepared execution"):
+        api.run(api.RunOptions(recipe=recipe, hosts=("localhost",), solo=True, dry_run=True))
+    strategy.finalize_preparation.assert_called_once()
+    launch.assert_not_called()

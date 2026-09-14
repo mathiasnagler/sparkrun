@@ -87,6 +87,8 @@ def get_config_root(v: Variables | None = None) -> Path:
 
         stateful_root = is_stateful_ready(v)
         if stateful_root:
+            if not isinstance(stateful_root, (str, os.PathLike)):
+                raise TypeError("SAF stateful root must be a filesystem path")
             return Path(stateful_root)
     override = product_env("CONFIG_DIR")
     if override is not None:
@@ -143,7 +145,9 @@ def merge_defaults(baseline: dict, overrides: dict) -> dict:
 class SparkrunConfig:
     """Manages sparkrun user configuration."""
 
-    def __init__(self, config_path: Path | None = None):
+    _cluster_source: SparkrunConfig | None = None
+
+    def __init__(self, config_path: str | Path | None = None):
         self._profile = get_application_profile()
         self.config_path = (Path(config_path) if config_path is not None else resolve_config_path()).expanduser().resolve()
         self._data: dict[str, Any] = {}
@@ -167,10 +171,12 @@ class SparkrunConfig:
         return "config"
 
     def _load(self):
-        if self.config_path.exists():
-            self._data = read_yaml(str(self.config_path)) or {}
-        else:
-            self._data = {}
+        data = read_yaml(str(self.config_path)) if self.config_path.exists() else None
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            raise ValueError("Configuration file %s must contain a mapping" % self.config_path)
+        self._data = data
 
     @property
     def cache_dir(self) -> Path:
@@ -269,7 +275,7 @@ class SparkrunConfig:
         """
         from copy import copy
 
-        source = getattr(self, "_cluster_source", self)
+        source = self._cluster_source or self
         if cluster is None or not cluster.user:
             return source
         scoped = copy(source)
@@ -305,6 +311,8 @@ class SparkrunConfig:
 
         ssh = self.effective_data.get("ssh", {})
         raw = ssh.get("max_parallel_ssh") if isinstance(ssh, dict) else None
+        if raw is None:
+            return DEFAULT_MAX_PARALLEL_SSH
         try:
             val = int(raw)
         except (TypeError, ValueError):
@@ -370,6 +378,8 @@ class SparkrunConfig:
 
         section = self.effective_data.get("hub", {})
         raw = section.get("timeout_s") if isinstance(section, dict) else None
+        if raw is None:
+            return DEFAULT_HUB_TIMEOUT_S
         try:
             val = float(raw)
         except (TypeError, ValueError):
@@ -392,6 +402,8 @@ class SparkrunConfig:
 
         section = self.effective_data.get("hub", {})
         raw = section.get("metadata_budget_s") if isinstance(section, dict) else None
+        if raw is None:
+            return DEFAULT_HUB_METADATA_BUDGET_S
         try:
             val = float(raw)
         except (TypeError, ValueError):

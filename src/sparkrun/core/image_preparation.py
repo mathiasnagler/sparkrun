@@ -245,7 +245,7 @@ def stage_prepared_images(
         cache_dir,
         config,
         dry_run,
-        recipe_name=recipe_name,
+        recipe_name=recipe_name or "",
         transfer_mode=transfer_mode,
         transfer_interface=transfer_interface,
         local_cache_dir=local_cache_dir,

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import yaml
 
 import sparkrun.core.config as config_module
@@ -537,3 +539,11 @@ class TestSshUserOverride:
         assert config.ssh_key is not None
         assert "test_key" in config.ssh_key
         assert config.ssh_options == ["-o StrictHostKeyChecking=no"]
+
+
+@pytest.mark.parametrize("value", ["[]", "[one, two]", "scalar", "42", "false"])
+def test_config_requires_a_top_level_mapping(tmp_path, value):
+    path = tmp_path / "config.yaml"
+    path.write_text(value)
+    with pytest.raises(ValueError, match="must contain a mapping"):
+        SparkrunConfig(config_path=path)

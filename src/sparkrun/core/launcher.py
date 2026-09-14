@@ -691,12 +691,9 @@ def report_unmapped_config_keys(
     """
     from sparkrun.runtimes.base import BASE_CONSUMED_CONFIG_KEYS
 
-    # Resolved defensively: this is a diagnostic, and an out-of-tree runtime
-    # built against an older base class (or one whose hook raises) must cost
-    # the launch nothing more than the report it would have produced.
-    hook = getattr(runtime, "known_config_keys", None)
+    # This report is advisory; a failing diagnostic hook must not block launch.
     try:
-        known = hook() if callable(hook) else None
+        known = runtime.known_config_keys()
     except Exception:
         logger.debug("Runtime %r known_config_keys raised", getattr(runtime, "runtime_name", "?"), exc_info=True)
         return []
@@ -918,7 +915,7 @@ def launch_inference(
         runtime: Resolved runtime plugin.
         host_list: Resolved and trimmed host list.
         overrides: Merged overrides dict (from recipe_override_options + extras).
-        config: SparkrunConfig instance.
+        config: SparkrunConfig instance; required unless sctx supplies one.
         v: SAF Variables instance (optional, uses singleton if None).
         is_solo: Whether to launch in solo mode.
         cache_dir: Remote/cluster cache dir (None = resolve from config).
@@ -926,7 +923,7 @@ def launch_inference(
         transfer_mode: Resource transfer mode override (None = "auto").
         transfer_interface: Network interface for transfers (cx7 or mgmt; None = cx7 default).
         recipe_ref: Simplified recipe reference for display (e.g. @spark-arena/UUID).
-        registry_mgr: Registry manager for tuning config sync.
+        registry_mgr: Optional registry manager; registry tuning sync is skipped when absent.
         auto_port: If True, auto-increment port when the desired port is in use.
         sync_tuning: Whether to sync tuning configs from registries.
         dry_run: Show what would be done without executing.
@@ -962,6 +959,8 @@ def launch_inference(
             v = sctx.variables
         if progress is None:
             progress = sctx.progress
+    if config is None:
+        raise ValueError("launch_inference requires config or sctx")
     p = progress  # short alias
     validate_readiness_policy(config=config, recipe=recipe, runtime=runtime)
 
@@ -1110,11 +1109,13 @@ def launch_inference(
     cluster_id = cluster_id_override or derive_cluster_id(recipe, host_list, overrides=overrides)
 
     # -- Port resolution --
+    from sparkrun.utils.data import integer_setting
+
+    config_chain = recipe.build_config_chain(overrides)
+    desired_port = integer_setting(config_chain.get("port") or 8000, key="port")
     if auto_port:
         from sparkrun.orchestration.primitives import find_available_port
 
-        config_chain = recipe.build_config_chain(overrides)
-        desired_port = int(config_chain.get("port") or 8000)
         head_host = host_list[0]
         serve_port = find_available_port(
             head_host,
@@ -1124,8 +1125,7 @@ def launch_inference(
         )
         overrides["port"] = serve_port
     else:
-        config_chain = recipe.build_config_chain(overrides)
-        serve_port = int(config_chain.get("port") or 8000)
+        serve_port = desired_port
 
     from sparkrun.core.hardware import resolve_fallback_hardware
 
@@ -1434,7 +1434,7 @@ def launch_inference(
         if p:
             p.phase_skip(4, "disabled")
 
-    if _strategy_tuning and sync_tuning and not dry_run:
+    if _strategy_tuning and sync_tuning and not dry_run and registry_mgr is not None:
         from sparkrun.tuning.sync import sync_registry_tuning
 
         try:
@@ -1577,6 +1577,8 @@ def launch_inference(
         if cluster is not None:
             cluster = replace(cluster, user=job_ssh_user)
 
+    metadata_cache_dir = str(config.cache_dir)
+
     def record_launch_metadata(runtime_info=None):
         if not dry_run:
             save_job_metadata(
@@ -1584,7 +1586,7 @@ def launch_inference(
                 recipe,
                 host_list,
                 overrides=overrides,
-                cache_dir=str(config.cache_dir),
+                cache_dir=metadata_cache_dir,
                 ib_ip_map=ib_ip_map,
                 mgmt_ip_map=mgmt_ip_map,
                 recipe_ref=recipe_ref,
@@ -1607,6 +1609,8 @@ def launch_inference(
     # behind us, so this is the last point at which failing costs nothing.
     # Normal runtime launches retain their existing sequence.
     if execution_strategy is not None:
+        # The related inputs were validated together before preparation.
+        assert execution_context is not None and prepared_execution is not None
         from sparkrun.core.execution import ActivationContext
 
         activation_context = ActivationContext(

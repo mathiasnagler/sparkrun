@@ -250,6 +250,8 @@ def dispatch_sudo_script(
         RemoteResult from the executed script.
     """
     if indirect_sudo_user:
+        if sudo_password is None:
+            raise ValueError("Indirect sudo requires a password for the selected sudo user")
         return run_indirect_sudo_script(
             host,
             script,
@@ -277,7 +279,7 @@ def run_with_sudo_fallback(
     dry_run: bool = False,
     sudo_password: str | None = None,
     timeout: int = 300,
-) -> tuple[dict[str, object], list[str]]:
+) -> tuple[dict[str, RemoteResult], list[str]]:
     """Run script with sudo fallback. Returns (result_map, still_failed_hosts).
 
     Local hosts (localhost, 127.0.0.1) are executed directly via
@@ -303,7 +305,7 @@ def run_with_sudo_fallback(
 
     Returns:
         Tuple of (result_map, still_failed_hosts) where result_map is
-        {host: SSHResult} and still_failed_hosts is a list of hosts
+        {host: RemoteResult} and still_failed_hosts is a list of hosts
         that failed even after password-based sudo.
     """
     from sparkrun.orchestration.primitives import should_run_locally
@@ -313,7 +315,7 @@ def run_with_sudo_fallback(
     local_hosts = [h for h in host_list if should_run_locally(h, ssh_user)]
     remote_hosts = [h for h in host_list if not should_run_locally(h, ssh_user)]
 
-    result_map: dict[str, object] = {}
+    result_map: dict[str, RemoteResult] = {}
     failed_hosts: list[str] = []
 
     # Step 1a: Run locally for local hosts (sudo -n, non-interactive)
