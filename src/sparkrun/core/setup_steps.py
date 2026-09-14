@@ -271,7 +271,10 @@ def apply_setup_step(key: str, state: HostState, ctx: CheckContext, action_conte
         return SetupActionResult(state.host, SKIP, "would apply " + entry.step.label)
     from sparkrun.core.setup_actions import validate_action_result
 
-    return validate_action_result(entry.step.apply(state, ctx, action_context), state.host)
+    apply = entry.step.apply
+    if apply is None:
+        raise ValueError("Setup step %r has no apply callback" % key)
+    return validate_action_result(apply(state, ctx, action_context), state.host)
 
 
 def setup_probe_script(config=None) -> str:
@@ -279,5 +282,7 @@ def setup_probe_script(config=None) -> str:
     from sparkrun.core.features import is_feature_enabled
 
     return "\n".join(
-        "(\n%s\n)" % s.probe_script for s in _STEPS.values() if s.probe_script and is_feature_enabled(s.feature_flag, config=config)
+        "(\n%s\n)" % s.probe_script
+        for s in _STEPS.values()
+        if s.probe_script and s.feature_flag is not None and is_feature_enabled(s.feature_flag, config=config)
     )

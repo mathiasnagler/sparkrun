@@ -277,7 +277,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
             local_is_spark = local_cx7 is not None and local_cx7.detected
 
-            if local_is_spark:
+            if local_cx7 is not None and local_is_spark:
                 # Step 1b: Peer discovery on CX7 subnets
                 click.echo("  CX7 interfaces detected on this machine.")
                 cx7_detected_any = True
@@ -494,6 +494,8 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         _refresh_plan()
 
         def _selected(key, host):
+            if setup_context is None:
+                raise RuntimeError("Setup plan has not been probed")
             entry = next(p for p in build_setup_plan(states[host], setup_context) if p.step.key == key)
             return entry.selected and not entry.blocked_by
 
@@ -545,6 +547,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     )
                     results["ssh"] = "OK" if ok else "failed"
                     if ok and not dry_run and cluster_name:
+                        assert manifest_mgr is not None
                         manifest_mgr.record_phase(
                             cluster_name,
                             user,
@@ -774,6 +777,8 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     if effective_topology == CX7Topology.RING:
                         all_subnets = select_subnets_for_topology(detections, effective_topology)
                         click.echo("  Subnets: %s" % ", ".join(str(s) for s in all_subnets))
+                        if topology_result is None:
+                            raise click.ClickException("Ring topology requires detected link information")
                         plan = plan_ring_cx7(detections, topology_result, all_subnets, interfaces=cx7_interfaces)
                     else:
                         s1, s2 = select_subnets(detections)
@@ -821,6 +826,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             if ok_count:
                                 cx7_changed_ips = True
                             if ok_count and not dry_run and cluster_name:
+                                assert manifest_mgr is not None
                                 manifest_mgr.record_phase(
                                     cluster_name,
                                     user,
@@ -880,6 +886,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 )
                 results["ssh_remesh"] = "OK" if ok else "failed"
                 if ok and not dry_run and cluster_name:
+                    assert manifest_mgr is not None
                     manifest_mgr.record_phase(
                         cluster_name,
                         user,

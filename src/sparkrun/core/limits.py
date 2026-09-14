@@ -1,7 +1,7 @@
 """Usable-memory cap resolution for scheduling and fit.
 
 Resolves a per-accelerator ``max_gpu_memory_utilization`` — the fraction of
-nominal :attr:`AcceleratorSpec.memory_gb` treated as usable for **scheduling /
+nominal accelerator capacity (inventory, then qualified platform default) treated as usable for **scheduling /
 fit** decisions (``usable = memory_gb × cap``).  This is the *memory* axis and
 is distinct from the scheduler's compute ``util_fraction``; it does not affect
 the serving ``--gpu-memory-utilization`` flag.
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 from typing import TYPE_CHECKING
 
 from sparkrun.core.hardware import (
@@ -102,6 +103,27 @@ def _resolve_platform_default(accel: AcceleratorSpec, host_hw: HostHardware) -> 
         return None
 
 
+def resolve_accelerator_memory_gb(accel: AcceleratorSpec, host_hw: HostHardware) -> float | None:
+    """Inventory capacity, then a qualified platform default; otherwise unknown.
+
+    Resolution does not modify raw inventory or its fingerprint. This also
+    covers saved probe records whose device identity is known but memory is not.
+    """
+    if accel.memory_gb is not None:
+        return accel.memory_gb
+    from sparkrun.platforms import resolve_platform
+
+    platform = resolve_platform(host_hw)
+    if platform is None:
+        return None
+    capacity = platform.default_accelerator_memory_gb(accel)
+    if capacity is None:
+        return None
+    if isinstance(capacity, bool) or not isinstance(capacity, (int, float)) or not math.isfinite(capacity) or capacity <= 0:
+        raise ValueError("Platform %r supplied an invalid accelerator memory capacity" % platform.platform_name)
+    return float(capacity)
+
+
 def usable_memory_gb(
     accel: AcceleratorSpec,
     host_hw: HostHardware,
@@ -109,12 +131,11 @@ def usable_memory_gb(
 ) -> float | None:
     """Usable memory (GB) for *accel* = ``memory_gb × resolved cap``.
 
-    Returns ``None`` when the accelerator declares no ``memory_gb`` (capacity
-    unknown — callers fall back to "memory not verified").
+    Returns ``None`` when neither inventory nor the matched platform supplies
+    capacity (callers report "memory not verified").
     """
-    if accel.memory_gb is None:
-        return None
-    return accel.memory_gb * resolve_max_gpu_memory_utilization(accel, host_hw, cluster)
+    capacity = resolve_accelerator_memory_gb(accel, host_hw)
+    return capacity * resolve_max_gpu_memory_utilization(accel, host_hw, cluster) if capacity is not None else None
 
 
 def resolved_hardware_for_scheduling(
@@ -129,7 +150,7 @@ def resolved_hardware_for_scheduling(
     only see ``host_hardware`` and must stay free of ``platforms`` /
     ``cluster_manager`` imports — can apply a single resolved fraction.
 
-    ``memory_gb`` is left at its nominal value; only the cap field is set.  The
+    Missing nominal capacity is filled from qualified platform defaults. The
     returned copies are ephemeral scheduling inputs and are never persisted.
     """
     resolved: dict[str, HostHardware] = {}
@@ -138,6 +159,7 @@ def resolved_hardware_for_scheduling(
         new_accels = [
             dataclasses.replace(
                 accel,
+                memory_gb=resolve_accelerator_memory_gb(accel, hw),
                 max_gpu_memory_utilization=resolve_max_gpu_memory_utilization(accel, hw, cluster),
             )
             for accel in hw.accelerators

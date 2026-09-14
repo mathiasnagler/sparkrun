@@ -187,9 +187,9 @@ def plan_from_rank_models(
     image: str,
     node_selectors: dict[str, dict[str, str]] | None = None,
     gpus_per_pod: int | dict[str, int] = 1,
-    namespace: str = None,
-    queue: str = None,
-    service_account: str = None,
+    namespace: str | None = None,
+    queue: str | None = None,
+    service_account: str | None = None,
     labels: dict[str, str] | None = None,
 ) -> JobSetPlan:
     """Group ranks by GPU model into one podset per class.

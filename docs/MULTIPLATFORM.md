@@ -37,6 +37,21 @@ capabilities `{cuda, unified-memory, rdma:roce-v2}`. Operational callers use
 while alternate application profiles require explicit metadata by default. See
 [application hardware policy](#application-profiles-and-hardware-integrations).
 
+### Memory capacity and fit
+
+Scheduling and per-host fit resolve capacity from `AcceleratorSpec.memory_gb`
+first, then the matched platform's `default_accelerator_memory_gb(accelerator)`.
+DGX Spark supplies the existing 121 GB planning capacity for identified NVIDIA
+GB10 devices when the probe reports memory as unavailable. The default 85%
+scheduling/fit cap therefore gives 102.85 GB usable capacity. These are planning
+defaults, not a fresh measurement of available memory.
+
+Explicit inventory capacity takes precedence. Generic or unidentified devices
+remain unknown unless their platform provides a qualified capacity. Resolution
+also applies to previously saved probe records; it does not rewrite raw
+inventory or its fingerprint. Scheduler inputs receive temporary resolved copies,
+and fit uses the same resolver and utilization-cap precedence.
+
 ### `Capability` tags
 
 Free-form strings on `AcceleratorSpec.capabilities`. Conventions in use:
@@ -144,6 +159,8 @@ choices and image defaults. The hook surface:
 | `collective_backend()`   | A `CollectiveBackend` instance.                                                               |
 | `default_image(runtime)` | Per-runtime container default. `None` means "recipe must set `container:`".                   |
 | `validate_host(hw)`      | List of human-readable warning strings. `launcher.py` logs them; does not raise.              |
+| `default_accelerator_memory_gb(accelerator)` | Known capacity for a qualified device, or `None`; used only when inventory capacity is absent. |
+| `default_max_gpu_memory_utilization(accelerator)` | Platform scheduling/fit cap, or `None`; host and cluster settings take precedence. |
 
 ### Built-in plugins
 

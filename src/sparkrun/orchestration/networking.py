@@ -1711,7 +1711,7 @@ def configure_cx7_host(
         os_user = os.environ.get("USER", "root")
         local_sudo_safe = sudo_password and (ssh_user is None or ssh_user == os_user)
 
-        if local_sudo_safe:
+        if local_sudo_safe and sudo_password is not None:
             # Pipe password to sudo -S bash -s for local hosts without NOPASSWD
             proc = subprocess.run(
                 ["sudo", "-S", "bash", "-s"],

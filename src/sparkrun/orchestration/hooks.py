@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import subprocess
 from pathlib import Path
+from collections.abc import Sequence
 
 from sparkrun.utils.text import render_template, sanitize_line_continuations
 
@@ -110,7 +111,7 @@ def render_hook_command(cmd: str, context: dict[str, str]) -> str:
 
 
 def render_hook_commands(
-    commands: list[str | dict[str, str]],
+    commands: Sequence[str | dict[str, str]],
     context: dict[str, str],
 ) -> list[str | dict[str, str]]:
     """Render ``{key}`` placeholders in a list of hook commands.
@@ -136,7 +137,7 @@ def render_hook_commands(
     return rendered
 
 
-def _confirm_hook_execution(hook_label: str, commands: list, trust: bool) -> None:
+def _confirm_hook_execution(hook_label: str, commands: Sequence[str | dict[str, str]], trust: bool) -> None:
     """Shared trust-gating prompt for hook commands.
 
     When *trust* is True, returns immediately (no prompt).
@@ -182,7 +183,7 @@ def _confirm_hook_execution(hook_label: str, commands: list, trust: bool) -> Non
 
 def run_pre_exec(
     hosts_containers: list[tuple[str, str]],
-    commands: list[str | dict[str, str]],
+    commands: Sequence[str | dict[str, str]],
     config_chain,
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,

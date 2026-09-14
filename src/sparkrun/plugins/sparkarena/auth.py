@@ -148,7 +148,7 @@ def _can_open_browser() -> bool:
     return True
 
 
-def run_browser_login() -> str | None:
+def run_browser_login() -> tuple[str, str] | None:
     """Run browser-based OAuth login flow.
 
     Returns the refresh token on success, or None on failure.

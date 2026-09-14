@@ -86,7 +86,8 @@ def tune_sglang(
     timeout,
     dry_run,
     config_path=None,
-    host_list=None,
+    *,
+    host_list: list[str],
     cluster_mgr=None,
 ):
     """Tune SGLang fused MoE Triton kernels for DGX Spark.
@@ -203,7 +204,8 @@ def tune_vllm(
     timeout,
     dry_run,
     config_path=None,
-    host_list=None,
+    *,
+    host_list: list[str],
     cluster_mgr=None,
 ):
     """Tune vLLM Triton kernels for DGX Spark via the vllm-tune backend.

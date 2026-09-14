@@ -1190,3 +1190,13 @@ def test_bound_metadata_does_not_borrow_from_a_different_recipe(engine):
         fields = engine.build_desired_set()["deployments"][0]["model_metadata"]
     assert fields["size_b"] == 8
     assert fields["context"] == 8192
+
+
+def test_manual_unload_rejects_missing_recipe_source_without_editing_bindings(tmp_path):
+    config = _MutableProxyConfig(bindings=[{"recipe": "@official/qwen"}])
+    engine = SparkrouteEngine(state_dir=tmp_path, proxy_config=config)
+    with mock.patch("sparkrun.api.resolve_catalog_recipe", return_value=(SimpleNamespace(source_path=None), {})):
+        with pytest.raises(SparkrouteConfigError, match="no source path"):
+            engine.unregister_loaded_model("@official/qwen")
+    assert config.bindings == [{"recipe": "@official/qwen"}]
+    assert config.save_calls == 0

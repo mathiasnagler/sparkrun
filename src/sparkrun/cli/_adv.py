@@ -29,7 +29,7 @@ def adv(ctx):
 @json_option()
 @click.pass_context
 @with_host_context
-def adv_compare_images(ctx, image, hosts, hosts_file, cluster_name, dry_run, output_json, host_list=None, cluster_mgr=None):
+def adv_compare_images(ctx, image, hosts, hosts_file, cluster_name, dry_run, output_json, *, host_list: list[str], cluster_mgr=None):
     """Compare a container image ID across local machine and cluster hosts.
 
     Useful for debugging image distribution mismatches — shows the Docker

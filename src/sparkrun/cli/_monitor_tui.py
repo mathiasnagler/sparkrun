@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
+from collections.abc import Callable
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -231,7 +232,7 @@ def _cell_gpu_dec(s: MonitorSample) -> str:
 
 # Ordered telemetry column definitions: (key, label, cell_fn). The leading
 # Host + Jobs columns are handled separately (Jobs is occupancy-derived).
-_TABLE_COLS: list[tuple[str, str, object]] = [
+_TABLE_COLS: list[tuple[str, str, Callable[[MonitorSample], str]]] = [
     ("cpu", "CPU%", _cell_cpu),
     ("ram", "RAM%", _cell_ram),
     ("swap", "Swap%", _cell_swap),

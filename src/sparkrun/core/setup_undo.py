@@ -97,9 +97,10 @@ def run_setup_undo(
     recording = manifest_mgr.recording(manifest.cluster) if manifest_mgr and not action_context.dry_run else nullcontext()
     with recording:
         if manifest_mgr is not None:
-            manifest = manifest_mgr.load(manifest.cluster, strict=True)
-            if manifest is None:
+            loaded = manifest_mgr.load(manifest.cluster, strict=True)
+            if loaded is None:
                 raise ValueError("Setup undo requires an existing manifest")
+            manifest = loaded
         manifest = validate_setup_manifest(manifest)
         available = dict(steps) if steps is not None else available_undo_steps(manifest)
         if only_steps is not None and (unknown := only_steps - available.keys()):
@@ -139,7 +140,10 @@ def run_setup_undo(
                 else:
                     details = deepcopy(record.extra.get("host_details", {}).get(host, record.extra))
                     try:
-                        outcome = validate_action_result(step.undo(host, details, action), host)
+                        undo = step.undo
+                        if undo is None:
+                            raise ValueError("Setup step %r has no undo callback" % key)
+                        outcome = validate_action_result(undo(host, details, action), host)
                     except Exception as exc:
                         outcome = SetupActionResult(host, FAIL, str(exc))
                     if outcome.status == OK:
@@ -151,7 +155,8 @@ def run_setup_undo(
             statuses[key] = aggregate_action_status(per_host)
         if manifest_mgr is not None and not action_context.dry_run:
             # Include the saved timestamps and any other authoritative fields.
-            manifest = manifest_mgr.load(manifest.cluster, strict=True)
-            if manifest is None:
+            loaded = manifest_mgr.load(manifest.cluster, strict=True)
+            if loaded is None:
                 raise ValueError("Setup manifest disappeared during undo")
+            manifest = loaded
         return SetupUndoResult(statuses, outcomes, remaining_setup_changes(manifest), manifest)

@@ -285,6 +285,8 @@ class BenchmarkIntegrationSession:
 
     def complete(self) -> None:
         """Called only after a successful measurement (or a dry-run preview)."""
+        if self.result is None:
+            raise RuntimeError("Benchmark integrations must be bound to a result before completion")
         if self.result.success:
             self._call("on_complete")
 

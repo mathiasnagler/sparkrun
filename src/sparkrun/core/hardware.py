@@ -184,9 +184,9 @@ class HostHardware:
 # ---------------------------------------------------------------------------
 
 # DGX Spark GB10: 1 GPU per host, 121 GB available unified memory.
-# Mirrors models.vram.DGX_SPARK_VRAM_GB.  Kept in this module so callers
-# that resolve hardware never need to import the VRAM module.
-_DGX_SPARK_VRAM_GB = 121.0
+# Shared by platform defaults and model estimates so scheduling and display
+# use the same capacity without importing the estimator into hardware code.
+DGX_SPARK_MEMORY_GB = 121.0
 
 # Hard fallback for the scheduling/fit usable-memory cap when neither the
 # accelerator, the cluster config, nor the platform tier supplies one.  ``1.0``
@@ -208,7 +208,7 @@ def default_dgx_spark_hardware() -> HostHardware:
                 vendor="nvidia",
                 model="gb10",
                 count=1,
-                memory_gb=_DGX_SPARK_VRAM_GB,
+                memory_gb=DGX_SPARK_MEMORY_GB,
                 capabilities=frozenset({"cuda", "unified-memory", "rdma:roce-v2"}),
             )
         ],

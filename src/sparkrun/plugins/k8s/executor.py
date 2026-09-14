@@ -103,6 +103,15 @@ class K8sExecutor(Executor):
     cluster reachable from the script's execution host.
     """
 
+    config: K8sExecutorConfig
+
+    def __init__(self, config: ExecutorConfig | None = None):
+        resolved = K8sExecutorConfig() if config is None else config
+        if not isinstance(resolved, K8sExecutorConfig):
+            raise TypeError("K8sExecutor requires K8sExecutorConfig")
+        super().__init__(resolved)
+        self.config = resolved
+
     executor_name = "k8s"
     config_class = K8sExecutorConfig
     required_feature_flag = "executor.k8s"

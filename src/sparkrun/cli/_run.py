@@ -407,7 +407,8 @@ def run(
     fail_on,
     extra_args,
     config_path=None,
-    host_list=None,
+    *,
+    host_list: list[str],
     cluster_mgr=None,
 ):
     """Run an inference recipe.
@@ -861,7 +862,7 @@ def run(
             diag.close()
         raise
 
-    if _run_span is not None:
+    if _run_span is not None and sctx.timing is not None:
         sctx.timing.end(_run_span, rc=int(run_result.rc))
 
     # Native handlers may return only the public result. Rendering and exit
@@ -896,10 +897,14 @@ def run(
     if launch_result is not None and result.rc == 0 and has_post_hooks and not foreground:
         from sparkrun.core.launcher import post_launch_lifecycle
 
-        post_launch_lifecycle(result, remote_cache_dir=result.effective_cache_dir, trust=trust, dry_run=dry_run, progress=sctx.progress)
+        post_launch_lifecycle(
+            launch_result, remote_cache_dir=launch_result.effective_cache_dir, trust=trust, dry_run=dry_run, progress=sctx.progress
+        )
     else:
         if sctx.progress:
             sctx.progress.phase_skip(6)
+
+    exit_code = result.rc
 
     # Follow container logs after a successful detached launch
     watcher = None
@@ -923,7 +928,7 @@ def run(
                 from sparkrun.orchestration.primitives import build_ssh_kwargs as _watch_ssh
 
                 watcher = ReadinessWatcher(
-                    result,
+                    launch_result,
                     ssh_kwargs=_watch_ssh(config),
                     on_ready=_echo_endpoint_ready,
                     timeline=sctx.timing,
@@ -982,7 +987,7 @@ def run(
                     err=True,
                     bold=True,
                 )
-                result.rc = 1
+                exit_code = 1
 
     # Printed last, and only here.  The tables are multi-line, so they cannot
     # be emitted while `docker logs -f` is writing to the same terminal
@@ -1032,7 +1037,7 @@ def run(
 
     # --- Diagnostics finalize ---
     if diag:
-        if launch_result is not None and result.rc != 0:
+        if launch_result is not None and exit_code != 0:
             # Capture container logs on failure for debugging
             from sparkrun.orchestration.docker import generate_container_name, generate_node_container_name
             from sparkrun.orchestration.primitives import build_ssh_kwargs as _diag_ssh2
@@ -1048,4 +1053,4 @@ def run(
         diag.close()
         click.echo("Diagnostics written to: %s" % diagnostics_path)
 
-    sys.exit(result.rc)
+    sys.exit(exit_code)

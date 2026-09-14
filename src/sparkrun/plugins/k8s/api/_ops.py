@@ -133,7 +133,7 @@ def cluster_info(
 def configure_service_account(
     sctx: "SparkrunContext | None" = None,
     *,
-    name: str = None,
+    name: str | None = None,
     namespace: str | None = None,
     kubeconfig: str | None = None,
     context: str | None = None,
@@ -526,7 +526,7 @@ def run_launcher_job(
     command: list[str] | None = None,
     script: str | None = None,
     namespace: str | None = None,
-    service_account: str = None,
+    service_account: str | None = None,
     env: dict[str, str] | None = None,
     ttl_seconds: int | None = None,
     active_deadline_seconds: int | None = None,

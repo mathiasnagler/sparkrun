@@ -12,6 +12,17 @@ first tagged release containing them, regardless of their original commit date.
 
 ### 0.4.0 application and API changes
 
+- Identified GB10 hosts use the platform's 121 GB planning capacity when recorded
+  probes lack memory measurements. Scheduling and fit share this fallback and
+  utilization caps; explicit inventory capacity takes precedence.
+- Fixed runtime-cache pruning to resolve named/default clusters and their SSH
+  users through the shared host context. Empty monitor tables render correctly;
+  selecting the dormant `nv-monitor` backend without assets fails before startup.
+- Tightened profile defaults, required recipe/setup inputs, Kubernetes config and
+  log-stream contracts, and shared read-only inputs. SparkRoute now passes launch
+  overrides explicitly instead of attaching private fields to recipes. Reduced
+  the full-source type baseline without adding suppressions or private imports.
+
 - Enforced required runtime command hooks and nonempty generated commands;
   builders now use one `prepare()` hook. Removed the unused image-staging API
   with competing transport inputs.

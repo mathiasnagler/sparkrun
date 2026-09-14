@@ -162,9 +162,12 @@ def complete(context):
     from .auth import load_refresh_token
     from .upload import upload_benchmark_results
 
+    token = load_refresh_token()
+    if token is None:
+        raise BenchmarkFailed("Spark Arena credentials are unavailable. Log in and resume the benchmark to retry.", exit_code=1)
     context.emitter.info("Uploading results to Spark Arena...")
     try:
-        success, sid = upload_benchmark_results(load_refresh_token(), files, submission_id=submission_id)
+        success, sid = upload_benchmark_results(token, files, submission_id=submission_id)
     except RuntimeError as exc:
         raise BenchmarkFailed("Upload failed: %s. Resume the benchmark to retry." % exc, exit_code=1) from exc
     if not success:

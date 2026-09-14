@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from sparkrun.core.hardware import DGX_SPARK_MEMORY_GB
 from sparkrun.models.dtypes import bytes_per_element, kv_bytes_per_element, normalize_dtype
 from sparkrun.models.hub import hub_metadata_call
 from sparkrun.models.kv import ArchInfo, KVSizing, arch_marker_names, extract_arch_fields, resolve_kv_strategy
@@ -59,7 +60,7 @@ _PARAM_SUFFIXES = {
 # fits should call :func:`sparkrun.models.fit.check_fit` instead, which
 # reads ``memory_gb`` from each host's
 # :class:`~sparkrun.core.hardware.HostHardware`.
-DEFAULT_VRAM_GB = 121.0
+DEFAULT_VRAM_GB = DGX_SPARK_MEMORY_GB
 DGX_SPARK_VRAM_GB = DEFAULT_VRAM_GB  # alias retained for callers that pre-date DEFAULT_VRAM_GB
 
 

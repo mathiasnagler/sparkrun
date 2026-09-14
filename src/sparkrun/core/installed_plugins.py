@@ -7,7 +7,7 @@ from sparkrun.core.registration import enlist_registry_state, load_and_register_
 import logging
 import os
 from dataclasses import dataclass, replace
-from importlib.metadata import entry_points
+from importlib.metadata import EntryPoint, entry_points
 
 from sparkrun.core.application_profile import get_application_profile
 
@@ -87,7 +87,7 @@ def claim_implementation(cls: type, v) -> None:
             _claims[key] = cls
 
 
-def _discover_installed_plugins(config=None) -> tuple[list[InstalledIntegration], dict[int, object]]:
+def _discover_installed_plugins(config=None) -> tuple[list[InstalledIntegration], dict[int, EntryPoint]]:
     """Enumerate metadata only. Disabled entry points are never loaded."""
     from sparkrun.core.config import SparkrunConfig
 

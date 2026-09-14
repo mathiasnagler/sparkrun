@@ -157,7 +157,7 @@ def _in_tree_plugins(v: "Variables | None") -> list[PluginInfo]:
         # with no flag rather than omitted, which is what makes the defect
         # visible instead of silent.
         registered = flag is not None and get_feature(flag) is not None
-        enabled = registered and feature_gate_enabled(flag, v)
+        enabled = flag is not None and registered and feature_gate_enabled(flag, v)
         version, origin = _module_version(dotted)
         out.append(
             PluginInfo(

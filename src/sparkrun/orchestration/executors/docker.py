@@ -317,7 +317,14 @@ class DockerExecutor(Executor):
             adjustments["privileged"] = False
             # Preserve lower-layer policies while supplying the rootless default.
             security = defaults.get("security_opt") if defaults is not None else ["seccomp=" + IO_URING_PROFILE]
-            security = [security] if isinstance(security, str) else list(security or [])
+            if isinstance(security, str):
+                security = [security]
+            elif security is None:
+                security = []
+            elif isinstance(security, (list, tuple)) and all(isinstance(opt, str) for opt in security):
+                security = list(security)
+            else:
+                raise ValueError("Docker security_opt must be a string or sequence of strings")
             if not any(opt.split("=", 1)[0] == "no-new-privileges" for opt in security):
                 security.insert(0, "no-new-privileges")
             adjustments["security_opt"] = security
@@ -772,7 +779,7 @@ class DockerExecutor(Executor):
         sources: "list[LogSource]",
         *,
         ssh_kwargs: dict | None = None,
-    ) -> "dict[str, TerminationInfo]":
+    ) -> "dict[tuple[str, str], TerminationInfo]":
         """Look for stopped containers behind *sources* via ``docker ps -a``.
 
         ``query_status`` runs ``docker ps`` (running only), so it structurally

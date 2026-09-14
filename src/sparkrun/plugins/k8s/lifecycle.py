@@ -31,6 +31,8 @@ def stop_native_workload(client, cluster_id, reference=None) -> int | None:
         if not isinstance(reference, dict) or reference.get("kind") != "JobSet":
             raise K8sError("Unsupported native Kubernetes workload reference")
         name = reference.get("name")
+        if not isinstance(name, str):
+            raise K8sError("Kubernetes JobSet reference requires a name")
         validate_resource_name(name)
         resource = jobset_status(client, name)
         resources = [resource] if resource else []

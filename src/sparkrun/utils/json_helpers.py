@@ -16,7 +16,7 @@ class SparkrunJSONEncoder(json.JSONEncoder):
     def default(self, obj: Any) -> Any:
         if hasattr(obj, "to_dict") and callable(obj.to_dict):
             return obj.to_dict()
-        if dataclasses.is_dataclass(obj):
+        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
             return dataclasses.asdict(obj)
         return super().default(obj)
 

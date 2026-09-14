@@ -43,6 +43,18 @@ def _checksum_script(remote_path: str) -> str:
     return ('if [ -x "%(path)s" ]; then sha256sum "%(path)s" | cut -d" " -f1; else echo MISSING; fi') % {"path": remote_path}
 
 
+def require_nv_monitor_binaries():
+    """Fail synchronously when this distribution lacks the optional binary bundle."""
+    try:
+        from sparkrun.bin import get_binary_checksum, get_binary_resource
+    except ImportError as error:
+        raise RuntimeError(
+            "The nv-monitor backend is unavailable: this distribution does not include its binary assets. "
+            "Select the bash monitoring backend instead."
+        ) from error
+    return get_binary_checksum, get_binary_resource
+
+
 def ensure_nv_monitor(
     hosts: list[str],
     ssh_kwargs: dict,
@@ -61,7 +73,7 @@ def ensure_nv_monitor(
     Returns:
         Dict mapping hostname to True if binary is ready, False if deploy failed.
     """
-    from sparkrun.bin import get_binary_checksum, get_binary_resource
+    get_binary_checksum, get_binary_resource = require_nv_monitor_binaries()
 
     local_checksum = get_binary_checksum("nv-monitor")
     logger.info("Local nv-monitor checksum: %s", local_checksum[:12])

@@ -70,7 +70,7 @@ def run_k8s(
     overrides["port"] = serve_port
     from sparkrun.core.images import resolve_runtime_image_plan
 
-    image = resolve_runtime_image_plan(recipe, runtime, host_list, cluster=plan.cluster).head_image()
+    image = resolve_runtime_image_plan(recipe, runtime, list(host_list), cluster=plan.cluster).head_image()
     serve_command = runtime.generate_command(recipe, overrides, is_cluster=False, num_nodes=1)
 
     # Use the same caller/recipe/cluster/default chain as other executor paths.
@@ -86,6 +86,10 @@ def run_k8s(
         rootless=not options.rootful,
         auto_user=not options.rootful,
     )
+    from .executor import K8sExecutor
+
+    if not isinstance(executor, K8sExecutor):
+        raise SparkrunError("Native Kubernetes launch requires the Kubernetes executor")
     client = executor._client()
     namespace = client.namespace
 

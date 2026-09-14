@@ -308,8 +308,9 @@ class _OccupancyAwareBase(Scheduler):
                     break
 
                 util_remaining[gpu_idx] -= per_rank_util
-                if per_rank_mem is not None and mem_remaining[gpu_idx] is not None:
-                    mem_remaining[gpu_idx] -= per_rank_mem
+                memory = mem_remaining[gpu_idx]
+                if per_rank_mem is not None and memory is not None:
+                    mem_remaining[gpu_idx] = memory - per_rank_mem
                 if not is_fractional:
                     # Whole-GPU placement: mark slot occupied so the next
                     # rank picks a different GPU on this host.

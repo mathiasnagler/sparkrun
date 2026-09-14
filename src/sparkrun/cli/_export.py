@@ -115,9 +115,7 @@ def export_running(ctx, target, hosts, hosts_file, cluster_name, output_json, sa
     config, _ = _get_config_and_registry()
 
     # Resolve cluster_id
-    if _is_cluster_id(target) is not None:
-        cluster_id = _is_cluster_id(target)
-    else:
+    if (cluster_id := _is_cluster_id(target)) is None:
         # Target is a recipe name — need hosts to generate cluster_id
         recipe, _recipe_path, _registry_mgr = _load_recipe(config, target)
         host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
@@ -515,8 +513,7 @@ def _resolve_recipe_for_systemd(
     from sparkrun.core.recipe import Recipe
 
     # If target is a cluster_id, reconstruct from job metadata
-    if _is_cluster_id(target) is not None:
-        cluster_id = _is_cluster_id(target)
+    if (cluster_id := _is_cluster_id(target)) is not None:
         meta = load_job_metadata(cluster_id, cache_dir=str(config.cache_dir))
         if not meta:
             click.echo("Error: No job metadata found for '%s'." % target, err=True)

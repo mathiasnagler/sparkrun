@@ -151,6 +151,8 @@ def render_template(value: str, values: Any, *, escapes: bool = False, max_passe
     rendered = mask_non_placeholder_braces(value, escapes=escapes)
     for _ in range(max_passes):
         nxt = arg_substitute(rendered, values)
+        if not isinstance(nxt, str):
+            raise TypeError("String template substitution must produce a string")
         if nxt == rendered:
             return unmask_braces(rendered)
         rendered = nxt

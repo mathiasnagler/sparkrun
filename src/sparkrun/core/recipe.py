@@ -1190,6 +1190,7 @@ class Recipe:
         # pre_exec entries by core/mods.py before container launch.
         # v1 recipes carry mods under runtime_config; migrate to top-level
         # so exports round-trip cleanly and the resolver sees a single source.
+        self._mods_resolved = False
         self.mods: list[str] = list(data.get("mods", []) or [])
         if not self.mods and isinstance(self.runtime_config.get("mods"), list):
             self.mods = list(self.runtime_config.pop("mods"))

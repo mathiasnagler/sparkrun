@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.recipe import Recipe
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +34,16 @@ def apply_recipe_overrides(
     gpu_mem=None,
     max_model_len=None,
     image=None,
-    recipe=None,
+    *,
+    recipe: Recipe,
     **kwargs,
-):
+) -> tuple[Recipe, dict]:
     """Build the overrides dict, apply it to *recipe*, and resolve the runtime.
 
     Returns ``(recipe, overrides)`` — *recipe* is returned to make the
     mutation explicit (runtime may change based on overrides).
 
-    When *recipe* is provided, ``recipe.resolve(overrides)`` is called so
+    The required *recipe* is resolved with ``recipe.resolve(overrides)`` so
     that overrides can influence runtime resolution (e.g.
     ``distributed_executor_backend=ray`` switches vllm-distributed to
     vllm-ray).
@@ -52,6 +54,9 @@ def apply_recipe_overrides(
     calling this function, so they should not reach here in practice).
     """
     from sparkrun.utils import coerce_value
+
+    if recipe is None:
+        raise ValueError("Recipe overrides require a recipe")
 
     overrides: dict = {}
     for opt in options or ():
@@ -73,7 +78,7 @@ def apply_recipe_overrides(
         overrides["gpu_memory_utilization"] = gpu_mem
     if max_model_len is not None:
         overrides["max_model_len"] = max_model_len
-    if image and recipe is not None:
+    if image:
         recipe.container = image
         if recipe.containers:
             # An explicit --image is a whole-launch override: anything subtler
@@ -92,15 +97,13 @@ def apply_recipe_overrides(
             overrides[k] = v
 
     # Apply env.* overrides to recipe.env directly
-    if recipe is not None:
-        for k, v in list(overrides.items()):
-            if k.startswith("env."):
-                recipe.env[k[4:]] = str(v)
-                del overrides[k]
+    for k, v in list(overrides.items()):
+        if k.startswith("env."):
+            recipe.env[k[4:]] = str(v)
+            del overrides[k]
 
     # Resolve runtime with overrides visible to resolvers
-    if recipe is not None:
-        recipe.resolve(overrides)
+    recipe.resolve(overrides)
 
     return recipe, overrides
 

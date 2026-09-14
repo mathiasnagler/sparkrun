@@ -173,6 +173,11 @@ managed gateway processes; those clients may still connect to one external servi
 | `hardware_fallback` | `require-metadata` by default; built-in Sparkrun preserves `dgx-spark`. |
 | `profile_ref` | Installed `module:attribute` reference required for child execution. |
 
+The four namespace fields and `env_prefix` are concrete, validated strings after
+construction. Omit these arguments to use identity-derived defaults; an empty
+string also requests the default. Explicit `None` is rejected. This does not
+change the separate `None` policies for `registries` or `feature_channel`.
+
 `integrations`, `required_integrations`, and `bootstrap_registry_urls` accept lists
 or tuples of nonempty strings, copied into immutable tuples. Integration entries
 must be valid stable IDs. A bare string, mapping, or malformed member raises a

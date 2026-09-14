@@ -15,6 +15,8 @@ import click.shell_completion  # enables click.shell_completion.CompletionItem i
 
 if TYPE_CHECKING:
     from sparkrun.core.context import SparkrunContext
+    from sparkrun.core.recipe import Recipe
+    from sparkrun.core.cluster_manager import ClusterManager
 
 from scitrera_app_framework.util import ext_parse_bool
 from sparkrun.core.recipe import (
@@ -33,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 # noinspection PyShadowingBuiltins
-def json_option(help: str = None):
+def json_option(help: str | None = None):
     return click.option(
         "--json",
         "output_json",
@@ -576,7 +578,7 @@ class HostContext:
     """
 
     host_list: list[str]
-    cluster_mgr: Any
+    cluster_mgr: ClusterManager
     cluster: ResolvedClusterConfig
     source: str = "config"
     """Which link of the host-resolution chain supplied :attr:`host_list` —
@@ -948,6 +950,8 @@ class RecipeNameType(click.ParamType):
                     from sparkrun.utils import parse_scoped_name
 
                     registry_name, recipe_prefix = parse_scoped_name(incomplete)
+                    if registry_name is None:
+                        return []
                     # Only load recipes from the target registry
                     try:
                         entry = registry_mgr.get_registry(registry_name)
@@ -1074,7 +1078,7 @@ def _complete_targets(incomplete: str, ctx=None):
 
         jobs = api.list_jobs(limit=COMPLETION_JOB_LIMIT)
         cluster_def = _completion_cluster(ctx)
-        target_hosts = set(getattr(cluster_def, "hosts", ()) or ())
+        target_hosts: set[str] = set(getattr(cluster_def, "hosts", ()) or ())
         snapshot = _completion_running(cluster_def)
 
         items: list = []
@@ -1154,7 +1158,7 @@ def _completion_running(cluster_def):
     from sparkrun.orchestration.executor import resolve_executor_target
     from sparkrun.core.config import SparkrunConfig
 
-    hosts = list(getattr(cluster_def, "hosts", ()) or ())
+    hosts: list[str] = list(getattr(cluster_def, "hosts", ()) or ())
     try:
         config = SparkrunConfig().for_cluster(cluster_def)
         target = resolve_executor_target(cluster=cluster_def, config=config)
@@ -1499,9 +1503,10 @@ def _apply_recipe_overrides(
     gpu_mem=None,
     max_model_len=None,
     image=None,
-    recipe=None,
+    *,
+    recipe: Recipe,
     **kwargs,
-):
+) -> tuple[Recipe, dict]:
     """CLI wrapper around :func:`sparkrun.core.resolve.apply_recipe_overrides`.
 
     Validates the ``--option/-o`` tuple first via :func:`_parse_options`

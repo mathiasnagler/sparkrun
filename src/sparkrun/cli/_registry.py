@@ -578,7 +578,7 @@ def export_metadata(ctx, output, include_hidden):
 
         recipe_count = 0
         recipe_files = iter_asset_files(recipe_dir, RECIPE_ASSET)
-        for f in sorted(recipe_files, key=lambda p: (len(p.relative_to(recipe_dir).parts), p.name)):
+        for f in sorted(recipe_files, key=lambda p, root=recipe_dir: (len(p.relative_to(root).parts), p.name)):
             try:
                 data = read_yaml(str(f))
                 if not isinstance(data, dict):

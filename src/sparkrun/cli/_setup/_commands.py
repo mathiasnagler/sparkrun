@@ -74,6 +74,8 @@ def setup_completion(ctx, shell):
         snippet = 'eval "$(%s=zsh_source %s)"' % (completion_var, sparkrun_cmd)
     elif shell == "fish":
         snippet = "%s=fish_source %s | source" % (completion_var, sparkrun_cmd)
+    else:
+        raise click.BadParameter("Unsupported shell: %s" % shell, param_hint="--shell")
 
     # Check if already installed
     if rc_file.exists():
@@ -1433,6 +1435,8 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
 
     # Step 4: Plan
     if effective_topology == CX7Topology.RING:
+        if topology_result is None:
+            raise click.ClickException("Ring topology requires detected link information")
         plan = plan_ring_cx7(detections, topology_result, all_subnets, mtu=mtu, force=force, interfaces=effective_interfaces)
     else:
         plan = plan_cluster_cx7(detections, all_subnets[0], all_subnets[1], mtu=mtu, force=force, interfaces=effective_interfaces)
@@ -2296,7 +2300,7 @@ def setup_prune_runtime_cache(ctx, hosts, hosts_file, cluster_name, older_than_d
       {app_command} setup prune-runtime-cache --cluster mylab --all
     """
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.core.hosts import resolve_hosts
+    from sparkrun.cli._common import resolve_host_context
     from sparkrun.core.runtime_cache import (
         resolve_runtime_cache_root,
         resolve_runtime_cache_settings,
@@ -2306,11 +2310,9 @@ def setup_prune_runtime_cache(ctx, hosts, hosts_file, cluster_name, older_than_d
     from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
     config = SparkrunConfig()
-    cluster_mgr = _get_cluster_manager()
-    cluster_def = cluster_mgr.get_cluster(cluster_name) if cluster_name else None
-    host_list = resolve_hosts(hosts=hosts, hosts_file=hosts_file, cluster_name=cluster_name, cluster_mgr=cluster_mgr, config=config)
-    if not host_list:
-        raise click.UsageError("No hosts resolved. Pass --hosts or --cluster.")
+    hctx = resolve_host_context(hosts, hosts_file, cluster_name, config)
+    host_list = hctx.host_list
+    cluster_def = hctx.cluster_mgr.get(hctx.cluster_name) if hctx.cluster_name else None
 
     settings = resolve_runtime_cache_settings(config=config, cluster=cluster_def)
     max_age = older_than_days if older_than_days is not None else settings.prune_max_age_days

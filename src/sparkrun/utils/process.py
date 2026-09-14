@@ -9,6 +9,8 @@ from functools import lru_cache
 
 @lru_cache(maxsize=1)
 def _windows_kernel():
+    if sys.platform != "win32":
+        raise OSError("Windows process queries require Windows")
     import ctypes
     from ctypes import wintypes
 
@@ -23,6 +25,8 @@ def _windows_kernel():
 
 
 def _windows_process_exists(pid: int) -> bool:
+    if sys.platform != "win32":
+        raise OSError("Windows process queries require Windows")
     import ctypes
 
     kernel = _windows_kernel()

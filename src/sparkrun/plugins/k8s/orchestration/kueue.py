@@ -178,9 +178,9 @@ def local_queue_manifest(name: str, namespace: str, cluster_queue: str) -> dict:
 def build_provision_manifests(
     node_infos: list[NodeInfo],
     *,
-    namespace: str = None,
-    queue_name: str = None,
-    cluster_queue_name: str = None,
+    namespace: str | None = None,
+    queue_name: str | None = None,
+    cluster_queue_name: str | None = None,
 ) -> tuple[list[dict], list[FlavorSpec]]:
     """Build (manifest docs, flavors) for the sparkrun Kueue objects."""
     namespace = resource_name("") if namespace is None else namespace

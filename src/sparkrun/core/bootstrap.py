@@ -259,7 +259,7 @@ def get_variables() -> Variables:
     """Get the sparkrun Variables instance, initializing if needed."""
     global _variables
     if _variables is None or _initialization_error is not None:
-        init_sparkrun()
+        return init_sparkrun()
     return _variables
 
 

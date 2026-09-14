@@ -537,7 +537,8 @@ def load_cmd(
     solo,
     port,
     dry_run,
-    host_list=None,
+    *,
+    host_list: list[str],
     cluster_mgr=None,
 ):
     """Load a model via {app_command} run and register with proxy.

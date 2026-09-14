@@ -232,3 +232,14 @@ def test_invalid_reprobe_stops_further_actions_and_preserves_recorded_change(tmp
     manifest = manager.load("lab", strict=True)
     assert set(manifest.phases) == {"review"}
     assert manifest.phases["review"].hosts == [state.host]
+
+
+def test_setup_without_config_fails_before_actions_or_approval():
+    state, context = state_context()
+    context.config = None
+    action, approve = Mock(), Mock()
+    _step(action)
+    with pytest.raises(SetupFailed, match="requires a configuration"):
+        run_setup_steps({state.host: state}, context, SetupActionContext("tester"), only_steps={"review"}, approve=approve)
+    action.assert_not_called()
+    approve.assert_not_called()

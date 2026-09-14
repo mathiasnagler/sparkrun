@@ -277,6 +277,8 @@ def _resolve_target_accelerator(cluster, placement):
     """
     if cluster is None:
         return None, None
+    from sparkrun.core.limits import resolve_accelerator_memory_gb
+
     hw_map = getattr(cluster, "hosts_hardware", None) or {}
     if not hw_map:
         return None, None
@@ -292,8 +294,10 @@ def _resolve_target_accelerator(cluster, placement):
         seen.add(host)
         hw = hw_map.get(host)
         accels = getattr(hw, "accelerators", None) if hw else None
-        if accels and getattr(accels[0], "memory_gb", None):
-            return accels[0].memory_gb, getattr(accels[0], "model", None)
+        if hw is not None and accels:
+            capacity = resolve_accelerator_memory_gb(accels[0], hw)
+            if capacity is not None:
+                return capacity, accels[0].model
     return None, None
 
 
@@ -420,7 +424,7 @@ def format_monitor_table(
         Formatted multi-line string.
     """
     # Widths are minimums; host column expands to fit longest hostname.
-    host_w = max(16, *(len(h) for h in hosts)) + 2
+    host_w = max(16, max(map(len, hosts), default=0)) + 2
 
     header = f"{'HOST':<{host_w}}{'Jobs':>6}{'CPU%':>8}{'RAM%':>8}{'GPU%':>8}{'CPU Temp':>10}{'GPU Temp':>10}{'GPU Power':>11}"
     separator = "-" * len(header)
@@ -432,8 +436,8 @@ def format_monitor_table(
             lines.append(f"{host:<{host_w}}{'(connecting...)':>6}")
             continue
 
-        if state.error and state.latest is None:
-            lines.append(f"{host:<{host_w}}{state.error}")
+        if state.latest is None:
+            lines.append(f"{host:<{host_w}}{state.error or '(connecting...)'}")
             continue
 
         s = state.latest
@@ -460,7 +464,7 @@ def format_activity_table(frame, hosts: list[str]) -> str:
     ``api.status`` (docker + local + provider), not the telemetry stream's
     docker-only count; telemetry columns come from ``activity.telemetry``.
     """
-    host_w = max(16, *(len(h) for h in hosts)) + 2
+    host_w = max(16, max(map(len, hosts), default=0)) + 2
 
     header = f"{'HOST':<{host_w}}{'Jobs':>6}{'CPU%':>8}{'RAM%':>8}{'GPU%':>8}{'CPU Temp':>10}{'GPU Temp':>10}{'GPU Power':>11}"
     separator = "-" * len(header)

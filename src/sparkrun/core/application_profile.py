@@ -45,11 +45,11 @@ class ApplicationProfile:
     description: str = "Launch and manage inference workloads."
     documentation_url: str | None = None
     support_url: str | None = None
-    config_namespace: str | None = None
-    cache_namespace: str | None = None
-    state_namespace: str | None = None
-    resource_namespace: str | None = None
-    env_prefix: str | None = None
+    config_namespace: str = ""
+    cache_namespace: str = ""
+    state_namespace: str = ""
+    resource_namespace: str = ""
+    env_prefix: str = ""
     env_aliases: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     defaults: Mapping[str, Any] = field(default_factory=dict)
     integrations: tuple[str, ...] = ()
@@ -74,13 +74,15 @@ class ApplicationProfile:
     def __post_init__(self):
         for attr in ("id", "command", "config_namespace", "cache_namespace", "state_namespace", "resource_namespace"):
             value = getattr(self, attr)
-            if value is None:
+            if attr.endswith("_namespace") and value == "":
                 value = self.id
                 object.__setattr__(self, attr, value)
             if not isinstance(value, str) or not _NAME.fullmatch(value):
                 raise ValueError("Invalid application profile %s: %r" % (attr, value))
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", self.package):
             raise ValueError("Invalid application package: %r" % self.package)
+        if not isinstance(self.env_prefix, str):
+            raise ValueError("Invalid environment prefix: %r" % self.env_prefix)
         prefix = self.env_prefix or self.id.upper().replace("-", "_")
         if not re.fullmatch(r"[A-Z][A-Z0-9_]*", prefix):
             raise ValueError("Invalid environment prefix: %r" % prefix)

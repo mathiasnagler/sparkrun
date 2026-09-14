@@ -1112,9 +1112,8 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
     config = sctx.config
     ssh_kwargs = build_ssh_kwargs(config)
 
-    if _is_cluster_id(target) is not None:
+    if (cid := _is_cluster_id(target)) is not None:
         # --- Cluster ID path ---
-        cid = _is_cluster_id(target)
         # Look up persisted metadata via the API (purely on-disk job
         # cache enumeration — no executor needed).  We still fall back
         # to ``load_job_metadata`` when the API enumeration misses

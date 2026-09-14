@@ -243,3 +243,14 @@ Regeneration records the current checker version and diagnostics; it is not
 permission to accept new errors. Direct `uv run pyright src/sparkrun` still reports every remaining issue.
 The separate source-type CI workflow checks the baseline with Python 3.12; runtime
 and installed-wheel tests continue covering both supported Python versions.
+
+
+## Dormant native monitor backend
+
+Bash remains the working default for host monitoring. The `nv-monitor` backend
+is dormant and this distribution does not ship its binary bundle. Selecting it
+fails synchronously with instructions to use bash, before monitor threads start.
+The old implementation needs separate rework before it can be supported again:
+binary packaging and provenance, application/controller ownership, deployment and
+cleanup, and telemetry-provider lifecycle tests. Its remaining optional-import
+warning is recorded in the type baseline; the warning does not establish support.

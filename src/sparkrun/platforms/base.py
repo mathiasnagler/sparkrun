@@ -173,6 +173,15 @@ class HardwarePlatformPlugin(Plugin):
         """
         return {}
 
+    def default_accelerator_memory_gb(self, accelerator: AcceleratorSpec) -> float | None:
+        """Known capacity when hardware inventory has no memory measurement.
+
+        Return a value only when this accelerator has a qualified, fixed
+        capacity. Explicit inventory values always win. Unknown or variable
+        capacity devices keep ``None``; never infer capacity from vendor alone.
+        """
+        return None
+
     def default_max_gpu_memory_utilization(self, accelerator: AcceleratorSpec) -> float | None:
         """Default usable-memory cap for *accelerator* on this platform.
 

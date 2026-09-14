@@ -84,6 +84,9 @@ def run_setup_steps(
     from sparkrun.core.setup_probe import probe_setup_hosts
 
     states = _validated_states(states)
+    config = context.config
+    if not action_context.dry_run and config is None:
+        raise ValueError("Setup execution requires a configuration for reprobing changed hosts")
     cluster_name = _cluster_name(context, cluster, cluster_name)
     if manifest_mgr is not None and cluster_name is None:
         raise ValueError("Setup manifest recording requires a cluster name")
@@ -98,7 +101,10 @@ def run_setup_steps(
         if progress_callback is not None:
             progress_callback(event)
 
-    recording = manifest_mgr.recording(cluster_name) if manifest_mgr is not None and not action_context.dry_run else nullcontext()
+    recording = nullcontext()
+    if manifest_mgr is not None and not action_context.dry_run:
+        assert cluster_name is not None
+        recording = manifest_mgr.recording(cluster_name)
     with recording:
 
         def plan_hosts():
@@ -159,17 +165,19 @@ def run_setup_steps(
                             for key, value in outcome.extra.items()
                             if key not in {"cluster_name", "user", "hosts", "phase", "host_details"}
                         }
+                        assert cluster_name is not None
                         manifest_mgr.record_phase(cluster_name, action.user, [host], step.key, host_details={host: outcome.extra}, **legacy)
                 # Persist before notifying the frontend: a rendering failure
                 # cannot hide completed changes from subsequent teardown.
                 emit(SetupEvent("result", step.key, step.label, (host,), outcome.status, outcome.detail))
             results[step.key] = aggregate_action_status(per_host)
             if changed:
+                assert config is not None
                 reprobe_hosts = [host for host, state in states.items() if state.reachable]
                 refreshed, new_context = probe_setup_hosts(
                     reprobe_hosts,
                     ssh_kwargs=action_context.ssh_kwargs,
-                    config=context.config,
+                    config=config,
                     cluster=cluster,
                     cluster_name=cluster_name,
                 )

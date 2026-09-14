@@ -96,7 +96,7 @@ def _report_status(host_list, ssh_kwargs, dry_run) -> int:
     )
 
     header = ("HOST", "GPU", "SM CLOCK", "MAX SM", "APPLICATIONS", "PERSISTENCE*", "AT BOOT")
-    table = [header]
+    table: list[tuple[str, ...]] = [header]
     failures = []
     for r in results:
         if not r.success:
@@ -209,7 +209,7 @@ def setup_throttle_gpu_clock(ctx, max_clock, hosts, hosts_file, cluster_name, us
     if persistent and (status_only or reset):
         raise click.UsageError("--persistent needs a MAX_CLOCK to persist; --clear already removes the boot-time unit.")
 
-    if not status_only and not reset and not (MIN_MAX_CLOCK_MHZ <= max_clock <= MAX_MAX_CLOCK_MHZ):
+    if max_clock is not None and not reset and not (MIN_MAX_CLOCK_MHZ <= max_clock <= MAX_MAX_CLOCK_MHZ):
         raise click.BadParameter(
             "MAX_CLOCK must be 0 (clear) or between %d and %d MHz, got %d." % (MIN_MAX_CLOCK_MHZ, MAX_MAX_CLOCK_MHZ, max_clock),
             param_hint="MAX_CLOCK",
@@ -301,7 +301,7 @@ def setup_throttle_gpu_clock(ctx, max_clock, hosts, hosts_file, cluster_name, us
     click.echo("Results: %s." % ", ".join(parts) if parts else "No hosts processed.")
 
     # A pre-existing unit outranks this lock at the next boot — say so.
-    if unit_action == "keep" and any("UNIT: present" in (result_map.get(h).stdout if result_map.get(h) else "") for h in host_list):
+    if unit_action == "keep" and any("UNIT: present" in result.stdout for h in host_list if (result := result_map.get(h)) is not None):
         click.echo()
         click.echo("Warning: a boot-time unit is installed and still holds its own value.")
         click.echo("         Re-run with --persistent to update it, or --clear to remove it.")

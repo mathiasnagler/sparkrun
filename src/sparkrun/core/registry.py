@@ -1373,6 +1373,8 @@ class RegistryManager:
             Exception: If the file cannot be read or parsed.
         """
         data = read_yaml(self._registries_path)
+        if not isinstance(data, dict):
+            raise RegistryError("Registry configuration must be a mapping")
         registries = data.get("registries", [])
         entries: list[RegistryEntry] = []
         for r in registries:

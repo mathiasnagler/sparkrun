@@ -55,8 +55,8 @@ def _request(operation: str = "capabilities", **extra):
 
 def _run_worker_activation(request):
     sctx = operations.api.default_sctx()
-    recipe, fingerprint = operations._resolve_binding(request.binding, sctx)
-    return operations._ensure_ready(request, request.binding, recipe, fingerprint, sctx)
+    recipe, fingerprint, overrides = operations._resolve_binding(request.binding, sctx)
+    return operations._ensure_ready(request, request.binding, recipe, fingerprint, sctx, overrides=overrides)
 
 
 def _binding():
@@ -292,7 +292,7 @@ def test_ensure_ready_adopts_matching_endpoint_without_launch():
     request = Request(request_id="r", operation="ensure_ready", binding=Binding(recipe="@local/qwen"))
     endpoint = {"cluster_id": "cluster"}
     with (
-        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "abc123abc123")),
+        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "abc123abc123", {})),
         mock.patch.object(operations.api, "default_sctx", return_value=object()),
         mock.patch.object(operations, "_discover", return_value=[endpoint]),
         mock.patch.object(operations.api, "run") as run,
@@ -307,7 +307,7 @@ def test_ensure_ready_prefers_adopting_a_workload_it_owns():
     foreign = {"cluster_id": "human", operations._OWNED_KEY: False}
     mine = {"cluster_id": "mine", operations._OWNED_KEY: True}
     with (
-        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "abc123abc123")),
+        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "abc123abc123", {})),
         mock.patch.object(operations.api, "default_sctx", return_value=object()),
         mock.patch.object(operations, "_discover", return_value=[foreign, mine]),
         mock.patch.object(operations.api, "run") as run,
@@ -321,7 +321,7 @@ def test_ensure_ready_uses_shared_plan_run_and_readiness():
     request = Request(
         request_id="r", operation="ensure_ready", binding=Binding(recipe="@local/qwen", cluster_candidates=("spark-a",)), timeout_seconds=30
     )
-    recipe = SimpleNamespace(_sparkroute_launch_overrides={"tensor_parallel": 2}, post_exec=[], post_commands=[], defaults={"port": 8000})
+    recipe = SimpleNamespace(post_exec=[], post_commands=[], defaults={"port": 8000})
     plan = SimpleNamespace(cluster_id="new", cluster=SimpleNamespace(name="spark-a"), host_list=["host"], recipe=recipe, is_solo=True)
     run_result = SimpleNamespace(
         rc=0, cluster_id="new", recipe_fingerprint="abc123abc123", launch_result=object(), host_list=["host"], serve_port=8001, is_solo=True
@@ -329,7 +329,7 @@ def test_ensure_ready_uses_shared_plan_run_and_readiness():
     endpoint = {"cluster_id": "new", "host": "127.0.0.1", "port": 8001, operations._OWNED_KEY: True}
     with (
         mock.patch.object(operations.api, "list_jobs", return_value=[]),
-        mock.patch.object(operations, "_resolve_binding", return_value=(recipe, "abc123abc123")),
+        mock.patch.object(operations, "_resolve_binding", return_value=(recipe, "abc123abc123", {"tensor_parallel": 2})),
         mock.patch.object(operations.api, "default_sctx", return_value=SimpleNamespace(config=object())),
         mock.patch.object(operations, "_discover", side_effect=[[], [endpoint]]) as discover,
         mock.patch.object(operations.api, "plan", return_value=plan) as planner,
@@ -352,7 +352,7 @@ def test_ensure_ready_uses_shared_plan_run_and_readiness():
 def test_ensure_ready_background_request_returns_operation_without_launching():
     request = Request(request_id="r", operation="ensure_ready", binding=Binding(recipe="@local/qwen"), wait=False)
     with (
-        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "abc123abc123")),
+        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "abc123abc123", {})),
         mock.patch.object(operations.api, "default_sctx", return_value=object()),
         mock.patch("sparkrun.plugins.sparkroute.jobs.start_operation", return_value={"state": "running", "operation_id": "123"}) as start,
         mock.patch.object(operations.api, "run") as run,
@@ -464,7 +464,7 @@ def test_unreadable_recipe_state_does_not_break_discovery():
 def test_ensure_ready_result_matches_the_gateway_struct():
     request = Request(request_id="r", operation="ensure_ready", binding=Binding(recipe="@local/qwen"))
     with (
-        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "abc123abc123")),
+        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "abc123abc123", {})),
         mock.patch.object(operations.api, "default_sctx", return_value=object()),
         mock.patch.object(operations, "_discover", return_value=[{"cluster_id": "c", operations._OWNED_KEY: True}]),
     ):
@@ -499,7 +499,7 @@ def test_cluster_name_is_exposed_for_endpoint_operations(operation):
         mock.patch.object(operations.api, "default_sctx", return_value=object()),
         mock.patch.object(operations.api, "list_jobs", return_value=[job]),
         mock.patch.object(operations, "discover_endpoints", return_value=[_endpoint("opaque-job")]),
-        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "abc123abc123")),
+        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "abc123abc123", {})),
     ):
         request = Request(request_id="r", operation=operation, binding=binding)
         result = _run_worker_activation(request) if operation == "ensure_ready" else operations.execute(request)
@@ -531,3 +531,17 @@ def test_parse_errors_preserve_recoverable_request_id_and_version(version):
     assert error["ok"] is False
     assert error["request_id"] == "request-1"
     assert error["schema_version"] == version
+
+
+def test_binding_resolution_returns_normalized_overrides_without_attaching_plugin_state():
+    from sparkrun.core.recipe import Recipe
+
+    recipe = Recipe({"name": "fixture", "model": "fixture/model", "container": "fixture:latest", "runtime": "vllm"})
+    before = dict(recipe.__dict__)
+    binding = Binding(recipe="@official/fixture", overrides={"tensor_parallel": "2"})
+    with mock.patch.object(operations.api, "resolve_catalog_recipe", return_value=(recipe, {"tensor_parallel": 2})):
+        resolved, fingerprint, overrides = operations._resolve_binding(binding, object())
+    assert resolved is recipe
+    assert fingerprint
+    assert overrides == {"tensor_parallel": 2}
+    assert recipe.__dict__ == before

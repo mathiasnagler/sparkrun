@@ -789,3 +789,33 @@ Mismatched entry kinds raise `RecipeError` instead of being silently skipped.
 Plugin API mismatches retain registration rollback and inventory failure details.
 Normal CLI calls show a concise update instruction; debug logs include the
 traceback. Shell completion suppresses plugin diagnostics for that invocation.
+
+
+## Concrete provider inputs and results
+
+`ApplicationProfile` materializes namespace and environment-prefix defaults into
+string fields. Omit `config_namespace`, `cache_namespace`, `state_namespace`,
+`resource_namespace`, and `env_prefix` when using defaults; do not pass `None`.
+The [profile field reference](APPLICATION_PROFILES.md#profile-fields) describes
+which other fields still accept `None`.
+
+The shared `core.resolve.apply_recipe_overrides()` helper requires a keyword-only
+`recipe` and returns `(Recipe, overrides)`. Resolve a recipe before calling it;
+there is no recipe-free override mode. Application consumers normally pass
+`RunOptions.overrides` to `api.run()` instead. SparkRoute passes normalized launch
+overrides explicitly through its activation path; it no longer stores private
+launch options on the recipe object or checks for host APIs required by 0.4.
+
+Read-only hook command inputs and SSH host sequences accept `Sequence[str]`.
+Kubernetes executor construction requires `K8sExecutorConfig`; passing an
+unrelated executor config raises `TypeError` before operations begin. Kubernetes
+log APIs declare their closeable generator return contract. Setup execution
+requires configuration before approval callbacks or host actions run; dry-run
+planning may still omit it.
+
+Hardware platforms may implement
+`default_accelerator_memory_gb(accelerator) -> float | None` for devices with a
+qualified fixed capacity. Return a positive finite number or `None`; malformed
+capacity defaults raise `ValueError`. Inventory measurements take precedence.
+Both scheduling and per-host fit use this policy without changing stored probes.
+See [memory capacity and fit](MULTIPLATFORM.md#memory-capacity-and-fit).

@@ -39,7 +39,9 @@ def _get_local_identifiers() -> set[str]:
     if hostname:
         try:
             for info in socket.getaddrinfo(hostname, None):
-                identifiers.add(info[4][0])
+                address = info[4][0]
+                if isinstance(address, str):
+                    identifiers.add(address)
         except (OSError, socket.gaierror):
             pass
 

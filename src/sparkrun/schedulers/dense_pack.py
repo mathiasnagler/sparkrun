@@ -57,11 +57,12 @@ class DensePackScheduler(_OccupancyAwareBase):
                 continue
             if util_remaining[i] + eps < per_rank_util:
                 continue
-            if per_rank_mem is not None and mem_remaining[i] is not None:
-                if mem_remaining[i] + eps < per_rank_mem:
+            memory = mem_remaining[i]
+            if per_rank_mem is not None and memory is not None:
+                if memory + eps < per_rank_mem:
                     continue
 
-            mem_left = mem_remaining[i] if mem_remaining[i] is not None else float("inf")
+            mem_left = memory if memory is not None else float("inf")
             # Tie-break on memory only when util budgets are equal *within eps*:
             # after repeated subtraction two "equal" budgets can differ by a ULP,
             # which would otherwise skip the intended memory tie-break.

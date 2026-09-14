@@ -86,9 +86,9 @@ def build_launch_jobset(
     transport: str = "tcp",
     rdma_resource: str = nccl.DEFAULT_RDMA_RESOURCE,
     rdma_hca: str = nccl.DEFAULT_RDMA_HCA,
-    namespace: str = None,
-    queue: str = None,
-    service_account: str = None,
+    namespace: str | None = None,
+    queue: str | None = None,
+    service_account: str | None = None,
     labels: dict[str, str] | None = None,
     annotations: dict[str, str] | None = None,
 ) -> JobSetPlan:

@@ -93,7 +93,7 @@ def execute(request: Request) -> dict[str, Any]:
         return {"endpoints": [_project(e) for e in _discover(sctx)]}
     if binding is None:  # Protocol parsing enforces this; retain a fail-closed seam.
         raise ProtocolError("invalid_request", "operation requires a binding")
-    recipe, fingerprint = _resolve_binding(binding, sctx)
+    recipe, fingerprint, _overrides = _resolve_binding(binding, sctx)
 
     if request.operation == "resolve":
         return {
@@ -135,22 +135,19 @@ def _require_feature_enabled() -> None:
 
 
 def _resolve_binding(binding: Binding, sctx):
-    if not hasattr(api, "resolve_catalog_recipe"):
-        raise ProtocolError("host_upgrade_required", "Update sparkrun on the control node to a build with the recipe catalog API")
     try:
         recipe, normalized = api.resolve_catalog_recipe(binding.recipe, binding.overrides, sctx=sctx)
         fingerprint = derive_recipe_fingerprint(recipe, normalized)
-        recipe._sparkroute_launch_overrides = normalized
     except api.RecipeNotFound as exc:
         raise ProtocolError("recipe_not_found", "configured recipe could not be resolved") from exc
     except api.SparkrunError as exc:
         raise ProtocolError("resolve_failed", "configured recipe could not be resolved") from exc
     if binding.recipe_revision and binding.recipe_revision != fingerprint:
         raise ProtocolError("recipe_revision_mismatch", "configured recipe revision does not match the resolved recipe")
-    return recipe, fingerprint
+    return recipe, fingerprint, normalized
 
 
-def _ensure_ready(request: Request, binding: Binding, recipe, fingerprint: str, sctx) -> dict[str, Any]:
+def _ensure_ready(request: Request, binding: Binding, recipe, fingerprint: str, sctx, *, overrides: dict[str, Any]) -> dict[str, Any]:
     # Anchor the deadline before the launch, not after it.  ``api.run`` is
     # synchronous through model download and image distribution, so a deadline
     # started afterwards bounds only the tail of the operation and the caller's
@@ -208,7 +205,7 @@ def _ensure_ready(request: Request, binding: Binding, recipe, fingerprint: str, 
             options = api.RunOptions(
                 recipe=recipe,
                 cluster=candidate,
-                overrides=recipe._sparkroute_launch_overrides,
+                overrides=overrides,
                 auto_port=True,
                 follow=False,
                 detached=True,
@@ -468,15 +465,13 @@ def _discover(sctx, *, fingerprint: str = "", cluster_id: str = "", cluster_cand
 
 
 def _catalog(request: Request, sctx) -> dict[str, Any]:
-    if not hasattr(api, "catalog_recipes"):
-        raise ProtocolError("host_upgrade_required", "Update the sparkrun control checkout to a version with the catalog API")
     from .recipe_config import catalog_sparkroute, SparkrouteRecipeError
 
     arguments = request.arguments
     try:
         if request.operation == "catalog_registry":
             _require_feature_enabled()
-            return api.configure_registry(sctx=sctx, **arguments)
+            return dict(api.configure_registry(sctx=sctx, **arguments))
         if request.operation == "catalog_plugins":
             from .workload_plugins import plugin_availability
 
@@ -490,7 +485,7 @@ def _catalog(request: Request, sctx) -> dict[str, Any]:
         if request.operation == "catalog_clusters":
             return {"clusters": api.list_clusters(sctx=sctx)}
         if request.operation == "catalog_search":
-            return api.catalog_recipes(sctx=sctx, **arguments)
+            return dict(api.catalog_recipes(sctx=sctx, **arguments))
         if request.operation == "catalog_resolve":
             return catalog_sparkroute(
                 api.get_recipe_details(arguments.get("reference", ""), arguments.get("overrides"), sctx=sctx), arguments.get("overrides")

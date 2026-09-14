@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from sparkrun.core.config import resolve_sparkrun_cache_dir
@@ -96,7 +97,7 @@ def tuning_configs_present(tuning_dir: Path) -> bool:
 
 
 def _get_tuning_volumes(
-    tuning_dir_fn: callable,
+    tuning_dir_fn: Callable[[], Path],
     container_path: str,
 ) -> dict[str, str] | None:
     """Return volume mapping for tuning configs if they exist.
@@ -115,7 +116,7 @@ def _get_tuning_volumes(
 
 
 def _get_tuning_env(
-    volumes_fn: callable,
+    volumes_fn: Callable[[], dict[str, str] | None],
     env_var: str,
     container_path: str,
 ) -> dict[str, str] | None:

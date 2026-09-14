@@ -6,7 +6,7 @@ defaults that have been validated for the GB10 RoCEv2 fabric.
 
 from __future__ import annotations
 
-from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+from sparkrun.core.hardware import AcceleratorSpec, HostHardware, DGX_SPARK_MEMORY_GB
 from sparkrun.orchestration.collectives import CollectiveBackend, NcclBackend
 from sparkrun.platforms.base import HardwarePlatformPlugin
 
@@ -118,6 +118,11 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
             if key and key in _DGX_SPARK_RUNTIME_ENV:
                 return dict(_DGX_SPARK_RUNTIME_ENV[key])
         return {}
+
+    def default_accelerator_memory_gb(self, accelerator: AcceleratorSpec) -> float | None:
+        if accelerator.vendor == "nvidia" and accelerator.model == "gb10":
+            return DGX_SPARK_MEMORY_GB
+        return None
 
     def default_max_gpu_memory_utilization(self, accelerator: AcceleratorSpec) -> float | None:
         """GB10 unified memory → cap usable memory at 0.85 for scheduling/fit."""

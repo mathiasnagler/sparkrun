@@ -703,3 +703,20 @@ def test_inventory_is_immutable_and_cannot_change_required_enforcement(monkeypat
     assert plugins.installed_plugin_inventory()[0].failure
     with pytest.raises(plugins.RequiredIntegrationError, match="provider failed"):
         plugins.require_integrations()
+
+
+def test_profile_namespaces_are_materialized_strings():
+    from sparkrun.core.application_profile import ApplicationProfile
+
+    profile = ApplicationProfile(id="example", display_name="Example", command="example", package="example")
+    for name in ("config_namespace", "cache_namespace", "state_namespace", "resource_namespace"):
+        assert getattr(profile, name) == "example"
+    assert profile.env_prefix == "EXAMPLE"
+
+
+@pytest.mark.parametrize("name", ["config_namespace", "cache_namespace", "state_namespace", "resource_namespace", "env_prefix"])
+def test_profile_namespaces_reject_none(name):
+    from sparkrun.core.application_profile import ApplicationProfile
+
+    with pytest.raises(ValueError):
+        ApplicationProfile(id="example", display_name="Example", command="example", package="example", **{name: None})

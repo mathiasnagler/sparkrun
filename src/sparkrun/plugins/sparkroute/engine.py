@@ -973,12 +973,16 @@ class SparkrouteEngine(GatewaySupervisor):
 
         try:
             target_recipe, _ = api.resolve_catalog_recipe(str(recipe), sctx=self.sctx)
+            if target_recipe.source_path is None:
+                raise SparkrouteConfigError("Resolved recipe has no source path")
             target = Path(target_recipe.source_path).resolve()
             retained = []
             for binding in bindings:
                 # Compare the resolved source, not @registry/name against a
                 # cached YAML path. Overrides do not change recipe identity.
                 current, _ = api.resolve_catalog_recipe(str(binding.get("recipe") or ""), sctx=self.sctx)
+                if current.source_path is None:
+                    raise SparkrouteConfigError("Resolved binding recipe has no source path")
                 if Path(current.source_path).resolve() != target:
                     retained.append(binding)
         except api.SparkrunError as exc:

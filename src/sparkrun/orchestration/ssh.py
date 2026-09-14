@@ -17,6 +17,7 @@ from __future__ import annotations
 from sparkrun.core.application_profile import product_env
 
 import logging
+from collections.abc import Sequence
 import os
 import subprocess
 import time
@@ -890,7 +891,7 @@ def stop_log_capture(proc: subprocess.Popen | None) -> list[str]:
 
 
 def run_remote_scripts_parallel(
-    hosts: list[str],
+    hosts: Sequence[str],
     script: str,
     ssh_user: str | None = None,
     ssh_key: str | None = None,
@@ -1022,7 +1023,7 @@ def verify_host_paths(
         if missing:
             # Preserve the requested order for a stable, readable error.
             order = {p: i for i, p in enumerate(requested)}
-            missing_by_host[r.host] = sorted(set(missing), key=order.get)
+            missing_by_host[r.host] = sorted(set(missing), key=order.__getitem__)
     return missing_by_host
 
 

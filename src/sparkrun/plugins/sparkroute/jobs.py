@@ -84,7 +84,7 @@ def start_operation(request: Request, *, sctx) -> dict:
     if request.binding and not identity["revision"]:
         from .operations import _resolve_binding
 
-        _, fingerprint = _resolve_binding(request.binding, sctx)
+        _, fingerprint, _ = _resolve_binding(request.binding, sctx)
         request = replace(request, binding=replace(request.binding, recipe_revision=fingerprint))
         identity["revision"] = fingerprint
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
@@ -123,11 +123,6 @@ def start_operation(request: Request, *, sctx) -> dict:
                 (operation_id, key, json.dumps(asdict(request)), time.time()),
             )
         # The child blocks on this transaction until its PID is committed.
-        kwargs = (
-            {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-            if os.name == "nt"
-            else {"start_new_session": True}
-        )
         from ._application_profile import child_environment
 
         try:
@@ -138,7 +133,8 @@ def start_operation(request: Request, *, sctx) -> dict:
                 stderr=subprocess.DEVNULL,
                 close_fds=True,
                 env=child_environment(sctx.config.config_path),
-                **kwargs,
+                creationflags=(subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0,
+                start_new_session=os.name != "nt",
             )
         except OSError as exc:
             raise ProtocolError("worker_unavailable", "Could not start the sparkrun operation worker", retryable=True) from exc
@@ -257,8 +253,11 @@ def run_worker(config_path: Path, operation_id: str) -> None:
             )
         else:
             progress("resolving recipe")
-            recipe, fingerprint = _resolve_binding(request.binding, sctx)
-            result = _ensure_ready(replace(request, wait=True), request.binding, recipe, fingerprint, sctx)
+            binding = request.binding
+            if binding is None:
+                raise ProtocolError("invalid_request", "operation requires a binding")
+            recipe, fingerprint, overrides = _resolve_binding(binding, sctx)
+            result = _ensure_ready(replace(request, wait=True), binding, recipe, fingerprint, sctx, overrides=overrides)
         with _connect(path) as db:
             db.execute(
                 "UPDATE operations SET state='succeeded', phase='complete', result=?, updated=? WHERE id=?",
@@ -283,5 +282,5 @@ def run_worker(config_path: Path, operation_id: str) -> None:
 
 
 if __name__ == "__main__":
-    sys.modules[__package__ + ".jobs"] = sys.modules[__name__]
+    sys.modules["sparkrun.plugins.sparkroute.jobs"] = sys.modules[__name__]
     run_worker(Path(sys.argv[1]), sys.argv[2])

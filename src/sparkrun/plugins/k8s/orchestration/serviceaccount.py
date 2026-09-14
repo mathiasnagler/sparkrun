@@ -163,7 +163,7 @@ def write_kubeconfig(path: str | Path, kubeconfig: dict) -> Path:
 
 
 def configure_service_account(
-    client: KubectlClient,
+    client: KubectlClient | None,
     spec: ServiceAccountSpec,
     *,
     kubeconfig_out: str | Path | None = None,
@@ -184,6 +184,8 @@ def configure_service_account(
     if dry_run:
         return result
 
+    if client is None:
+        raise ServiceAccountSetupError("A Kubernetes client is required to apply service-account manifests")
     apply_res = client.apply(manifests_yaml)
     if not apply_res.success:
         raise ServiceAccountSetupError("Failed to apply service-account manifests: %s" % apply_res.stderr.strip()[:400])

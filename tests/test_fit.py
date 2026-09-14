@@ -96,7 +96,7 @@ def test_check_fit_unknown_memory_still_ok_with_warning():
     cluster = ClusterDefinition(
         name="mystery",
         hosts=["s1"],
-        hosts_hardware={"s1": HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="gb10")])},
+        hosts_hardware={"s1": HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="unknown")])},
     )
     placement = pack(ParallelismConfig(), cluster.hosts)
     result = check_fit(_estimate(per_gpu_gb=999.0), cluster, placement)
@@ -220,3 +220,42 @@ def test_fit_result_to_dict_round_trips_fields():
     assert d["per_host"]["s1"]["nominal_memory_gb"] == 121.0
     assert d["per_host"]["s1"]["max_gpu_memory_utilization"] == 0.85
     assert isinstance(result, FitResult)
+
+
+def test_detected_gb10_without_memory_agrees_across_fit_scheduling_and_display():
+    from sparkrun.core.fingerprint import parse_fingerprint_output, build_host_hardware
+    from sparkrun.core.limits import resolved_hardware_for_scheduling
+    from sparkrun.utils.cli_formatters import _resolve_target_accelerator
+
+    hardware = build_host_hardware(
+        parse_fingerprint_output("NVIDIA_GPU_COUNT=1\nNVIDIA_GPU_0_NAME=NVIDIA GB10\nNVIDIA_GPU_0_MEMORY_MIB=N/A\nIB_PRESENT=1\n")
+    )
+    assert hardware.accelerators[0].memory_gb is None
+    # A persisted probe must benefit without changing or re-fingerprinting inventory.
+    saved = HostHardware.from_dict(hardware.to_dict())
+    cluster = ClusterDefinition(name="sparks", hosts=["s1", "s2"], hosts_hardware={"s1": saved, "s2": saved})
+    resolved = resolved_hardware_for_scheduling(cluster, cluster.hosts)
+    placement = pack(ParallelismConfig(tensor_parallel=2), cluster.hosts, host_hardware=resolved)
+    fit = check_fit(_estimate(77.71, tp=2), cluster, placement)
+    assert fit.ok
+    assert fit.warnings == []
+    for host, detail in fit.per_host.items():
+        assert detail.nominal_memory_gb == 121.0
+        assert detail.accelerator_memory_gb == pytest.approx(102.85)
+        assert resolved[host].usable_gpu_memory_slots() == pytest.approx([102.85])
+    assert _resolve_target_accelerator(cluster, placement) == (121.0, "gb10")
+    assert saved.to_dict() == hardware.to_dict()
+    assert not check_fit(_estimate(110, tp=2), cluster, placement).ok
+
+
+def test_explicit_gb10_memory_wins_over_platform_default():
+    cluster = ClusterDefinition(
+        name="limited",
+        hosts=["s1"],
+        hosts_hardware={"s1": HostHardware(accelerators=[AcceleratorSpec("nvidia", "gb10", memory_gb=96)])},
+    )
+    placement = pack(ParallelismConfig(), cluster.hosts)
+    detail = check_fit(_estimate(90), cluster, placement).per_host["s1"]
+    assert detail.nominal_memory_gb == 96
+    assert detail.accelerator_memory_gb == pytest.approx(81.6)
+    assert not detail.ok

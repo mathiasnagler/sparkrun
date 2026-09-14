@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from .types import TelemetryEvent
+from .types import TelemetryEvent, JsonValue
 from .events import model_quantization_summary
 from .util import model_identifier, parallelism_summary, recipe_source, string_value, system_info
 
@@ -56,8 +56,8 @@ def _bench_args(result: BenchmarkResult, options: BenchmarkOptions):
     return value if isinstance(value, Mapping) else options.bench_args
 
 
-def _sorted_keys(value, *, limit: int = 50) -> list[str]:
+def _sorted_keys(value, *, limit: int = 50) -> list[JsonValue]:
     if not isinstance(value, Mapping):
         return []
     keys = sorted(text for key in value if (text := string_value(key)) is not None)
-    return keys[:limit]
+    return [key for key in keys[:limit]]

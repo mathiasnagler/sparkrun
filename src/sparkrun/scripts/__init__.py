@@ -41,7 +41,7 @@ def _resolve_includes(text: str, _seen: frozenset[str] = frozenset()) -> str:
         name = stripped[len(INCLUDE_DIRECTIVE) :].strip()
         if name in _seen:
             raise ValueError("Circular script include: %s" % name)
-        body = _resolve_includes(load_resource(__package__, name), _seen | {name})
+        body = _resolve_includes(load_resource(__name__, name), _seen | {name})
         out.append(body if body.endswith("\n") else body + "\n")
     return "".join(out)
 
@@ -60,7 +60,7 @@ def read_script(name: str) -> str:
     """
     from sparkrun.core.application_profile import get_application_profile
 
-    script = _resolve_includes(load_resource(__package__, name))
+    script = _resolve_includes(load_resource(__name__, name))
     return script.replace("@RESOURCE_NAMESPACE@", get_application_profile().resource_namespace).replace(
         "@CACHE_NAMESPACE@", get_application_profile().cache_namespace
     )

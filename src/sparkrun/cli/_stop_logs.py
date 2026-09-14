@@ -158,7 +158,7 @@ def _hosts_for_cluster_id_target(target, hosts, hosts_file, cluster_name, config
     from sparkrun.orchestration.job_metadata import load_job_metadata
 
     cluster_id = _is_cluster_id(target)
-    meta = load_job_metadata(cluster_id, cache_dir=str(config.cache_dir))
+    meta = load_job_metadata(cluster_id, cache_dir=str(config.cache_dir)) if cluster_id is not None else None
     return resolve_hosts_with_metadata_fallback(
         hosts,
         hosts_file,

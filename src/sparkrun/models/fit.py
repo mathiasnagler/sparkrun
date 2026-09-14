@@ -3,7 +3,7 @@
 Splits "model VRAM requirement" (an intrinsic property of model +
 parallelism, computed by :func:`sparkrun.models.vram.estimate_vram`)
 from "does it fit on this cluster" (a property of the placement against
-per-host accelerator memory captured in
+per-host accelerator memory resolved from inventory and platform defaults in
 :class:`~sparkrun.core.hardware.HostHardware`).
 
 :attr:`VRAMEstimate.fits_dgx_spark` is retained for the single-platform
@@ -38,10 +38,10 @@ class HostFitDetail:
 
     Usable = nominal ``memory_gb × max_gpu_memory_utilization`` (the cap
     resolved by :func:`sparkrun.core.limits.resolve_max_gpu_memory_utilization`).
-    This is the figure the fit decision is made against.  ``None`` when no
-    :class:`AcceleratorSpec` on the host declares ``memory_gb`` — fit cannot be
-    verified and the host is reported as ``ok=True`` with a warning rather than
-    failing the whole check.
+    This is the figure the fit decision is made against. ``None`` when neither
+    inventory nor the platform supplies capacity for any accelerator on the host.
+    Fit cannot then be verified; the host is reported as ``ok=True`` with a warning
+    rather than failing the whole check.
     """
 
     headroom_gb: float | None
@@ -65,7 +65,7 @@ class FitResult:
     """Aggregate fit decision across every host receiving ranks."""
 
     ok: bool
-    """``True`` iff every host with declared memory satisfies the per-rank requirement."""
+    """``True`` iff every host with resolved memory satisfies the per-rank requirement."""
 
     per_host: dict[str, HostFitDetail] = field(default_factory=dict)
     """Detail per host that participates in the placement."""
@@ -104,20 +104,21 @@ def _limiting_accelerator(hw, cluster) -> tuple[float, float, float] | None:
     """Find the accelerator with the smallest *usable* memory on *hw*.
 
     Returns ``(usable_gb, nominal_gb, cap)`` for that accelerator, or ``None``
-    when no accelerator on the host declares ``memory_gb``.  Usable memory
+    when neither inventory nor the platform supplies capacity.  Usable memory
     applies the scheduling/fit cap resolved by
     :func:`sparkrun.core.limits.resolve_max_gpu_memory_utilization`.
     """
-    from sparkrun.core.limits import resolve_max_gpu_memory_utilization
+    from sparkrun.core.limits import resolve_max_gpu_memory_utilization, resolve_accelerator_memory_gb
 
     best: tuple[float, float, float] | None = None
     for accel in hw.accelerators:
-        if accel.memory_gb is None:
+        capacity = resolve_accelerator_memory_gb(accel, hw)
+        if capacity is None:
             continue
         cap = resolve_max_gpu_memory_utilization(accel, hw, cluster)
-        usable = accel.memory_gb * cap
+        usable = capacity * cap
         if best is None or usable < best[0]:
-            best = (usable, accel.memory_gb, cap)
+            best = (usable, capacity, cap)
     return best
 
 
@@ -134,10 +135,10 @@ def check_fit(
     accelerator, so we compare per-rank against the smallest accelerator
     memory on the host (worst-case fit).
 
-    Hosts without ``memory_gb`` metadata are reported ``ok=True`` with a
-    warning — sparkrun can't verify the fit but won't block the launch
-    on missing data.  Use ``sparkrun cluster update --infer-hardware``
-    to populate it.
+    Hosts without inventory or platform capacity are reported ``ok=True``
+    with a warning: sparkrun cannot verify fit without a capacity estimate.
+    Use ``sparkrun cluster update --infer-hardware`` to refresh inventory;
+    qualified platform defaults also apply to existing saved probe records.
 
     Args:
         estimate: Result of :func:`sparkrun.models.vram.estimate_vram`.
@@ -159,7 +160,7 @@ def check_fit(
         limiting = _limiting_accelerator(hw, cluster)
 
         if limiting is None:
-            note = "no memory_gb declared on host hardware; fit not verified"
+            note = "accelerator memory capacity unavailable from inventory or platform; fit not verified"
             warnings.append("%s: %s" % (host, note))
             detail = HostFitDetail(
                 host=host,

@@ -39,6 +39,23 @@ def test_workers_coalesce_same_workload_across_recipe_aliases_but_not_clusters(m
         assert jobs._path(sctx).stat().st_mode & 0o077 == 0
 
 
+def test_activation_without_revision_persists_resolved_identity():
+    sctx = api.default_sctx()
+    request = activation(revision=None)
+    with (
+        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "resolved-revision", {"port": 9001})),
+        mock.patch.object(jobs.subprocess, "Popen", return_value=SimpleNamespace(pid=12345)),
+        mock.patch.object(jobs, "_alive", return_value=True),
+    ):
+        first = jobs.start_operation(request, sctx=sctx)
+        second = jobs.start_operation(activation(revision="resolved-revision"), sctx=sctx)
+    assert first["operation_id"] == second["operation_id"]
+    with jobs._connect(jobs._path(sctx)) as db:
+        persisted = json.loads(db.execute("SELECT request FROM operations").fetchone()[0])
+    assert persisted["binding"]["recipe_revision"] == "resolved-revision"
+    assert request.binding.recipe_revision is None
+
+
 def test_dead_worker_reuses_operation_and_preserves_placement():
     sctx = api.default_sctx()
     with mock.patch.object(jobs.subprocess, "Popen", return_value=SimpleNamespace(pid=12345)):
@@ -140,7 +157,9 @@ def test_retry_recovers_persisted_job_after_successful_worker_is_gone():
         mock.patch.object(operations, "_recover_launch", return_value={"state": "ready"}) as recover,
         mock.patch.object(api, "run") as run,
     ):
-        assert operations._ensure_ready(activation(), activation().binding, object(), "fingerprint", object()) == {"state": "ready"}
+        assert operations._ensure_ready(activation(), activation().binding, object(), "fingerprint", object(), overrides={}) == {
+            "state": "ready"
+        }
     assert recover.call_args.args[0]["port"] == 8123
     assert recover.call_args.args[0]["cluster_id"] == "recorded-job"
     run.assert_not_called()
@@ -150,7 +169,7 @@ def test_synchronous_bridge_waits_on_same_durable_operation():
     request = Request("test", "ensure_ready", binding=activation().binding, wait=True)
     with (
         mock.patch.object(operations, "_require_feature_enabled"),
-        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "fingerprint")),
+        mock.patch.object(operations, "_resolve_binding", return_value=(object(), "fingerprint", {})),
         mock.patch.object(jobs, "start_operation", return_value={"operation_id": "same", "state": "running"}) as start,
         mock.patch.object(jobs, "wait_operation", return_value={"state": "ready"}) as wait,
         mock.patch.object(api, "run") as run,

@@ -12,6 +12,7 @@ import json
 import re
 import unicodedata
 from typing import Any
+from collections.abc import Mapping
 
 # Keep aligned with the gateway config validator; unknown extensions use x-.
 CAPABILITIES = frozenset(
@@ -115,7 +116,7 @@ def recipe_sparkroute(recipe) -> dict[str, Any]:
     return parse_sparkroute(recipe.plugin_item("sparkroute", {}), source=str(getattr(recipe, "qualified_name", "recipe")))
 
 
-def catalog_sparkroute(details: dict[str, Any], overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+def catalog_sparkroute(details: Mapping[str, Any], overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     # Core transports plugin data generically. Only this integration defines
     # the SparkRoute-specific bridge field; other plugins' data stays local.
     from types import SimpleNamespace

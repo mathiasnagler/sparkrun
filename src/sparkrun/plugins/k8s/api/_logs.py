@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from typing import TYPE_CHECKING, Literal
 
 from sparkrun.api._context import resolve_sctx
@@ -28,7 +28,7 @@ def logs(
     context: str | None = None,
     follow: bool = False,
     tail: int | None = None,
-) -> Iterator[LogLine]:
+) -> Generator[LogLine, None, None]:
     """Read an owned JobSet or launcher Job independently of submission.
 
     Target/ownership checks run at call time; reading starts on iteration.

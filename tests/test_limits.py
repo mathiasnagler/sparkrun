@@ -102,7 +102,7 @@ def test_usable_memory_applies_cap():
 
 
 def test_usable_memory_none_when_capacity_unknown():
-    accel = AcceleratorSpec(vendor="nvidia", model="gb10", memory_gb=None)
+    accel = AcceleratorSpec(vendor="nvidia", model="unknown", memory_gb=None)
     hw = HostHardware(accelerators=[accel])
     assert usable_memory_gb(accel, hw, None) is None
 
@@ -134,3 +134,14 @@ def test_resolved_hardware_uses_dgx_default_for_unlisted_hosts():
     accel = resolved["h1"].accelerators[0]
     assert accel.model == default_dgx_spark_hardware().accelerators[0].model
     assert accel.max_gpu_memory_utilization == 0.85
+
+
+@pytest.mark.parametrize("capacity", [0, -1, float("nan"), float("inf"), True, "121"])
+def test_invalid_platform_memory_default_fails_before_scheduling(monkeypatch, capacity):
+    from sparkrun.core.limits import resolve_accelerator_memory_gb
+    from sparkrun.platforms.dgx_spark import DgxSparkPlatform
+
+    monkeypatch.setattr(DgxSparkPlatform, "default_accelerator_memory_gb", lambda *_: capacity)
+    accel = AcceleratorSpec("nvidia", "gb10")
+    with pytest.raises(ValueError, match="invalid accelerator memory capacity"):
+        resolve_accelerator_memory_gb(accel, HostHardware(accelerators=[accel]))

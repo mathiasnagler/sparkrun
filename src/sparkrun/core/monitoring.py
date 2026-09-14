@@ -607,6 +607,9 @@ class NvMonitorClusterMonitor:
         from sparkrun.scripts import read_script
 
         self._script = read_script("nv_monitor_wrapper.sh")
+        from sparkrun.orchestration.nv_monitor import require_nv_monitor_binaries
+
+        require_nv_monitor_binaries()
         self._started = True
 
         # Suppress background loggers — errors go to state, not terminal
@@ -645,7 +648,13 @@ class NvMonitorClusterMonitor:
         """Background: deploy binaries then start SSH processes."""
         from sparkrun.orchestration.nv_monitor import ensure_nv_monitor
 
-        deploy_status = ensure_nv_monitor(self.hosts, self.ssh_kwargs)
+        try:
+            deploy_status = ensure_nv_monitor(self.hosts, self.ssh_kwargs)
+        except Exception as error:
+            for state in self.states.values():
+                state.error = "nv-monitor deployment failed: %s" % error
+            self._restore_loggers(self._saved_log_levels)
+            return
         for h, ok in deploy_status.items():
             if not ok:
                 self.states[h].error = "nv-monitor deploy failed"
