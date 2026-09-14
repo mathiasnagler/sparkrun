@@ -59,7 +59,7 @@ class ScheduleRunResult:
     consolidated: dict[str, Any]
 
 
-def build_benchmark_tasks(fw, base_args, schedule) -> list[BenchTask]:
+def build_benchmark_tasks(fw: BenchmarkingPlugin, base_args: dict[str, Any], schedule: list[dict[str, Any]] | None) -> list[BenchTask]:
     """Validate the framework's executable task contract before launch or resume."""
     from sparkrun.core.benchmark_profiles import BenchmarkError
 

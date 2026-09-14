@@ -12,6 +12,15 @@ first tagged release containing them, regardless of their original commit date.
 
 ### 0.4.0 application and API changes
 
+- Completed native benchmark asset handling: image provenance comes from launch
+  or captured deployment context. `materialize()` explicitly targets containers.
+- Local and remote distribution honor the same resource entries and node targets,
+  including required helper images and prepared policies.
+- Tool-eval-bench rejects infrastructure-only/empty measurements while preserving
+  real zero scores and partial completion. Unmeasured tasks remain resumable.
+  Text arguments retain their values; standalone modes without scheduled JSON
+  artifacts fail before launch. Benchmark task-building hooks are now abstract.
+
 This is a breaking Python API release. See the
 [0.4.0 migration guide](docs/DISTRIBUTION_API_MIGRATION.md) for removed imports,
 fields, and downstream migration steps. The existing library API, in-tree plugin

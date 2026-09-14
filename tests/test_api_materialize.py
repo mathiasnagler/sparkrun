@@ -252,3 +252,27 @@ def test_materialize_and_preparation_share_per_host_platform_images():
     spec = api.materialize(options, plan=plan, sctx=sctx)
     assert tuple(unit.image for unit in spec.units) == prepared.images_by_node
     assert len(set(prepared.images_by_node)) == 2
+
+
+def test_materialize_rejects_native_target_before_image_resolution(monkeypatch):
+    from dataclasses import replace
+    from unittest.mock import Mock
+    from sparkrun.orchestration.executor import ExecutorTarget
+    from sparkrun.orchestration.executors.local import LocalExecutor
+
+    options, plan, sctx = _fixture()
+    plan = replace(plan, executor_target=ExecutorTarget(executor="local"))
+    monkeypatch.setattr("sparkrun.orchestration.executor.get_executor", lambda *a, **kw: LocalExecutor())
+    image = Mock(side_effect=AssertionError("native materialize must not resolve images"))
+    monkeypatch.setattr(plan.runtime, "default_image_for", image)
+    with pytest.raises(ValueError, match="container"):
+        api.materialize(options, plan=plan, sctx=sctx)
+    image.assert_not_called()
+
+
+@pytest.mark.parametrize("command", [None, "", ["serve"]])
+def test_materialize_rejects_invalid_runtime_commands(monkeypatch, command):
+    options, plan, sctx = _fixture()
+    monkeypatch.setattr(plan.runtime, "generate_node_command", lambda **kwargs: command)
+    with pytest.raises(ValueError, match="nonempty command"):
+        api.materialize(options, plan=plan, sctx=sctx)

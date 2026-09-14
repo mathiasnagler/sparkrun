@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import csv
 import io
 import json
@@ -193,7 +195,7 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
     def prepare_benchmark_args(
         self,
         recipe,
-        config_chain: dict[str, Any],
+        config_chain: Variables | Mapping[str, Any],
         overrides: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Adapt llama-benchy's invocation to the server it will be pointed at.

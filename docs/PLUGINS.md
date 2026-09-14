@@ -428,11 +428,22 @@ use `BenchmarkOptions(recipe="...", framework="example-rate")`. The loader scans
 the concrete class; no `register(v)` hook is needed here. `sparkrun.benchmarking`
 is the internal SAF extension point, not a Python package entry-point group.
 Every framework implements `build_task_list`, including single-invocation tools.
+The base is abstract: incomplete subclasses cannot be instantiated and are not
+discovered as concrete framework plugins.
 Return a nonempty list of `BenchTask` records with contiguous zero-based indices;
 returning `None` no longer selects a separate execution path. Each successful
 command must write a JSON object to `result_file`. Arguments are raw subprocess
 argv, without shell quoting. The scheduler handles deadlines, process cleanup,
 artifact validation, and retries; resume reconstructs tasks from saved entries.
+Implement `consolidated_coverage_keys()` against the raw consolidated artifact
+and `measured_nothing()` against the parsed result when exit zero does not ensure
+usable measurements. Coverage must leave unmeasured tasks retryable; the final
+empty-measurement check alone cannot provide recovery. Tool-eval-bench uses these
+hooks to distinguish infrastructure failures from graded model-quality failures.
+
+Image-less executors are supported by `run()` and `benchmark()` without default
+image lookup. Image provenance comes from launch/captured deployment context.
+`materialize()` is specifically a container-unit API and rejects native targets.
 
 
 ### Application and controller identity

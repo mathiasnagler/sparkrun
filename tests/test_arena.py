@@ -554,7 +554,7 @@ class TestBenchmarkExecution:
 
         r = BenchmarkExecution()
         assert r.success is False
-        assert r.results is None
+        assert r.results == {}
         assert r.outputs is None
 
     def test_populated(self):

@@ -315,7 +315,8 @@ def test_benchmark_cli_reports_image_plan_failure(fake_recipe_env, monkeypatch):
     def fail_plan(*args, **kwargs):
         raise ImagePlanError("no image for h1")
 
-    monkeypatch.setattr("sparkrun.core.images.resolve_runtime_image_plan", fail_plan)
+    monkeypatch.setattr("sparkrun.core.image_preparation.resolve_runtime_image_plan", fail_plan)
     result = CliRunner().invoke(cli_main, ["benchmark", "run", "--solo", "--dry-run", "--hosts", "h1", "test-recipe"])
     assert result.exit_code == 1
-    assert "Error: no image for h1" in result.output
+    assert "inference launch failed" in result.output
+    assert "no image for h1" in result.output

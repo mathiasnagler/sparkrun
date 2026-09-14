@@ -86,6 +86,11 @@ class _FakeFW(BenchmarkingPlugin):
             cmd.extend(["--save-result", result_file])
         return cmd
 
+    def build_task_list(self, base_args, schedule):
+        from sparkrun.benchmarking.scheduler import BenchTask
+
+        return [BenchTask(i, "measurement", dict(base_args), dict(entry)) for i, entry in enumerate([{}] if schedule is None else schedule)]
+
 
 def _make_state(tmp_path: Path, n_tasks: int = 3) -> BenchmarkRunState:
     """Return a fresh BenchmarkRunState saved to tmp_path."""

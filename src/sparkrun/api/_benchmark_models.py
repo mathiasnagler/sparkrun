@@ -187,7 +187,11 @@ class BenchmarkOptions:
     exit_on_first_fail: bool = True
     """Abort the run when the first benchmark task fails."""
     timeout: int | None = None
-    """Per-task benchmark timeout in seconds.  ``None`` uses the framework default."""
+    """Whole-task deadline in seconds, including output draining.
+
+    ``None`` uses the benchmark specification's timeout, then the shared
+    14,400-second default. Framework request timeouts are separate bench_args.
+    """
     api_key_env: str | None = None
     """Credential variable name, resolved only for execution; its value is never persisted.
 
@@ -260,7 +264,7 @@ class BenchmarkResult:
     """
 
     success: bool
-    """``True`` when all benchmark tasks completed without error."""
+    """``True`` when all tasks satisfy the framework's measurement policy."""
     benchmark_id: str
     """Opaque identifier for this benchmark run (framework + profile + cluster)."""
     category: str
@@ -284,7 +288,7 @@ class BenchmarkResult:
     host_list: tuple[str, ...] = ()
     """Hosts that participated in the benchmark."""
     container_image: str = ""
-    """Container image used for the inference workload."""
+    """Container image used for inference; empty for native workloads or unknown provenance."""
     container_image_sha: str | None = None
     """Digest of the pulled container image, when known."""
     container_image_sha_pinned: bool = False

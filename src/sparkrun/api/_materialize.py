@@ -31,6 +31,8 @@ def materialize(
 ) -> ResolvedLaunchSpec:
     """Resolve the launch data an integration needs without starting it.
 
+    This surface produces container launch units; native process executors
+    are not supported. Use run() for native processes.
     Placement is reused from *plan* when provided. The function deliberately
     avoids image pulls, model distribution, cache creation, and network
     probing. A caller which already resolved a cluster communication
@@ -51,6 +53,12 @@ def materialize(
         from sparkrun.api._run import plan as build_plan
 
         plan = build_plan(options, sctx=sctx)
+
+    if plan.executor_target is not None:
+        from sparkrun.orchestration.executor import get_executor
+
+        if not get_executor(plan.executor_target.executor, v=getattr(sctx, "variables", None)).needs_image:
+            raise ValueError("materialize() produces container launch units; native process executors are not supported")
 
     recipe = plan.recipe
     runtime = plan.runtime
@@ -220,6 +228,8 @@ def materialize(
                     service_unit_count=len(keys),
                     service_hosts=[service_host for _service, service_host in keys],
                 )
+        if not isinstance(command_text, str) or not command_text.strip():
+            raise ValueError("%s must produce a nonempty command for launch unit %s" % (runtime.runtime_name, unit_id))
         unit_environment = dict(environment)
         if comm_env:
             host_environment = comm_env.get_env(host)

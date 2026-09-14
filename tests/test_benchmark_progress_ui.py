@@ -47,6 +47,11 @@ class _StubFW(BenchmarkingPlugin):
             row_key=lambda r: r[0],
         )
 
+    def build_task_list(self, base_args, schedule):
+        from sparkrun.benchmarking.scheduler import BenchTask
+
+        return [BenchTask(i, "measurement", dict(base_args), dict(entry)) for i, entry in enumerate([{}] if schedule is None else schedule)]
+
 
 class _BigStubFW(BenchmarkingPlugin):
     """Stub plugin that emits N rows on demand."""
@@ -68,6 +73,11 @@ class _BigStubFW(BenchmarkingPlugin):
             rows_from_consolidated=lambda c: [(i,) for i in range(c.get("n", 0))],
             row_key=lambda r: r[0],
         )
+
+    def build_task_list(self, base_args, schedule):
+        from sparkrun.benchmarking.scheduler import BenchTask
+
+        return [BenchTask(i, "measurement", dict(base_args), dict(entry)) for i, entry in enumerate([{}] if schedule is None else schedule)]
 
 
 # ---------------------------------------------------------------------------

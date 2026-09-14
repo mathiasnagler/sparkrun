@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import shutil
+
+import pytest
 from unittest.mock import patch
 
 from sparkrun.benchmarking.tool_eval_bench import (
@@ -148,7 +150,6 @@ def test_build_command_kebab_case_keys():
 def test_interpret_arg_list():
     fw = ToolEvalBenchFramework()
     assert fw.interpret_arg("categories", "A,B,K") == ["A", "B", "K"]
-    # Scenarios aren't all numeric; coerce_value falls back to str when needed.
     assert fw.interpret_arg("scenarios", "TC-01,TC-07") == ["TC-01", "TC-07"]
 
 
@@ -405,3 +406,53 @@ def test_single_suite_rejects_unsupported_schedules():
     for schedule in ([], [{}, {}]):
         with pytest.raises(BenchmarkError, match="one schedule entry"):
             ToolEvalBenchFramework().build_task_list({}, schedule)
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_coverage_accepts_graded_zero_and_partial_infrastructure_results(partial):
+    fw = ToolEvalBenchFramework()
+    scores = {
+        "final_score": 0,
+        "max_points": 2,
+        "completion_rate": 0.5 if partial else 1.0,
+        "excluded_scenarios": ["TC-02"] if partial else [],
+        "scenario_results": [{"scenario_id": "TC-01", "status": "fail", "failure_kind": "missing_step"}],
+    }
+    if partial:
+        scores["scenario_results"].append({"scenario_id": "TC-02", "status": "fail", "failure_kind": "timeout"})
+    parsed = fw.parse_results(json.dumps({"schema_version": "1", "scores": scores}), "")
+    assert fw.consolidated_coverage_keys(parsed["json"]) == {0}
+    assert not fw.measured_nothing(parsed)
+    assert parsed["json"]["scores"] == scores
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"scores": {}},
+        {"scores": {"max_points": 2, "scenario_results": []}},
+        {"scores": {"max_points": 2, "scenario_results": [{"scenario_id": "TC-01", "status": "fail", "failure_kind": "timeout"}]}},
+    ],
+)
+def test_coverage_rejects_missing_or_infrastructure_measurements(payload):
+    fw = ToolEvalBenchFramework()
+    parsed = fw.parse_results(json.dumps(payload), "")
+    assert fw.consolidated_coverage_keys(parsed["json"]) == set()
+    assert fw.measured_nothing(parsed)
+
+
+@pytest.mark.parametrize(
+    "key,value", [("label", "true"), ("label", "false"), ("label", "0012"), ("ref", "123"), ("db", "false"), ("scenario_pack", "123,true")]
+)
+def test_argument_shapes_preserve_text(key, value):
+    expected = value.split(",") if key == "scenario_pack" else value
+    assert ToolEvalBenchFramework().interpret_arg(key, value) == expected
+
+
+def test_boolean_flags_reject_non_boolean_values():
+    fw = ToolEvalBenchFramework()
+    with pytest.raises(ValueError, match="true or false"):
+        fw.interpret_arg("no_think", "perhaps")
+    with pytest.raises(ValueError, match="boolean"):
+        fw.build_benchmark_command("http://localhost/v1", "test/model", {"label": True})

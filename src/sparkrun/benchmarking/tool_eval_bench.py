@@ -13,13 +13,17 @@ import csv
 import io
 import json
 import logging
+import math
 import shutil
 from logging import Logger
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from scitrera_app_framework import Variables
 
 from sparkrun.benchmarking.base import BenchmarkingPlugin
+
+if TYPE_CHECKING:
+    from sparkrun.benchmarking.scheduler import BenchTask
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +40,128 @@ _CSV_ARGS = {"depth", "concurrency", "spec_prompts", "mmlu_subjects"}
 _REPEAT_ARGS = {"scenario_pack"}
 _HIDDEN_ARGS = {"ref", "framework_pinned_version"}
 _REMOVED_ARGS = {"experimental_async", "llm_judge", "perf_legacy", "perf_legacy_only"}
-_PERF_TRIGGER_ARGS = {"perf", "perf_only"}
+_PERF_TRIGGER_ARGS = {"perf"}
+_BOOL_ARGS = {
+    "dry_run",
+    "fail_on_safety",
+    "gsm8k",
+    "gsm8k_only",
+    "gsm8k_shuffle",
+    "hardmode",
+    "hardmode_only",
+    "history",
+    "ifeval",
+    "ifeval_only",
+    "json",
+    "leaderboard",
+    "mmlu",
+    "mmlu_only",
+    "no_live",
+    "no_preflight",
+    "no_probe_engine",
+    "no_think",
+    "no_warmup",
+    "pack_only",
+    "perf",
+    "perf_only",
+    "probe",
+    "redact_url",
+    "short",
+    "skip_coherence",
+    "skip_tool_eval",
+    "spec_bench",
+    "spec_live",
+    "weight_by_difficulty",
+}
+_INT_ARGS = {
+    "benchy_runs",
+    "context_size",
+    "gsm8k_limit",
+    "gsm8k_shots",
+    "ifeval_limit",
+    "max_turns",
+    "mmlu_limit",
+    "mmlu_shots",
+    "parallel",
+    "pp",
+    "seed",
+    "sweep_steps",
+    "tg",
+    "top_k",
+    "trials",
+}
+_FLOAT_ARGS = {
+    "alpha",
+    "baseline_tgs",
+    "context_pressure",
+    "error_rate",
+    "min_p",
+    "repeat_penalty",
+    "spec_live_interval",
+    "temperature",
+    "timeout",
+    "top_p",
+}
+# Upstream's standalone modes exit before writing --json-file. Do not start
+# inference for work that cannot satisfy the scheduler's artifact contract.
+_NO_ARTIFACT_MODES = {
+    "perf_only",
+    "gsm8k_only",
+    "mmlu_only",
+    "ifeval_only",
+    "skip_tool_eval",
+    "spec_bench",
+    "spec_live",
+    "context_pressure_sweep",
+    "dry_run",
+    "history",
+    "leaderboard",
+    "probe",
+}
+_INFRASTRUCTURE_FAILURES = {"timeout", "connection_error", "server_error"}
+
+
+def _validate_run_args(args: dict[str, Any]) -> None:
+    removed = _REMOVED_ARGS.intersection(args)
+    if removed:
+        raise ValueError("tool-eval-bench v2.6 removed arguments: %s" % ", ".join(sorted(removed)))
+    unsupported = sorted(key for key in _NO_ARTIFACT_MODES if args.get(key) is not None and args.get(key) is not False)
+    if unsupported:
+        raise ValueError(
+            "tool-eval-bench v2.6 modes do not provide scheduled JSON artifacts: %s. "
+            "Use the llama-benchy framework for performance-only work or invoke the standalone tool directly." % ", ".join(unsupported)
+        )
+
+
+def _has_measurements(result: dict[str, Any]) -> bool:
+    """Quality failures are measurements; infrastructure-only suites are not.
+
+    Partial completion follows upstream: accept at least one graded scenario,
+    preserving excluded_scenarios/completion_rate in the original envelope.
+    """
+    scores = result.get("scores")
+    if not isinstance(scores, dict):
+        return False
+    maximum = scores.get("max_points")
+    rows = scores.get("scenario_results")
+    if (
+        not isinstance(maximum, (int, float))
+        or isinstance(maximum, bool)
+        or not math.isfinite(maximum)
+        or maximum <= 0
+        or not isinstance(rows, list)
+    ):
+        return False
+    excluded = scores.get("excluded_scenarios") or []
+    return any(
+        isinstance(row, dict)
+        and isinstance(row.get("scenario_id"), str)
+        and row["scenario_id"]
+        and row["scenario_id"] not in excluded
+        and row.get("status") in {"pass", "partial", "fail"}
+        and row.get("failure_kind") not in _INFRASTRUCTURE_FAILURES
+        for row in rows
+    )
 
 
 class ToolEvalBenchFramework(BenchmarkingPlugin):
@@ -89,9 +214,7 @@ class ToolEvalBenchFramework(BenchmarkingPlugin):
         ``--json-file`` produces the scheduler-owned artifact. Standalone
         command construction without a result file uses JSON on stdout.
         """
-        removed = _REMOVED_ARGS.intersection(args)
-        if removed:
-            raise ValueError("tool-eval-bench v2.6 removed arguments: %s" % ", ".join(sorted(removed)))
+        _validate_run_args(args)
         ref = args.get("framework_pinned_version") or args.get("ref") or _DEFAULT_REF
         wants_perf = any(args.get(k) for k in _PERF_TRIGGER_ARGS)
         if wants_perf:
@@ -119,9 +242,13 @@ class ToolEvalBenchFramework(BenchmarkingPlugin):
             if key in _HIDDEN_ARGS or key in {"base_url", "model", "json", "json_file"} or value is None:
                 continue
             flag = "--" + key.replace("_", "-")
-            if isinstance(value, bool):
+            if key in _BOOL_ARGS:
+                if type(value) is not bool:
+                    raise ValueError("tool-eval-bench argument %r requires a boolean" % key)
                 if value:
                     cmd.append(flag)
+            elif isinstance(value, bool):
+                raise ValueError("tool-eval-bench argument %r is not a boolean flag" % key)
             elif key in _REPEAT_ARGS:
                 for item in value if isinstance(value, list) else [value]:
                     cmd.extend([flag, str(item)])
@@ -139,7 +266,7 @@ class ToolEvalBenchFramework(BenchmarkingPlugin):
 
         return cmd
 
-    def build_task_list(self, base_args, schedule):
+    def build_task_list(self, base_args: dict[str, Any], schedule: list[dict[str, Any]] | None) -> list[BenchTask]:
         """Run the complete tool suite as one resumable invocation."""
         from copy import deepcopy
         from sparkrun.benchmarking.scheduler import BenchTask
@@ -149,9 +276,14 @@ class ToolEvalBenchFramework(BenchmarkingPlugin):
         if len(entries) != 1 or not isinstance(entries[0], dict):
             raise BenchmarkError("tool-eval-bench requires one schedule entry for its complete suite")
         entry = deepcopy(entries[0])
-        return [BenchTask(0, "tool evaluation suite", {**deepcopy(base_args), **deepcopy(entry)}, entry)]
+        run_args = {**deepcopy(base_args), **deepcopy(entry)}
+        try:
+            _validate_run_args(run_args)
+        except ValueError as error:
+            raise BenchmarkError(str(error)) from error
+        return [BenchTask(0, "tool evaluation suite", run_args, entry)]
 
-    def consolidate_per_task_results(self, per_task_jsons):
+    def consolidate_per_task_results(self, per_task_jsons: list[dict[str, Any]]) -> dict[str, Any]:
         """Keep the tool's original JSON schema for the single suite artifact."""
         if len(per_task_jsons) > 1:
             raise ValueError("tool-eval-bench expects one suite artifact")
@@ -161,8 +293,23 @@ class ToolEvalBenchFramework(BenchmarkingPlugin):
         from sparkrun.utils import coerce_value
 
         if key in _LIST_ARGS | _CSV_ARGS | _REPEAT_ARGS:
-            return [coerce_value(v.strip()) for v in value.split(",")]
-        return coerce_value(value)
+            return [item.strip() for item in value.split(",")]
+        if key in _BOOL_ARGS:
+            parsed = coerce_value(value)
+            if type(parsed) is not bool:
+                raise ValueError("tool-eval-bench argument %r requires true or false" % key)
+            return parsed
+        if key in _INT_ARGS:
+            return int(value)
+        if key in _FLOAT_ARGS:
+            return float(value)
+        return value
+
+    def consolidated_coverage_keys(self, consolidated: dict[str, Any]) -> set[int]:
+        return {0} if _has_measurements(consolidated) else set()
+
+    def measured_nothing(self, parsed: dict[str, Any]) -> bool:
+        return not _has_measurements(parsed.get("json", {}))
 
     def estimate_test_count(self, args: dict[str, Any]) -> int | None:
         scenarios = args.get("scenarios")

@@ -224,3 +224,32 @@ def test_containerless_launch_reuses_executor_and_never_resolves_image(monkeypat
     assert isinstance(runtime.run.call_args.kwargs["executor"], LocalExecutor)
     assert runtime.run.call_args.kwargs["image"] == ""
     assert distribution.call_args.kwargs["skip_container"] is True
+
+
+def test_container_launch_still_requires_image_before_distribution(monkeypatch, tmp_path):
+    from test_launcher import _builder_phase_harness
+    from sparkrun.application import initialize
+    from sparkrun.core.launcher import launch_inference
+    from sparkrun.core.recipe import RecipeError
+
+    _builder_phase_harness(monkeypatch, tmp_path)
+    sctx = initialize(config_path=tmp_path / "config.yaml")
+    recipe = _recipe(executor="docker", defaults={"tensor_parallel": 1})
+    runtime = VllmDistributedRuntime()
+    monkeypatch.setattr(runtime, "default_image_for", lambda *args, **kwargs: "")
+    distribution = Mock(side_effect=AssertionError("invalid image must not reach distribution"))
+    monkeypatch.setattr("sparkrun.orchestration.distribution.distribute_from_config", distribution)
+    with pytest.raises(RecipeError, match="No container image"):
+        launch_inference(
+            recipe=recipe,
+            runtime=runtime,
+            host_list=["localhost"],
+            overrides={},
+            config=sctx.config,
+            v=sctx.variables,
+            is_solo=True,
+            dry_run=True,
+            sync_tuning=False,
+            trust=True,
+        )
+    distribution.assert_not_called()

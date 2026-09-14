@@ -714,7 +714,7 @@ The private execution record is not an integration or framework API.
 
 ### Benchmark task and image preparation contracts
 
-Frameworks now implement `build_task_list` directly and return a nonempty list
+Frameworks now implement the abstract `build_task_list` hook directly and return a nonempty list
 of contiguous, zero-based `BenchTask` records. The single-call `None` fallback
 has been removed. Commands return raw argv and write a JSON object to the supplied
 `result_file`; do not shell-quote individual arguments. See the framework example
@@ -724,6 +724,11 @@ in [PLUGINS.md](PLUGINS.md) and [benchmark API details](BENCHMARK_API.md).
 removed `experimental_async`, `llm_judge`, `perf_legacy`, and `perf_legacy_only`
 options have no translation aliases. Backend detection and the 120-second request
 timeout now follow upstream; explicit supported arguments still take precedence.
+Text arguments retain their supplied spelling; only declared booleans become
+flags. Infrastructure-only or missing measurements remain failed and resumable.
+Partial completion is accepted if at least one scenario was graded. Standalone
+modes that do not emit the tool-suite JSON artifact (including `perf_only`) are
+rejected before launch; use `llama-benchy` for performance measurements.
 
 Image preparation selects prepared overrides before unused defaults, and applies
 the same alignment/string/runtime validation to both. Image-less executors have
@@ -732,3 +737,15 @@ Pass its `container_distribution` to `distribute_from_config` when staging image
 outside `stage_prepared_images`; generated transfer entries no longer mutate the
 recipe. The unused `prepare_images(strategy_name=...)` diagnostic input is removed.
 `ImagePlan.image_for_node` now raises `IndexError` for invalid resolved-node indices.
+
+
+Local and remote `distribute_from_config()` calls now stage the same resolved
+container/model entries, including explicit extra images and node targeting.
+Prepared policies remain caller-owned; staging does not mutate them. Disabled
+and skipped resource classes remain skipped on both transports.
+
+Native `run()` and `benchmark()` calls require no unused image defaults.
+`materialize()` is container-specific and rejects native executor targets.
+`BenchmarkOptions.timeout=None` uses the benchmark-spec timeout, then 14,400
+seconds. Framework request deadlines (tool-eval-bench: 120 seconds by default)
+are independent; see [BENCHMARK_API.md](BENCHMARK_API.md) for a combined example.

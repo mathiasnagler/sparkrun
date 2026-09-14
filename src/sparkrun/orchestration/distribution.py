@@ -830,14 +830,34 @@ def distribute_from_config(
     if _force_pull:
         logger.info("rebuild requested; forcing a fresh pull of image '%s'", image)
 
+    # Resolve resource targeting once. Local execution and cluster transfer
+    # consume the same entries, including explicit extras and exclusions.
+    image_plan = (
+        [
+            (entry.name or image, targets)
+            for entry in dist_cfg.containers.entries
+            if isinstance(entry, DistributionContainerEntry) and (targets := _resolve_targets(entry.target or [-1], host_list))
+        ]
+        if dist_cfg.containers.enabled and not skip_container
+        else []
+    )
+    model_plan = (
+        [
+            (entry, targets)
+            for entry in dist_cfg.models.entries
+            if isinstance(entry, DistributionModelEntry) and entry.name and (targets := _resolve_targets(entry.target or [-1], host_list))
+        ]
+        if dist_cfg.models.enabled and not skip_model
+        else []
+    )
+
     # Single-localhost fast path: same as distribute_resources
     ssh_kwargs = build_ssh_kwargs(config)
     hf_token = _get_hf_token()
     if len(host_list) <= 1 and is_local_host(host_list[0]) and not _is_cross_user(ssh_kwargs):
-        _do_local_ensure = dist_cfg.containers.enabled and not skip_container
-        _model_entries = list(dist_cfg.models.entries) if (dist_cfg.models.enabled and not skip_model) else []
+        _model_entries = [entry for entry, _ in model_plan]
         _model_names = [e.name for e in _model_entries]
-        lock_parts = [image] + _model_names
+        lock_parts = [name for name, _ in image_plan] + _model_names
         _lock_key = hashlib.sha256("|".join(lock_parts).encode()).hexdigest()[:12]
         _lock_id = f"sparkrun_{_lock_key}"
         _pop_kw = dict(
@@ -850,11 +870,12 @@ def distribute_from_config(
             cluster=cluster_name,
         )
 
-        if _do_local_ensure:
+        if image_plan:
             with pending_op(_lock_id, "image_pull", **_pop_kw):
-                logger.info("Ensuring container image is available locally...")
-                if ensure_image(image, dry_run=dry_run, force_pull=_force_pull) != 0:
-                    raise DistributionError(f"Failed to pull or locate image: {image}")
+                for entry_image, _ in image_plan:
+                    logger.info("Ensuring container image %s is available locally...", entry_image)
+                    if ensure_image(entry_image, dry_run=dry_run, force_pull=_force_pull) != 0:
+                        raise DistributionError(f"Failed to pull or locate image: {entry_image}")
         if after_container_sync is not None:
             after_container_sync()
         if _model_entries:
@@ -933,44 +954,34 @@ def distribute_from_config(
 
     # Distribute container images (skipped entirely when skip_container — e.g.
     # a container-less executor like `local` that has no image to distribute).
-    if dist_cfg.containers.enabled and not skip_container:
-        image_plan: list[tuple[str, list[str]]] = []
-        for entry in dist_cfg.containers.entries:
-            if not isinstance(entry, DistributionContainerEntry):
-                continue
-            entry_name = entry.name or image
-            targets = _resolve_targets(entry.target if entry.target else [-1], host_list)
-            if targets:
-                image_plan.append((entry_name, targets))
-
+    if image_plan:
         # More than one distinct image means the nodes are running *different*
         # images, which rules out delegated's head-pull-and-fan-out (see
         # _distribute_single_image).
         _heterogeneous = len({name for name, _ in image_plan}) > 1
 
-        if image_plan:
-            with _timed(
-                timeline,
-                "launch.distribute.image",
-                image=",".join(name for name, _ in image_plan),
-                mode=transfer_mode,
-                targets=sum(len(targets) for _, targets in image_plan),
-            ):
-                with pending_op(_lock_id, "image_distribute", **_pop_kw):
-                    img_failed = _distribute_image_plan(
-                        image_plan,
-                        host_list,
-                        transfer_mode,
-                        transfer_hosts,
-                        worker_transfer_hosts,
-                        ssh_kwargs,
-                        dry_run,
-                        _auto_delegated,
-                        force_pull=_force_pull,
-                        heterogeneous=_heterogeneous,
-                    )
-            if img_failed:
-                raise DistributionError("Image distribution failed on: %s" % ", ".join(img_failed))
+        with _timed(
+            timeline,
+            "launch.distribute.image",
+            image=",".join(name for name, _ in image_plan),
+            mode=transfer_mode,
+            targets=sum(len(targets) for _, targets in image_plan),
+        ):
+            with pending_op(_lock_id, "image_distribute", **_pop_kw):
+                img_failed = _distribute_image_plan(
+                    image_plan,
+                    host_list,
+                    transfer_mode,
+                    transfer_hosts,
+                    worker_transfer_hosts,
+                    ssh_kwargs,
+                    dry_run,
+                    _auto_delegated,
+                    force_pull=_force_pull,
+                    heterogeneous=_heterogeneous,
+                )
+        if img_failed:
+            raise DistributionError("Image distribution failed on: %s" % ", ".join(img_failed))
 
     # Image is resident everywhere and the model sync has not started: the one
     # window where an image-level preflight is both possible and still cheap.
@@ -979,15 +990,8 @@ def distribute_from_config(
 
     # Distribute models (skipped entirely when skip_model — e.g. a
     # cluster_config.resolved_model_path points at pre-placed shared weights).
-    if dist_cfg.models.enabled and not skip_model:
-        for entry in dist_cfg.models.entries:
-            if not isinstance(entry, DistributionModelEntry):
-                continue
-            if not entry.name:
-                continue
-            targets = _resolve_targets(entry.target if entry.target else [-1], host_list)
-            if not targets:
-                continue
+    if model_plan:
+        for entry, targets in model_plan:
             # Per-entry and authoritative: the recipe's top-level model_revision
             # is already stamped on the served model's entry, and a draft model
             # added by runtime.prepare() is a different repo whose SHAs are its

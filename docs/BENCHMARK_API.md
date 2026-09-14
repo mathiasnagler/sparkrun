@@ -454,8 +454,12 @@ that suite. Failed tasks retry the suite, while completed tasks and publication
 retries reuse their artifacts. Framework authors can provide multiple tasks when
 their tool has a meaningful task/result consolidation contract.
 
-The default request timeout follows v2.6.0 at 120 seconds. This is separate from
-Sparkrun's whole-task timeout. Backend labeling is left to upstream detection;
+The default request timeout follows v2.6.0 at 120 seconds. Sparkrun's whole-task
+timeout includes process execution and output draining: `BenchmarkOptions.timeout`
+uses the benchmark-spec timeout when `None`, then falls back to 14,400 seconds.
+For example, `BenchmarkOptions(recipe="my-recipe", framework="tool-eval-bench",
+timeout=3600, bench_args={"timeout": 120})` allows an hour for the suite and
+120 seconds per upstream request. Backend labeling is left to upstream detection;
 set `-b backend=sglang` or another label when needed. The release's endpoint-aware
 request handling and rate-limit retries apply without another Sparkrun adapter.
 
@@ -479,6 +483,39 @@ completion/exclusion information and trial statistics. Scenario CSV includes
 `failure_kind` and `turn_budget_exceeded`; do not interpret infrastructure failures
 as model-quality scores. Unsupported future output schemas fail explicitly.
 
+A suite is a measurement only when it has a positive scoring denominator and
+at least one graded scenario. A legitimate quality score of zero is valid.
+All-timeout, connection-failure-only, and empty results stay failed and resumable;
+they cannot complete a measurement or trigger publication. Partial infrastructure
+completion is accepted when at least one scenario was graded; the native JSON
+retains `completion_rate` and `excluded_scenarios` so consumers can assess coverage.
+
+Standalone upstream modes (`perf_only`, `gsm8k_only`, `mmlu_only`, `ifeval_only`,
+`skip_tool_eval`, speculative benchmarks, pressure sweeps, and inspection commands)
+do not provide the scheduled tool-suite JSON artifact and are rejected before
+launch. Use the `llama-benchy` framework for performance measurements or invoke
+those upstream modes directly. Combined upstream options such as `perf=true`
+may produce additional upstream reports; Sparkrun's measurement/export contract
+covers the tool-suite JSON and scenario CSV.
+
+Text arguments stay text: labels `true`, `false`, `0012`, commas, spaces, and quote
+characters retain their values. Only declared boolean options become flags;
+numeric and sequence options use their upstream argument shapes.
+
 Alignment was checked against upstream tag v2.6.0, commit
 [`992a6978ecbee2d72fa2ead9ccc509436769d088`](https://github.com/SeraphimSerapis/tool-eval-bench/tree/992a6978ecbee2d72fa2ead9ccc509436769d088),
 including its actual parser and JSON-file output against a local HTTP fixture.
+
+
+## Native workloads and image provenance
+
+Benchmarking follows the launch executor's asset requirements. Native process
+executors can benchmark without a container image; the benchmark orchestrator
+does not resolve image defaults or prepare images for a banner. Fresh runs take
+image provenance from the launch result, and skip-run/resume uses captured
+deployment or measurement context. Missing image provenance remains absent.
+Container launch still validates and stages its required images.
+
+`api.materialize()` currently describes **container launch units** and rejects a
+resolved native executor target. Use `api.run()` to launch native workloads; a
+successful native run does not imply that it has a container materialization.

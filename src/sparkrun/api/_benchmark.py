@@ -40,6 +40,7 @@ from sparkrun.api._errors import BenchmarkFailed, BenchmarkFinalizationFailed, S
 
 if TYPE_CHECKING:
     from sparkrun.core.context import SparkrunContext
+    from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.benchmarking.base import BenchmarkExecution
 
 logger = logging.getLogger(__name__)
@@ -212,7 +213,7 @@ def _resolve_running_deployment(
     candidate_hosts: list[str],
     *,
     solo: bool,
-    cluster: "str | None",
+    cluster: ClusterDefinition | None,
     sctx: "SparkrunContext | None",
     emitter: _ProgressEmitter,
 ) -> tuple[list[str], bool, str | None]:
@@ -551,7 +552,8 @@ def _execute_benchmark(
     for key in sorted(reserved & cli_overrides.keys()):
         emitter.warning("ignoring unsupported override %r" % key)
         cli_overrides.pop(key)
-    recipe, overrides = _apply_recipe_overrides(
+    # The resolver mutates the supplied recipe; retain its known, non-null identity.
+    _, overrides = _apply_recipe_overrides(
         (),  # options tuple (CLI only; already flattened into options.overrides)
         image=image,
         recipe=recipe,
@@ -656,7 +658,7 @@ def _execute_benchmark(
 
     if skip_run:
         config_chain = recipe.build_config_chain(overrides)
-        serve_port = int(config_chain.get("port") or 8000)
+        serve_port = _config_integer(config_chain.get("port") or 8000, key="port")
         overrides["port"] = serve_port
         # ``overrides`` are final now, so the intent id is stable — find the
         # deployment that is actually serving rather than assuming the whole
@@ -671,15 +673,13 @@ def _execute_benchmark(
             emitter=emitter,
         )
 
-    from sparkrun.core.images import ImagePlanError, resolve_runtime_image_plan
-
-    try:
-        container_image = resolve_runtime_image_plan(recipe, runtime, host_list, cluster=cluster_cfg).head_image()
-    except ImagePlanError as error:
-        raise BenchmarkFailed(str(error)) from error
+    # Launch validates its own asset requirements. Summaries must not resolve
+    # unused defaults for native workloads or completed-measurement reuse.
+    # Actual image provenance arrives through capture_launch_context below.
+    container_image: str | None = None
 
     config_chain = recipe.build_config_chain(overrides)
-    effective_tp = int(config_chain.get("tensor_parallel") or 1)
+    effective_tp = _config_integer(config_chain.get("tensor_parallel") or 1, key="tensor_parallel")
 
     # Only measurement arguments enter task definitions, identity and state.
     for k, bv in fw.prepare_benchmark_args(recipe, config_chain, overrides).items():
@@ -698,7 +698,8 @@ def _execute_benchmark(
     emitter.banner("Recipe:                %s" % recipe.qualified_name)
     emitter.banner("Model:                 %s" % recipe.model)
     emitter.banner("Runtime:               %s" % runtime.runtime_name)
-    emitter.banner("Image:                 %s" % container_image)
+    if recipe.container:
+        emitter.banner("Declared image:        %s" % recipe.container)
     emitter.banner("Benchmark Framework:   %s" % fw.framework_name)
     if profile:
         emitter.banner("Benchmark Profile:     %s" % profile)
@@ -1075,7 +1076,12 @@ def _execute_benchmark(
                         container_image,
                     )
 
-            if not state.extras.get("container_image_longterm_ref") and launch_result is not None and launch_result.builder is not None:
+            if (
+                container_image
+                and not state.extras.get("container_image_longterm_ref")
+                and launch_result is not None
+                and launch_result.builder is not None
+            ):
                 try:
                     lt_ref, lt_pinned = launch_result.builder.resolve_long_term_image(
                         container_image=launch_result.container_image,
@@ -1263,7 +1269,7 @@ def _execute_benchmark(
                     bench_result,
                     config=config,
                     tp=effective_tp,
-                    pp=int(config_chain.get("pipeline_parallel") or 1),
+                    pp=_config_integer(config_chain.get("pipeline_parallel") or 1, key="pipeline_parallel"),
                     output_file=output_file,
                     emitter=emitter,
                 )
@@ -1287,6 +1293,16 @@ def _execute_benchmark(
         lock_stack.close()
 
     return bench_result
+
+
+def _config_integer(value: object, *, key: str) -> int:
+    """Convert numeric configuration scalars, with an actionable API error."""
+    if not isinstance(value, (int, float, str)) or isinstance(value, bool):
+        raise BenchmarkFailed("Benchmark configuration %r must be numeric" % key)
+    try:
+        return int(value)
+    except (ValueError, OverflowError) as error:
+        raise BenchmarkFailed("Benchmark configuration %r must be numeric" % key) from error
 
 
 def _notify_interrupted(emitter: _ProgressEmitter, *, state_preserved: bool) -> None:
@@ -1337,8 +1353,8 @@ def _finish_resumed_measurement(
             lambda: _export_measurement(
                 result,
                 config=config,
-                tp=int(config_chain.get("tensor_parallel") or 1),
-                pp=int(config_chain.get("pipeline_parallel") or 1),
+                tp=_config_integer(config_chain.get("tensor_parallel") or 1, key="tensor_parallel"),
+                pp=_config_integer(config_chain.get("pipeline_parallel") or 1, key="pipeline_parallel"),
                 output_file=output_file,
                 emitter=emitter,
             )
@@ -1848,13 +1864,14 @@ def _resume_locked(
     if processing_only:
         meta = load_job_metadata(state.cluster_id, cache_dir=cache_dir)
         restore_measurement_specification(state, meta, config=config)
+    meta = meta or {}
     _require_host_endpoint(
         recipe=recipe,
         cluster=None,
         sctx=sctx,
         executor_overrides={
-            **((meta or {}).get("executor_config") or {}),
-            **({"executor": meta["executor"]} if (meta or {}).get("executor") else {}),
+            **(meta.get("executor_config") or {}),
+            **({"executor": meta["executor"]} if meta.get("executor") else {}),
         },
     )
     _check_measurement_prerequisites(fw, emitter)

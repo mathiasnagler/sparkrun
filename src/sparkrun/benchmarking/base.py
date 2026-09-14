@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from sparkrun.benchmarking.metadata import public_benchmark_data, model_metadata, public_recipe_text
 
 import hashlib
 import logging
 import math
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from logging import Logger
@@ -63,7 +65,7 @@ _DEFAULT_PROGRESS_TABLE_SPEC = ProgressTableSpec(
 )
 
 
-class BenchmarkingPlugin(Plugin):
+class BenchmarkingPlugin(Plugin, ABC):
     """Abstract base for benchmarking frameworks (SAF multi-extension plugin).
 
     Mirrors :class:`~sparkrun.runtimes.base.RuntimePlugin` in structure.
@@ -179,7 +181,7 @@ class BenchmarkingPlugin(Plugin):
     def prepare_benchmark_args(
         self,
         recipe: "Recipe",
-        config_chain: dict[str, Any],
+        config_chain: Variables | Mapping[str, Any],
         overrides: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Framework-specific args derived from the recipe/config chain.
@@ -242,6 +244,7 @@ class BenchmarkingPlugin(Plugin):
         """
         return False
 
+    @abstractmethod
     def build_task_list(
         self,
         base_args: dict[str, Any],
@@ -425,10 +428,10 @@ class BenchmarkExecution:
 
     # benchmark results
     success: bool = False
-    results: dict[str, Any] = None
+    results: dict[str, Any] = field(default_factory=dict)
     outputs: Optional[dict[str, Any]] = None
-    start_time: datetime = None
-    end_time: datetime = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
 
     # recipe/launch info
     recipe_name: Optional[str] = None
@@ -511,10 +514,12 @@ class BenchmarkExecution:
             meta["launch"] = timeline.export()
         return meta
 
-    def recipe_provenance(self, *, resolve_image=False):
+    def recipe_provenance(self, *, resolve_image: bool = False) -> dict[str, Any]:
         """One effective recipe projection; hashes distinguish declared/effective input."""
         launch_result = self.launch_result
         recipe = self.recipe or (launch_result.recipe if launch_result else None)
+        if recipe is None:
+            raise ValueError("Benchmark recipe provenance requires a captured recipe")
         overrides = self.overrides if self.overrides is not None else (launch_result.overrides if launch_result else {})
         container_image = self.container_image
         if not self.image_context_known and launch_result:
@@ -531,7 +536,7 @@ class BenchmarkExecution:
         elif self.container_image_sha:
             recipe_container = self.container_image_sha
             container_pinned = self.container_image_sha_pinned
-        elif resolve_image and launch_result and launch_result.builder:
+        elif resolve_image and launch_result and launch_result.builder and launch_result.container_image:
             try:
                 resolved_image, pinned = launch_result.builder.resolve_long_term_image(
                     container_image=launch_result.container_image,
@@ -545,7 +550,10 @@ class BenchmarkExecution:
             except Exception:
                 logger.debug("Long-term image resolution failed", exc_info=True)
 
-        declared_text = public_recipe_text(recipe.export(overrides=None))
+        declared = recipe.export(overrides=None)
+        if not isinstance(declared, str):
+            raise ValueError("Benchmark recipe export must return text when no path is supplied")
+        declared_text = public_recipe_text(declared)
         effective = recipe.to_dict(overrides=overrides)
         # None is explicit unknown here; Recipe.export(None) would reuse the declaration.
         effective["container"] = recipe_container
@@ -559,7 +567,7 @@ class BenchmarkExecution:
             "effective_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         }
 
-    def generate_metadata(self, *, redact_hosts: bool = True, resolve_image: bool = True):
+    def generate_metadata(self, *, redact_hosts: bool = True, resolve_image: bool = True) -> dict[str, Any]:
         """Build the provenance mapping for this result.
 
         *redact_hosts* pseudonymises the recorded host set.  It defaults to
@@ -587,6 +595,9 @@ class BenchmarkExecution:
             cluster_id = self.cluster_id
             host_list = self.host_list or []
             runtime_info = self.runtime_info
+
+        if recipe is None:
+            raise ValueError("Benchmark metadata requires a captured recipe")
 
         framework = self.framework
         profile = self.profile

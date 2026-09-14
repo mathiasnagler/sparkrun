@@ -37,6 +37,11 @@ class _BareFW(BenchmarkingPlugin):
     def parse_results(self, stdout: str, stderr: str, result_file: str | None = None) -> dict[str, Any]:
         return {}
 
+    def build_task_list(self, base_args, schedule):
+        from sparkrun.benchmarking.scheduler import BenchTask
+
+        return [BenchTask(i, "measurement", dict(base_args), dict(entry)) for i, entry in enumerate([{}] if schedule is None else schedule)]
+
 
 # ---------------------------------------------------------------------------
 # Default hook
@@ -183,3 +188,30 @@ def test_llama_benchy_pinned_version_is_not_forwarded_as_flag():
     # Old sentinel name must also not leak in
     assert "--pinned-version" not in cmd
     assert "--_pinned-version" not in cmd
+
+
+def test_framework_without_task_builder_is_abstract():
+    import inspect
+    import pytest
+
+    class IncompleteFramework(BenchmarkingPlugin):
+        framework_name = "missing-task-builder"
+        check_prerequisites = _BareFW.check_prerequisites
+        build_benchmark_command = _BareFW.build_benchmark_command
+        parse_results = _BareFW.parse_results
+
+    assert inspect.isabstract(IncompleteFramework)
+    with pytest.raises(TypeError, match="build_task_list"):
+        IncompleteFramework()
+    assert not inspect.isabstract(_BareFW)
+
+
+def test_execution_recipe_metadata_requires_captured_context():
+    import pytest
+    from sparkrun.benchmarking.base import BenchmarkExecution
+
+    execution = BenchmarkExecution()
+    with pytest.raises(ValueError, match="captured recipe"):
+        execution.recipe_provenance()
+    with pytest.raises(ValueError, match="captured recipe"):
+        execution.generate_metadata()

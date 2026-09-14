@@ -289,3 +289,38 @@ def test_cli_and_callback_consume_same_scheduler_notifications(monkeypatch, caps
     assert events[3].data["success"] is not interrupted
     rows["runs"][0]["score"] = -1
     assert events[4].data["results"]["runs"][0]["score"] == 42
+
+
+@pytest.mark.parametrize("skip_run", [False, True])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_native_benchmark_never_resolves_unused_images(scheduled_env, monkeypatch, skip_run, dry_run):
+    from sparkrun.orchestration.executors.local import LocalExecutor
+
+    env = scheduled_env
+    env.recipe.container = ""
+    env.recipe.executor = "local"
+    env.launch.container_image = ""
+    env.launch.runtime.executor = LocalExecutor()
+    unused_image = Mock(side_effect=AssertionError("native benchmark must not resolve image defaults"))
+    env.launch.builder = Mock(resolve_long_term_image=unused_image)
+    monkeypatch.setattr("sparkrun.orchestration.primitives.resolve_image_sha", unused_image)
+    monkeypatch.setattr(env.launch.runtime, "default_image_for", unused_image)
+    monkeypatch.setattr("sparkrun.core.bootstrap.get_runtime", lambda *a, **kw: env.launch.runtime)
+    result = benchmark(replace(env.options, recipe=env.recipe, skip_run=skip_run, dry_run=dry_run), sctx=env.sctx)
+    assert result.success and not result.container_image and result.container_image_sha is None
+    if skip_run:
+        env.run.assert_not_called()
+    else:
+        env.run.assert_called_once()
+    if not dry_run:
+        reused = resume_benchmark(result.benchmark_id, sctx=env.sctx)
+        assert reused.already_complete and not reused.container_image
+    unused_image.assert_not_called()
+
+
+@pytest.mark.parametrize("value", [{"invalid": "object"}, [1], "not-a-number"])
+def test_invalid_benchmark_numeric_config_fails_before_launch(scheduled_env, value):
+    env = scheduled_env
+    with pytest.raises(BenchmarkFailed, match="tensor_parallel.*numeric"):
+        benchmark(replace(env.options, overrides={"tensor_parallel": value}), sctx=env.sctx)
+    env.run.assert_not_called()

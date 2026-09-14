@@ -63,6 +63,11 @@ class _PerfDefault(BenchmarkingPlugin):
     def parse_results(self, stdout: str, stderr: str, result_file: str | None = None) -> dict[str, Any]:
         return {}
 
+    def build_task_list(self, base_args, schedule):
+        from sparkrun.benchmarking.scheduler import BenchTask
+
+        return [BenchTask(i, "measurement", dict(base_args), dict(entry)) for i, entry in enumerate([{}] if schedule is None else schedule)]
+
 
 class _ToolsOnly(BenchmarkingPlugin):
     """Plugin that declares categories=("tools",) without primary_category."""
@@ -78,6 +83,11 @@ class _ToolsOnly(BenchmarkingPlugin):
 
     def parse_results(self, stdout: str, stderr: str, result_file: str | None = None) -> dict[str, Any]:
         return {}
+
+    def build_task_list(self, base_args, schedule):
+        from sparkrun.benchmarking.scheduler import BenchTask
+
+        return [BenchTask(i, "measurement", dict(base_args), dict(entry)) for i, entry in enumerate([{}] if schedule is None else schedule)]
 
 
 class _MultiCategory(BenchmarkingPlugin):
@@ -95,6 +105,11 @@ class _MultiCategory(BenchmarkingPlugin):
 
     def parse_results(self, stdout: str, stderr: str, result_file: str | None = None) -> dict[str, Any]:
         return {}
+
+    def build_task_list(self, base_args, schedule):
+        from sparkrun.benchmarking.scheduler import BenchTask
+
+        return [BenchTask(i, "measurement", dict(base_args), dict(entry)) for i, entry in enumerate([{}] if schedule is None else schedule)]
 
 
 def test_default_categories_are_performance():

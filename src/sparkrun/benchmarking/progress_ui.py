@@ -383,6 +383,13 @@ if __name__ == "__main__":
                 row_key=lambda r: (r[0], r[1]),
             )
 
+        def build_task_list(self, base_args, schedule):
+            from sparkrun.benchmarking.scheduler import BenchTask
+
+            return [
+                BenchTask(i, "measurement", dict(base_args), dict(entry)) for i, entry in enumerate([{}] if schedule is None else schedule)
+            ]
+
     fw = _StubPlugin()
 
     # ~30 distinct (depth, concurrency) pairs to exceed a typical 24-row term.
