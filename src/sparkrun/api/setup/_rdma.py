@@ -24,11 +24,15 @@ Three things here are policy rather than mechanism, and each is deliberate:
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextvars import copy_context
 from dataclasses import dataclass, field
-from typing import TypedDict
+from functools import partial
+from typing import TYPE_CHECKING, Callable, TypedDict
 
 from sparkrun.api.setup._errors import RdmaTestError
+from sparkrun.api.setup._rdma_plan import RdmaCoverage, plan_rdma_tests
+
 from sparkrun.core.progress import PROGRESS
 from sparkrun.orchestration.rdma import (
     DEFAULT_PERFTEST_PORT,
@@ -40,7 +44,8 @@ from sparkrun.orchestration.rdma import (
     RdmaPair,
     build_nccl_test_cmd,
     build_perftest_cmd,
-    derive_link_pairs,
+    pair_test_rounds,
+    select_quick_pairs,
     parse_device_facts,
     parse_framed_runs,
     parse_nccl_busbw,
@@ -48,6 +53,9 @@ from sparkrun.orchestration.rdma import (
     parse_perftest_lat,
 )
 from sparkrun.utils.shell import quote
+
+if TYPE_CHECKING:
+    from sparkrun.core.cluster_manager import ClusterDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +86,10 @@ __all__ = [
     "STATUS_FAIL",
     "STATUS_SKIP",
     "DEFAULT_RDMA_TEST_IMAGE",
+    "DEFAULT_PARALLEL_PAIRS",
     "LinkTestResult",
+    "AggregateTestResult",
+    "RdmaCoverage",
     "PairTestResult",
     "NcclTestResult",
     "RdmaTestReport",
@@ -104,7 +115,7 @@ _GATED_SUITES = {SUITE_NCCL: "cli.setup.rdma_test.nccl", SUITE_ALL: "cli.setup.r
 
 #: One-line description per suite, shared by the CLI help and this module.
 SUITE_DESCRIPTIONS = {
-    SUITE_PERFTEST: "ib_write_lat + ib_write_bw per link (default; no container on DGX OS, finishes in seconds)",
+    SUITE_PERFTEST: "ib_write_lat + ib_write_bw on every path in both directions (default; host-native when installed)",
     SUITE_NCCL: "an nccl-tests collective through mpirun (pulls the test image onto every host; takes minutes)",
     SUITE_ALL: "both",
 }
@@ -179,6 +190,11 @@ DEFAULT_BW_WARN_RATIO = 0.75
 #: pair measures ~1.5 us, so this only catches a link that is not really RDMA.
 DEFAULT_LAT_WARN_US = 10.0
 
+#: Cap pair workers independently of cluster size; host reservations may allow fewer.
+DEFAULT_PARALLEL_PAIRS = 4
+
+FULL_COVERAGE_HINT = "Use --full to test all candidate link paths."
+
 
 # ---------------------------------------------------------------------------
 # Result models
@@ -187,7 +203,7 @@ DEFAULT_LAT_WARN_US = 10.0
 
 @dataclass(frozen=True)
 class LinkTestResult:
-    """Latency + bandwidth for one RDMA link."""
+    """Latency + bandwidth in one direction; host_a sends to host_b."""
 
     link: RdmaLink
     latency: LatSample | None = None
@@ -199,17 +215,28 @@ class LinkTestResult:
 
     @property
     def label(self) -> str:
-        return self.link.describe()
+        return self.link.describe_direction()
+
+
+@dataclass(frozen=True)
+class AggregateTestResult:
+    """Concurrent bandwidth across a pair's paths, in one direction."""
+
+    host_a: str
+    host_b: str
+    bandwidth_gbps: float | None = None
+    expected_gbps: float | None = None
+    status: str = STATUS_SKIP
+    detail: str = ""
 
 
 @dataclass(frozen=True)
 class PairTestResult:
-    """Every link between two hosts, plus the concurrent aggregate."""
+    """Both directions on every path, plus both concurrent aggregates."""
 
     pair: RdmaPair
     links: tuple[LinkTestResult, ...] = ()
-    aggregate_gbps: float | None = None
-    expected_aggregate_gbps: float | None = None
+    aggregates: tuple[AggregateTestResult, ...] = ()
     status: str = STATUS_SKIP
     detail: str = ""
 
@@ -240,14 +267,20 @@ class RdmaTestReport:
     image: str = ""
     used_container: bool = False
     dry_run: bool = False
+    parallel_pairs: int = 1
+    full: bool = False
+    selected_pair_count: int = 0
+    selected_path_count: int = 0
     host_facts: dict[str, RdmaHostFacts] = field(default_factory=dict)
+    coverage: RdmaCoverage = field(default_factory=RdmaCoverage)
     pairs: tuple[PairTestResult, ...] = ()
     nccl: NcclTestResult | None = None
     warnings: list[str] = field(default_factory=list)
 
     def _statuses(self) -> list[str]:
-        out = [p.status for p in self.pairs]
-        out.extend(link.status for p in self.pairs for link in p.links)
+        # Pair rollups and coverage are not additional measurements.
+        out = [link.status for p in self.pairs for link in p.links]
+        out.extend(aggregate.status for p in self.pairs for aggregate in p.aggregates)
         if self.nccl is not None:
             out.append(self.nccl.status)
         return out
@@ -266,7 +299,7 @@ class RdmaTestReport:
 
     @property
     def has_failure(self) -> bool:
-        return self.fail_count > 0
+        return self.fail_count > 0 or self.coverage.status == STATUS_FAIL
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +379,16 @@ def _run_commands(
     )
     if not result.success and not result.stdout:
         return {i: ((result.stderr or "").strip(), result.returncode) for i in range(len(commands))}
-    return parse_framed_runs(result.stdout)
+    runs = parse_framed_runs(result.stdout)
+    if not result.success:
+        # An SSH/script failure invalidates even a previously printed success
+        # frame. Keep its output for diagnosis, but never discard the outer rc.
+        return {
+            i: (output + "\n" + (result.stderr or ""), rc or result.returncode)
+            for i in range(len(commands))
+            for output, rc in [runs.get(i, ("", result.returncode))]
+        }
+    return runs
 
 
 def _run_round(
@@ -368,8 +410,8 @@ def _run_round(
     observe — so the rendezvous is the client's retry, plus a short head start
     for the server.
 
-    The client's output is authoritative: both ends print a table, but only
-    the client's reflects a completed transfer.
+    Measurements come from the client. Both processes must exit successfully;
+    a printed table alone does not certify that the transfer completed.
     """
     with ThreadPoolExecutor(max_workers=2) as pool:
         server_fut = pool.submit(
@@ -391,11 +433,19 @@ def _run_round(
             retries=4,
             pre_sleep=2,
         )
-        client_runs = client_fut.result()
         try:
-            server_fut.result()
-        except Exception:  # noqa: BLE001 — the client's result is the measurement
-            logger.debug("perftest server side errored on %s", server_host, exc_info=True)
+            client_runs = client_fut.result()
+        except Exception as exc:  # noqa: BLE001 — retain a verdict for every planned transfer
+            client_runs = {i: ("client execution failed: %s" % exc, -1) for i in range(len(client_cmds))}
+        try:
+            server_runs = server_fut.result()
+        except Exception as exc:  # noqa: BLE001 — a server error must invalidate a printed client table
+            server_runs = {i: ("server execution failed: %s" % exc, -1) for i in range(len(server_cmds))}
+    for i in range(len(client_cmds)):
+        output, rc = client_runs.get(i, ("", -1))
+        server_output, server_rc = server_runs.get(i, ("no server result", -1))
+        if server_rc != 0:
+            client_runs[i] = (output + "\nserver failed (rc=%d): %s" % (server_rc, server_output), rc or server_rc)
     return client_runs
 
 
@@ -556,6 +606,48 @@ def _expected_gbps(link: RdmaLink, facts: dict[str, RdmaHostFacts], links=()) ->
     return min(rates) if rates else None
 
 
+def _run_pairs(
+    pairs: list[RdmaPair],
+    run_pair: Callable[[RdmaPair], PairTestResult],
+    parallel_pairs: int,
+) -> tuple[PairTestResult, ...]:
+    """Run disjoint pairs concurrently, reserving both hosts for a whole pair.
+
+    Reservations cover both directions and aggregates. Results retain the
+    original candidate order, regardless of completion order. On an exception,
+    the pool drains active work before the caller can tear down containers.
+    """
+    if parallel_pairs == 1 or len(pairs) < 2:
+        return tuple(run_pair(pair) for pair in pairs)
+    batches = pair_test_rounds(pairs)
+    busy: set[str] = set()
+    results: dict[tuple[str, str], PairTestResult] = {}
+    with ThreadPoolExecutor(max_workers=parallel_pairs) as pool:
+        active = {}
+        while batches or active:
+            while batches and len(active) < parallel_pairs:
+                pending = batches[0]
+                for pair in list(pending):
+                    if len(active) == parallel_pairs:
+                        break
+                    if busy.intersection(pair.key):
+                        continue
+                    busy.update(pair.key)
+                    active[pool.submit(copy_context().run, run_pair, pair)] = pair
+                    pending.remove(pair)
+                if pending:
+                    # Preserve matching priority: later pairs must not steal
+                    # hosts from this round and strand its remaining pairs.
+                    break
+                batches.pop(0)
+            done, _ = wait(active, return_when=FIRST_COMPLETED)
+            for future in done:
+                pair = active.pop(future)
+                busy.difference_update(pair.key)
+                results[pair.key] = future.result()
+    return tuple(results[pair.key] for pair in pairs)
+
+
 def _run_pair(
     pair: RdmaPair,
     ssh_kwargs: dict,
@@ -569,13 +661,55 @@ def _run_pair(
     bw_warn_ratio: float,
     lat_warn_us: float,
 ) -> PairTestResult:
-    """Latency + bandwidth per link, then all links concurrently."""
+    """Measure every path and the concurrent aggregate in both directions."""
     link_results: list[LinkTestResult] = []
-    # Client runs on host_a, server on host_b, matching the reference
-    # procedure's "receiver then sender" ordering.
+    aggregates: list[AggregateTestResult] = []
     timeout = max(duration * 4, 60)
-    _say("Testing %s", pair.describe())
+    _say("Testing %s (both directions)", pair.describe())
+    reverse = RdmaPair(pair.host_b, pair.host_a, tuple(link.reversed() for link in pair.links))
+    for directed_pair in (pair, reverse):
+        results, aggregate = _run_direction(
+            directed_pair,
+            ssh_kwargs,
+            facts,
+            container=container,
+            duration=duration,
+            queue_pairs=queue_pairs,
+            gid_index=gid_index,
+            link_type=link_type,
+            bw_warn_ratio=bw_warn_ratio,
+            lat_warn_us=lat_warn_us,
+            timeout=timeout,
+        )
+        link_results.extend(results)
+        if aggregate is not None:
+            aggregates.append(aggregate)
+    statuses = [r.status for r in link_results] + [a.status for a in aggregates]
+    return PairTestResult(pair=pair, links=tuple(link_results), aggregates=tuple(aggregates), status=_rollup(statuses))
 
+
+def _rollup(statuses: list[str]) -> str:
+    for status in (STATUS_FAIL, STATUS_WARN, STATUS_OK):
+        if status in statuses:
+            return status
+    return STATUS_SKIP
+
+
+def _run_direction(
+    pair: RdmaPair,
+    ssh_kwargs: dict,
+    facts: dict[str, RdmaHostFacts],
+    *,
+    container: str | None,
+    duration: int,
+    queue_pairs: int,
+    gid_index: int | None,
+    link_type: str | None,
+    bw_warn_ratio: float,
+    lat_warn_us: float,
+    timeout: int,
+) -> tuple[list[LinkTestResult], AggregateTestResult | None]:
+    link_results: list[LinkTestResult] = []
     for idx, link in enumerate(pair.links):
         port = DEFAULT_PERFTEST_PORT + idx
         expected = _expected_gbps(link, facts, pair.links)
@@ -601,12 +735,15 @@ def _run_pair(
             ("ib_write_bw", {"queue_pairs": queue_pairs, "duration": duration}),
         )
         for tool, kwargs in rounds:
-            _say("  %s: %s", tool, link.describe())
-            server_cmd = build_perftest_cmd(tool, link.hca_b, port=port, gid_index=gid_index, link_type=link_type, **kwargs)
+            _say("  %s: %s", tool, link.describe_direction())
+            server_cmd = build_perftest_cmd(
+                tool, link.hca_b, source_ip=link.ip_b, port=port, gid_index=gid_index, link_type=link_type, **kwargs
+            )
             client_cmd = build_perftest_cmd(
                 tool,
                 link.hca_a,
                 peer_ip=link.ip_b,
+                source_ip=link.ip_a,
                 port=port,
                 gid_index=gid_index,
                 link_type=link_type,
@@ -623,6 +760,8 @@ def _run_pair(
             )
             output, rc = runs.get(0, ("", -1))
             raw_parts.append("$ %s\n%s" % (client_cmd, output))
+            if rc != 0:
+                failures.append("%s failed (rc=%d)" % (tool, rc))
             if tool == "ib_write_lat":
                 lat_sample = parse_perftest_lat(output)
                 if lat_sample is None:
@@ -645,7 +784,7 @@ def _run_pair(
             )
         )
 
-    aggregate, agg_expected, agg_detail = _run_aggregate(
+    aggregate = _run_aggregate(
         pair,
         ssh_kwargs,
         facts,
@@ -655,26 +794,9 @@ def _run_pair(
         gid_index=gid_index,
         link_type=link_type,
         timeout=timeout,
+        bw_warn_ratio=bw_warn_ratio,
     )
-
-    statuses = [lr.status for lr in link_results]
-    if STATUS_FAIL in statuses:
-        pair_status = STATUS_FAIL
-    elif STATUS_WARN in statuses:
-        pair_status = STATUS_WARN
-    elif statuses and all(s == STATUS_SKIP for s in statuses):
-        pair_status = STATUS_SKIP
-    else:
-        pair_status = STATUS_OK
-
-    return PairTestResult(
-        pair=pair,
-        links=tuple(link_results),
-        aggregate_gbps=aggregate,
-        expected_aggregate_gbps=agg_expected,
-        status=pair_status,
-        detail=agg_detail,
-    )
+    return link_results, aggregate
 
 
 def _run_aggregate(
@@ -688,15 +810,16 @@ def _run_aggregate(
     gid_index: int | None,
     link_type: str | None,
     timeout: int,
-) -> tuple[float | None, float | None, str]:
-    """Drive every link at once — the cable's real throughput.
+    bw_warn_ratio: float = DEFAULT_BW_WARN_RATIO,
+) -> AggregateTestResult | None:
+    """Drive every path between the hosts concurrently, in one direction.
 
     Skipped for a single-link pair, where it would repeat the per-link number
     exactly and double the runtime for nothing.
     """
     usable = [link for link in pair.links if link.usable]
     if len(usable) < 2:
-        return None, None, ""
+        return None
 
     server_cmds, client_cmds = [], []
     for idx, link in enumerate(usable):
@@ -705,6 +828,7 @@ def _run_aggregate(
             build_perftest_cmd(
                 "ib_write_bw",
                 link.hca_b,
+                source_ip=link.ip_b,
                 port=port,
                 queue_pairs=queue_pairs,
                 duration=duration,
@@ -717,6 +841,7 @@ def _run_aggregate(
                 "ib_write_bw",
                 link.hca_a,
                 peer_ip=link.ip_b,
+                source_ip=link.ip_a,
                 port=port,
                 queue_pairs=queue_pairs,
                 duration=duration,
@@ -725,39 +850,41 @@ def _run_aggregate(
             )
         )
 
-    _say("  ib_write_bw: %d device(s) concurrently (cable aggregate)", len(usable))
+    _say("  ib_write_bw: %s -> %s, %d device(s) concurrently", pair.host_a, pair.host_b, len(usable))
     runs = _run_round(pair.host_b, server_cmds, pair.host_a, client_cmds, ssh_kwargs, container=container, timeout=timeout)
 
     total = 0.0
-    measured = 0
-    for i in range(len(usable)):
-        output, _rc = runs.get(i, ("", -1))
+    failures: list[str] = []
+    for i, link in enumerate(usable):
+        output, rc = runs.get(i, ("", -1))
         sample = parse_perftest_bw(output)
-        if sample:
+        if rc != 0 or sample is None:
+            failures.append("%s: %s (rc=%d)" % (link.describe_direction(), "failed" if rc else "no result", rc))
+        else:
             total += sample.avg_gbps
-            measured += 1
 
-    if measured == 0:
-        return None, None, "concurrent aggregate run produced no result"
-
-    # Sum over distinct PHYSICAL PORTS, not over links. Two links whose
-    # devices share a port share its bandwidth, so adding their rates claims
-    # a ceiling the wire cannot carry — on DGX Spark that turned a measured
-    # 195.7 Gb/s, ~98% of the cable's real 200 Gb/s, into "of 400 Gb/s".
-    by_port: dict[tuple[str, str], float] = {}
-    for link in usable:
-        f = facts.get(link.host_a)
-        dev = f.device(link.hca_a) if f else None
-        if dev is None or not dev.rate_gbps:
-            continue
-        # Highest rate seen on each port; sharers do not add to it.
-        by_port[dev.port_key] = max(by_port.get(dev.port_key, 0.0), dev.rate_gbps)
-    expected = sum(by_port.values()) if by_port else None
-
-    detail = ""
-    if measured < len(usable):
-        detail = "only %d of %d links reported during the concurrent run" % (measured, len(usable))
-    return total, expected, detail
+    # Both endpoint capacities constrain the aggregate. Devices on one
+    # physical port share its rate; unknown rates cannot establish a ceiling.
+    capacities: list[float] = []
+    for host, hcas in ((pair.host_a, [link.hca_a for link in usable]), (pair.host_b, [link.hca_b for link in usable])):
+        by_port: dict[tuple[str, str], float] = {}
+        f = facts.get(host)
+        for hca in hcas:
+            dev = f.device(hca) if f else None
+            if dev is None or not dev.rate_gbps:
+                break
+            by_port[dev.port_key] = max(by_port.get(dev.port_key, 0.0), dev.rate_gbps)
+        else:
+            capacities.append(sum(by_port.values()))
+    expected = min(capacities) if len(capacities) == 2 else None
+    if failures:
+        # A partial total must not masquerade as the pair's bandwidth.
+        return AggregateTestResult(pair.host_a, pair.host_b, expected_gbps=expected, status=STATUS_FAIL, detail="; ".join(failures))
+    status, detail = STATUS_OK, ""
+    if expected and total < expected * bw_warn_ratio:
+        status = STATUS_WARN
+        detail = "aggregate bandwidth %.1f Gb/s is below %.0f%% of %.1f Gb/s" % (total, bw_warn_ratio * 100, expected)
+    return AggregateTestResult(pair.host_a, pair.host_b, total, expected, status, detail)
 
 
 def _grade_link(
@@ -770,7 +897,7 @@ def _grade_link(
 ) -> tuple[str, str]:
     """Turn samples into a verdict.
 
-    A missing measurement is the only FAIL: it means RDMA did not work at all
+    A failed command or missing measurement is a FAIL: the run did not finish
     on that link. Underperformance is a WARN — it is a real finding, but it
     does not stop a workload, and reporting it at the same severity as a dead
     link makes the severe case invisible.
@@ -928,13 +1055,13 @@ def _run_nccl(
     )
     output, rc = runs.get(0, ("", -1))
     sample = parse_nccl_busbw(output)
-    if sample is None:
+    if sample is None or rc != 0:
         return NcclTestResult(
             hosts=tuple(hosts),
             binary=binary,
             msg_size=msg_size,
             status=STATUS_FAIL,
-            detail="collective produced no bus-bandwidth figure (rc=%d)" % rc,
+            detail="collective %s (rc=%d)" % ("failed" if rc else "produced no bus-bandwidth figure", rc),
             raw=_clip(output),
         )
     return NcclTestResult(
@@ -958,6 +1085,9 @@ def rdma_test(
     ssh_kwargs: dict,
     *,
     suite: str = SUITE_PERFTEST,
+    cluster: ClusterDefinition | None = None,
+    parallel_pairs: int = DEFAULT_PARALLEL_PAIRS,
+    full: bool = False,
     image: str | None = None,
     duration: int = 10,
     queue_pairs: int = 4,
@@ -977,9 +1107,16 @@ def rdma_test(
         ssh_kwargs: Already-built SSH parameters.
         suite: ``perftest`` (default), ``nccl`` or ``all``. perftest is the
             default because it answers the common question — is the fabric
-            carrying traffic at line rate — in seconds, host-native, with no
-            image pull. The collective is a much heavier proposition: it
-            needs the container on every host and minutes of transfers.
+            carrying traffic at line rate — host-native when available, with
+            no image pull. Every selected path is tested in both directions.
+            The collective needs the container on every host.
+        cluster: Selected cluster definition, for topology and fabric interface
+            constraints. Without it, coverage is limited to observed subnets.
+        parallel_pairs: Maximum simultaneous host-disjoint pairs (default 4),
+            bounded by the available hosts. Set to 1 for serial measurements.
+        full: Test all candidate paths instead of the default spanning chain
+            on each subnet. Both modes validate the complete inventory and keep
+            both directions and aggregates. NCCL always uses all selected hosts.
         image: Test image override.
         duration: Seconds per bandwidth test.
         queue_pairs: perftest ``-q``.
@@ -992,11 +1129,12 @@ def rdma_test(
         dry_run: Resolve and plan without running anything.
 
     Returns:
-        The report. Verdicts are advisory except for tests that could not run.
+        The report. Coverage failures prevent transfers; failed or incomplete
+        transfers fail the report. Underperformance produces warnings.
 
     Raises:
-        RdmaTestError: No usable RDMA links, or the container could not be
-            prepared for a suite that requires it.
+        RdmaTestError: Invalid arguments, or required containers could not be
+            prepared. Discovery and coverage failures are returned in the report.
     """
     from sparkrun.orchestration.networking import detect_cx7_for_hosts
 
@@ -1012,6 +1150,13 @@ def rdma_test(
     if suite not in available_suites(config):
         raise RdmaTestError(gated_suite_message(suite))
 
+    if len(host_list) < 2 or len(set(host_list)) != len(host_list):
+        raise RdmaTestError("RDMA testing requires at least two distinct hosts without duplicates")
+    if parallel_pairs < 1:
+        raise RdmaTestError("parallel_pairs must be positive")
+    if duration < 1 or queue_pairs < 1:
+        raise RdmaTestError("duration and queue_pairs must be positive")
+
     settings = {}
     if config is not None and hasattr(config, "rdma_test_settings"):
         settings = config.rdma_test_settings() or {}
@@ -1020,7 +1165,10 @@ def rdma_test(
     bw_ratio = float(settings.get("bw_warn_ratio", DEFAULT_BW_WARN_RATIO))
     lat_warn = float(settings.get("lat_warn_us", DEFAULT_LAT_WARN_US))
 
-    report = RdmaTestReport(suite=suite, hosts=tuple(host_list), image=resolved_image, dry_run=dry_run)
+    pair_limit = min(parallel_pairs, len(host_list) // 2)
+    report = RdmaTestReport(
+        suite=suite, hosts=tuple(host_list), image=resolved_image, dry_run=dry_run, parallel_pairs=pair_limit, full=full
+    )
 
     if not dry_run:
         _say("Probing RDMA devices on %d host(s)...", len(host_list))
@@ -1028,22 +1176,26 @@ def rdma_test(
     report.host_facts = facts
 
     detections = detect_cx7_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
-    pairs = derive_link_pairs(detections, list(host_list))
-    if pairs and not dry_run:
-        _say(
-            "Found %d link(s) across %d host pair(s): %s",
-            sum(len(p.links) for p in pairs),
-            len(pairs),
-            "; ".join(p.describe() for p in pairs),
-        )
-
-    if not pairs and not dry_run:
-        raise RdmaTestError(
-            "No RDMA links found between the selected hosts. Configure the high-speed fabric first with: sparkrun setup cx7"
-        )
-
+    all_pairs, report.coverage = plan_rdma_tests(host_list, detections, facts, cluster=cluster, dry_run=dry_run)
+    if report.coverage.status == STATUS_FAIL:
+        return report
     wants_perftest = suite in (SUITE_PERFTEST, SUITE_ALL)
     wants_nccl = suite in (SUITE_NCCL, SUITE_ALL)
+    pairs = select_quick_pairs(all_pairs) if wants_perftest and not full else all_pairs
+    report.selected_pair_count = len(pairs)
+    report.selected_path_count = sum(len(pair.links) for pair in pairs)
+    sampled = report.selected_path_count < report.coverage.path_count
+    if pairs and wants_perftest and not dry_run:
+        _say(
+            "Planned %d of %d candidate path(s) across %d of %d host pair(s); testing both directions%s",
+            report.selected_path_count,
+            report.coverage.path_count,
+            report.selected_pair_count,
+            report.coverage.pair_count,
+            " (quick sample; skipped pairs unverified)" if sampled else "",
+        )
+        if sampled:
+            _say(FULL_COVERAGE_HINT)
 
     if dry_run:
         # A dry run does not probe, so it must not claim anything about what
@@ -1055,10 +1207,15 @@ def rdma_test(
         report.pairs = tuple(
             PairTestResult(
                 pair=p,
-                links=tuple(LinkTestResult(link=link, status=STATUS_SKIP, detail="dry run") for link in p.links),
+                links=tuple(
+                    LinkTestResult(link=link, status=STATUS_SKIP, detail="dry run")
+                    for link in (*p.links, *(candidate.reversed() for candidate in p.links))
+                ),
+                aggregates=tuple(AggregateTestResult(a, b, detail="dry run") for a, b in (p.key, p.key[::-1])) if len(p.links) > 1 else (),
                 status=STATUS_SKIP,
             )
             for p in pairs
+            if wants_perftest
         )
         if wants_nccl:
             report.nccl = NcclTestResult(
@@ -1083,11 +1240,13 @@ def rdma_test(
             container = CONTAINER_NAME
 
         if wants_perftest:
-            report.pairs = tuple(
-                _run_pair(
-                    pair,
-                    ssh_kwargs,
-                    facts,
+            _say("Testing up to %d host-disjoint pair(s) concurrently", pair_limit)
+            report.pairs = _run_pairs(
+                pairs,
+                partial(
+                    _run_pair,
+                    ssh_kwargs=ssh_kwargs,
+                    facts=facts,
                     container=container,
                     duration=duration,
                     queue_pairs=queue_pairs,
@@ -1095,14 +1254,14 @@ def rdma_test(
                     link_type=link_type,
                     bw_warn_ratio=bw_ratio,
                     lat_warn_us=lat_warn,
-                )
-                for pair in pairs
+                ),
+                pair_limit,
             )
 
         if wants_nccl:
             report.nccl = _run_nccl(
                 list(host_list),
-                pairs,
+                all_pairs,
                 facts,
                 detections,
                 ssh_kwargs,

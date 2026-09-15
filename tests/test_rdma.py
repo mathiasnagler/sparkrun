@@ -342,11 +342,11 @@ def test_derive_pairs_ring_yields_neighbour_links_only():
     assert all(len(p.links) == 1 for p in pairs)
 
 
-def test_derive_pairs_switched_segment_chains_rather_than_meshes():
-    """4 hosts on one subnet is O(N) chained links, not 6 meshed ones."""
+def test_derive_pairs_switched_segment_tests_every_host_pair():
+    """Four hosts on a shared subnet require all six candidate paths."""
     dets = {h: _det(h, [_iface("e0", "10.0.0.%d" % (i + 1), "10.0.0.0/24", "hca0")]) for i, h in enumerate(["h1", "h2", "h3", "h4"])}
     pairs = derive_link_pairs(dets, ["h1", "h2", "h3", "h4"])
-    assert {p.key for p in pairs} == {("h1", "h2"), ("h2", "h3"), ("h3", "h4")}
+    assert {p.key for p in pairs} == {("h1", "h2"), ("h1", "h3"), ("h1", "h4"), ("h2", "h3"), ("h2", "h4"), ("h3", "h4")}
 
 
 def test_derive_pairs_ignores_unconfigured_and_undetected_hosts():
@@ -460,7 +460,7 @@ def test_dry_run_lists_the_links_it_would_test():
     with mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts", return_value=_two_spark_direct()):
         report = rdma_test(_Sctx(), ["h1", "h2"], {}, dry_run=True)
 
-    assert len(report.pairs[0].links) == 2
+    assert len(report.pairs[0].links) == 4
     assert {link.link.hca_a for link in report.pairs[0].links} == {"rocep1s0f1", "roceP2p1s0f1"}
 
 
@@ -469,14 +469,15 @@ def test_dry_run_reports_the_image_when_the_suite_requires_it():
         assert rdma_test(_Sctx(), ["h1", "h2"], {}, suite="nccl", dry_run=True).used_container is True
 
 
-def test_rdma_test_without_links_raises_pointing_at_setup_cx7():
+def test_rdma_test_without_links_returns_coverage_failure_pointing_at_setup_cx7():
     dets = {"h1": CX7HostDetection(host="h1", detected=False), "h2": CX7HostDetection(host="h2", detected=False)}
     with (
         _patch_probe(),
         mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts", return_value=dets),
     ):
-        with pytest.raises(RdmaTestError, match="setup cx7"):
-            rdma_test(_Sctx(), ["h1", "h2"], {})
+        report = rdma_test(_Sctx(), ["h1", "h2"], {})
+    assert report.has_failure
+    assert any("setup cx7" in issue.detail for issue in report.coverage.issues)
 
 
 def test_default_suite_is_perftest_and_needs_no_image():
@@ -706,11 +707,9 @@ def test_aggregate_expectation_sums_ports_not_links():
         "sparkrun.api.setup._rdma._run_round",
         return_value={0: (REAL_BW_OUTPUT, 0), 1: (REAL_BW_OUTPUT, 0)},
     ):
-        total, expected, _detail = _run_aggregate(
-            pair, {}, facts, container=None, duration=5, queue_pairs=4, gid_index=None, link_type="IB", timeout=60
-        )
-    assert expected == 200.0, "two functions on one port must not sum to 400"
-    assert total == pytest.approx(223.42)  # 2 x the fixture's 111.71
+        result = _run_aggregate(pair, {}, facts, container=None, duration=5, queue_pairs=4, gid_index=None, link_type="IB", timeout=60)
+    assert result.expected_gbps == 200.0, "two functions on one port must not sum to 400"
+    assert result.bandwidth_gbps == pytest.approx(223.42)  # 2 x the fixture's 111.71
 
 
 def test_aggregate_expectation_is_additive_across_real_ports():
@@ -724,10 +723,8 @@ def test_aggregate_expectation_is_additive_across_real_ports():
         "sparkrun.api.setup._rdma._run_round",
         return_value={0: (REAL_BW_OUTPUT, 0), 1: (REAL_BW_OUTPUT, 0)},
     ):
-        _total, expected, _detail = _run_aggregate(
-            pair, {}, facts, container=None, duration=5, queue_pairs=4, gid_index=None, link_type="IB", timeout=60
-        )
-    assert expected == 400.0
+        result = _run_aggregate(pair, {}, facts, container=None, duration=5, queue_pairs=4, gid_index=None, link_type="IB", timeout=60)
+    assert result.expected_gbps == 400.0
 
 
 def test_port_key_falls_back_when_sysfs_fields_are_absent():
@@ -920,7 +917,7 @@ def test_cli_json_output_carries_the_numbers(runner, v, patched_cluster_mgr, mon
 
     monkeypatch.setenv("SPARKRUN_FEATURE_CLI_SETUP_RDMA_TEST", "1")
 
-    from sparkrun.api.setup._rdma import LinkTestResult, PairTestResult, RdmaTestReport
+    from sparkrun.api.setup._rdma import AggregateTestResult, LinkTestResult, PairTestResult, RdmaTestReport
     from sparkrun.orchestration.rdma import BwSample, LatSample
 
     pair = derive_link_pairs(_two_spark_direct(), ["h1", "h2"])[0]
@@ -933,7 +930,14 @@ def test_cli_json_output_carries_the_numbers(runner, v, patched_cluster_mgr, mon
     )
     report = RdmaTestReport(
         hosts=("h1", "h2"),
-        pairs=(PairTestResult(pair=pair, links=(link,), aggregate_gbps=196.4, status=STATUS_OK),),
+        pairs=(
+            PairTestResult(
+                pair=pair,
+                links=(link,),
+                aggregates=(AggregateTestResult("h1", "h2", bandwidth_gbps=196.4, status=STATUS_OK),),
+                status=STATUS_OK,
+            ),
+        ),
     )
 
     with mock.patch("sparkrun.api.setup.rdma_test", return_value=report):
@@ -942,7 +946,7 @@ def test_cli_json_output_carries_the_numbers(runner, v, patched_cluster_mgr, mon
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     entry = payload["pairs"][0]
-    assert entry["aggregate_gbps"] == pytest.approx(196.4)
+    assert entry["aggregates"][0]["bandwidth_gbps"] == pytest.approx(196.4)
     assert entry["links"][0]["bandwidth_gbps_avg"] == pytest.approx(111.71)
     assert entry["links"][0]["latency_us_typical"] == pytest.approx(1.47)
     assert entry["links"][0]["hca_a"] == "rocep1s0f1"
@@ -1151,3 +1155,121 @@ def test_setup_rdma_still_warns_for_inactive_device_on_a_configured_interface():
     item = _check_rdma(state, _check_ctx())
     assert item.status == WARN
     assert "configured interface(s) have inactive RDMA devices: inactive (eth1)" in item.detail
+
+
+@pytest.mark.parametrize("selection", [[], ["--cluster", "fabric"], ["--hosts", "h1,h2"]])
+def test_cli_passes_selected_cluster_intent_without_leaking_default_into_explicit_hosts(
+    runner, v, patched_cluster_mgr, monkeypatch, selection
+):
+    from sparkrun.api.setup._rdma import RdmaTestReport
+
+    monkeypatch.setenv("SPARKRUN_FEATURE_CLI_SETUP_RDMA_TEST", "1")
+    patched_cluster_mgr.create("fabric", ["h1", "h2"], topology="switch", fabric_interfaces=["*np1"])
+    patched_cluster_mgr.set_default("fabric")
+    with mock.patch("sparkrun.api.setup.rdma_test", return_value=RdmaTestReport(dry_run=True)) as call:
+        result = runner.invoke(main, ["setup", "rdma-test", "--dry-run", *selection])
+    assert result.exit_code == 0, result.output
+    cluster = call.call_args.kwargs["cluster"]
+    if "--hosts" in selection:
+        assert cluster is None
+    else:
+        assert cluster.name == "fabric"
+        assert cluster.topology == "switch"
+        assert cluster.fabric_interfaces == ["*np1"]
+
+
+@pytest.mark.parametrize("output_json", [False, True])
+def test_cli_reports_coverage_failures_even_without_failed_measurements(runner, v, patched_cluster_mgr, monkeypatch, output_json):
+    import json
+    from sparkrun.api.setup._rdma import RdmaCoverage, RdmaTestReport
+    from sparkrun.api.setup._rdma_plan import CoverageIssue
+
+    monkeypatch.setenv("SPARKRUN_FEATURE_CLI_SETUP_RDMA_TEST", "1")
+    report = RdmaTestReport(
+        hosts=("h1", "h2"),
+        coverage=RdmaCoverage(
+            discovered=True,
+            uncovered_hosts=("h2",),
+            issues=(CoverageIssue(STATUS_FAIL, "No candidate RDMA path for: h2"),),
+        ),
+    )
+    with mock.patch("sparkrun.api.setup.rdma_test", return_value=report):
+        result = runner.invoke(main, ["setup", "rdma-test", "--hosts", "h1,h2", *(["--json"] if output_json else [])])
+    assert result.exit_code == 1, result.output
+    if output_json:
+        data = json.loads(result.output)
+        assert data["coverage"]["status"] == STATUS_FAIL
+        assert data["coverage"]["uncovered_hosts"] == ["h2"]
+        assert data["has_failure"] is True
+        assert data["ok"] == data["fail"] == 0
+    else:
+        assert "No candidate RDMA path for: h2" in result.output
+        assert "No transfers started" in result.output
+        assert "Measurements: nothing measured" in result.output
+        assert "host-native perftest" not in result.output
+
+
+@pytest.mark.parametrize("value", ["1", "2", "0"])
+def test_cli_parallel_pair_limit_is_passed_and_validated(runner, v, patched_cluster_mgr, monkeypatch, value):
+    from sparkrun.api.setup._rdma import RdmaTestReport
+
+    monkeypatch.setenv("SPARKRUN_FEATURE_CLI_SETUP_RDMA_TEST", "1")
+    with mock.patch("sparkrun.api.setup.rdma_test", return_value=RdmaTestReport(dry_run=True)) as call:
+        result = runner.invoke(main, ["setup", "rdma-test", "--hosts", "h1,h2", "--parallel-pairs", value, "--dry-run"])
+    if value == "0":
+        assert result.exit_code != 0
+        call.assert_not_called()
+    else:
+        assert result.exit_code == 0, result.output
+        assert call.call_args.kwargs["parallel_pairs"] == int(value)
+
+
+def test_cli_default_parallel_pair_limit_is_four(runner, v, patched_cluster_mgr, monkeypatch):
+    from sparkrun.api.setup._rdma import RdmaTestReport
+
+    monkeypatch.setenv("SPARKRUN_FEATURE_CLI_SETUP_RDMA_TEST", "1")
+    with mock.patch("sparkrun.api.setup.rdma_test", return_value=RdmaTestReport(dry_run=True)) as call:
+        result = runner.invoke(main, ["setup", "rdma-test", "--hosts", "h1,h2", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert call.call_args.kwargs["parallel_pairs"] == 4
+
+
+def test_cli_default_dry_run_marks_sampling_and_preserves_parallel_default(runner, v, patched_cluster_mgr, monkeypatch):
+    from sparkrun.api.setup._rdma import RdmaTestReport
+
+    monkeypatch.setenv("SPARKRUN_FEATURE_CLI_SETUP_RDMA_TEST", "1")
+    with mock.patch("sparkrun.api.setup.rdma_test", return_value=RdmaTestReport(dry_run=True)) as call:
+        result = runner.invoke(main, ["setup", "rdma-test", "--hosts", "h1,h2", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert call.call_args.kwargs["full"] is False
+    assert call.call_args.kwargs["parallel_pairs"] == 4
+    assert "Quick sample (default)" in result.output
+    assert "skipped pairs remain unverified" in result.output
+    assert "Would discover the fabric and test a chain per subnet" in result.output
+
+
+def test_cli_full_selects_all_paths_without_sample_guidance(runner, v, patched_cluster_mgr, monkeypatch):
+    from sparkrun.api.setup._rdma import RdmaTestReport
+
+    monkeypatch.setenv("SPARKRUN_FEATURE_CLI_SETUP_RDMA_TEST", "1")
+    with mock.patch("sparkrun.api.setup.rdma_test", return_value=RdmaTestReport(dry_run=True, full=True)) as call:
+        result = runner.invoke(main, ["setup", "rdma-test", "--hosts", "h1,h2", "--full", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert call.call_args.kwargs["full"] is True
+    assert call.call_args.kwargs["parallel_pairs"] == 4
+    assert "test all candidate pairs in both directions" in result.output
+    assert "Quick sample" not in result.output
+    assert "Use --full" not in result.output
+
+
+def test_cli_advertises_full_and_removes_quick_option(runner, v, patched_cluster_mgr, monkeypatch):
+    monkeypatch.setenv("SPARKRUN_FEATURE_CLI_SETUP_RDMA_TEST", "1")
+    result = runner.invoke(main, ["setup", "rdma-test", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "--full" in result.output
+    assert "--quick" not in result.output
+    with mock.patch("sparkrun.api.setup.rdma_test") as call:
+        result = runner.invoke(main, ["setup", "rdma-test", "--hosts", "h1,h2", "--quick"])
+    assert result.exit_code == 2, result.output
+    assert "No such option: --quick" in result.output
+    call.assert_not_called()

@@ -13,13 +13,10 @@ derivation.  Verdicts, thresholds and rendering belong to
 
 Two facts drive the shape of everything here:
 
-- **A link is a subnet, not a host pair.**  ``sparkrun setup cx7`` gives every
-  point-to-point cable its own /24, so grouping configured interfaces by
-  subnet recovers the physical topology exactly, with no probing.  That is
-  deliberately *not*
-  :func:`~sparkrun.orchestration.networking.detect_topology`, which discovers
-  links by arping before addresses exist — the right tool for planning, and
-  needless work once ``setup cx7`` has run.
+- Shared configured subnets identify **candidate paths**, not proven
+  reachability or physical cables. Every pair of hosts on each subnet must
+  exchange RDMA traffic. Unique point-to-point subnets naturally produce
+  only direct/ring neighbors; shared switch subnets produce all host pairs.
 - **A DGX Spark QSFP112 cable presents as two RDMA devices**
   (``rocep1s0f1`` and ``roceP2p1s0f1``).  Driven one at a time each reaches
   ~100 Gb/s; the cable's real ~196 Gb/s only appears when both run at once.
@@ -33,8 +30,10 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from itertools import combinations
 
 from sparkrun.orchestration.networking import CX7HostDetection, CX7Interface
+from sparkrun.utils.shell import quote
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +45,8 @@ __all__ = [
     "LatSample",
     "NcclSample",
     "derive_link_pairs",
+    "pair_test_rounds",
+    "select_quick_pairs",
     "build_perftest_cmd",
     "build_nccl_test_cmd",
     "parse_perftest_bw",
@@ -67,7 +68,7 @@ DEFAULT_PERFTEST_PORT = 18515
 
 @dataclass(frozen=True)
 class RdmaLink:
-    """One point-to-point RDMA link: two interfaces sharing a subnet.
+    """One candidate RDMA path: two interfaces sharing a subnet.
 
     Carries the RDMA device name (``hca``) alongside the net interface and IP
     for both ends, because a perftest invocation needs the device on the local
@@ -93,13 +94,19 @@ class RdmaLink:
     def describe(self) -> str:
         return "%s:%s <-> %s:%s (%s)" % (self.host_a, self.hca_a, self.host_b, self.hca_b, self.subnet)
 
+    def reversed(self) -> RdmaLink:
+        """The same path with the sender and receiver swapped."""
+        return RdmaLink(self.subnet, self.host_b, self.iface_b, self.hca_b, self.ip_b, self.host_a, self.iface_a, self.hca_a, self.ip_a)
+
+    def describe_direction(self) -> str:
+        return "%s:%s -> %s:%s (%s)" % (self.host_a, self.hca_a, self.host_b, self.hca_b, self.subnet)
+
 
 @dataclass(frozen=True)
 class RdmaPair:
     """Every link between one ordered pair of hosts.
 
-    Grouped because the aggregate-bandwidth figure is a property of the
-    *cable*, not of either device on it.
+    Grouped so all paths between the hosts can be measured concurrently.
     """
 
     host_a: str
@@ -132,9 +139,9 @@ def derive_link_pairs(
 
     Only hosts present in *hosts* are considered, and only subnets shared by
     at least two of them. A subnet carrying **more than two** hosts is a
-    switched segment: it is chained (``h1<->h2``, ``h2<->h3``, …) rather than
-    fully meshed, so coverage stays O(N) and every host is exercised at least
-    once. Full-mesh testing of a switch is a different, much longer command.
+    shared segment: every unordered host pair is included. This describes
+    candidates only; the runner validates coverage and tests reachability.
+    Ambiguous interfaces on the same host/subnet raise ``ValueError``.
 
     Args:
         detections: Per-host CX7 detection results.
@@ -165,22 +172,17 @@ def derive_link_pairs(
         seen: dict[str, CX7Interface] = {}
         for host, iface in members:
             if host in seen:
-                logger.warning(
-                    "Host %s has multiple interfaces on %s (%s, %s); using %s",
-                    host,
-                    subnet,
-                    seen[host].name,
-                    iface.name,
-                    seen[host].name,
+                raise ValueError(
+                    "Host %s has multiple interfaces on %s (%s, %s); select unambiguous fabric_interfaces"
+                    % (host, subnet, seen[host].name, iface.name)
                 )
-                continue
             seen[host] = iface
 
         endpoints = sorted(seen.items(), key=lambda kv: order.get(kv[0], len(order)))
         if len(endpoints) < 2:
             continue
 
-        for (host_a, if_a), (host_b, if_b) in zip(endpoints, endpoints[1:], strict=False):
+        for (host_a, if_a), (host_b, if_b) in combinations(endpoints, 2):
             link = RdmaLink(
                 subnet=subnet,
                 host_a=host_a,
@@ -200,6 +202,62 @@ def derive_link_pairs(
     ]
 
 
+def select_quick_pairs(pairs: list[RdmaPair]) -> list[RdmaPair]:
+    """Sample an adjacent-host spanning chain on every shared subnet.
+
+    Input is the complete candidate graph from ``derive_link_pairs``. Each
+    subnet retains N-1 paths covering all its endpoints, without claiming
+    reachability between skipped pairs. Two-endpoint direct/ring subnets keep
+    their only path. Output preserves the candidate ordering and orientation.
+    """
+    members: dict[str, dict[str, None]] = {}
+    for pair in pairs:
+        for link in pair.links:
+            endpoints = members.setdefault(link.subnet, {})
+            endpoints.setdefault(link.host_a, None)
+            endpoints.setdefault(link.host_b, None)
+    selected = set()
+    for subnet, endpoints in members.items():
+        hosts = list(endpoints)
+        selected.update((subnet, a, b) for a, b in zip(hosts[:-1], hosts[1:], strict=True))
+    return [
+        RdmaPair(pair.host_a, pair.host_b, links)
+        for pair in pairs
+        if (links := tuple(link for link in pair.links if (link.subnet, link.host_a, link.host_b) in selected))
+    ]
+
+
+def pair_test_rounds(pairs: list[RdmaPair]) -> list[list[RdmaPair]]:
+    """Order candidates in host-disjoint round-robin matchings.
+
+    A complete switch takes N-1 rounds for even N and N rounds for odd N,
+    without the extra rounds a first-fit edge grouping can produce. Missing
+    edges (direct/ring fabrics) are omitted; no new paths are invented.
+    The runner may start later work as soon as its hosts become free.
+    """
+    hosts = list(dict.fromkeys(host for pair in pairs for host in pair.key))
+    if len(hosts) < 2:
+        return []
+    by_hosts = {frozenset(pair.key): pair for pair in pairs}
+    # Start with the first requested pair; a dummy endpoint gives odd host
+    # counts one bye per round. The first host stays fixed during rotation.
+    circle: list[str | None] = [hosts[0], *hosts[2:]]
+    if len(hosts) % 2:
+        circle.append(None)
+    circle.append(hosts[1])
+    rounds: list[list[RdmaPair]] = []
+    for _ in range(len(circle) - 1):
+        batch = []
+        for a, b in zip(circle[: len(circle) // 2], reversed(circle[len(circle) // 2 :]), strict=True):
+            pair = by_hosts.get(frozenset((a, b)))
+            if pair is not None:
+                batch.append(pair)
+        if batch:
+            rounds.append(batch)
+        circle = [circle[0], circle[-1], *circle[1:-1]]
+    return rounds
+
+
 # ---------------------------------------------------------------------------
 # Command construction
 # ---------------------------------------------------------------------------
@@ -210,6 +268,7 @@ def build_perftest_cmd(
     device: str,
     *,
     peer_ip: str = "",
+    source_ip: str = "",
     port: int = DEFAULT_PERFTEST_PORT,
     queue_pairs: int | None = None,
     duration: int | None = None,
@@ -228,6 +287,7 @@ def build_perftest_cmd(
         device: Local RDMA device (e.g. ``rocep1s0f1``). This is the *local*
             side's HCA on both ends, never the peer's.
         peer_ip: Server's RoCE address; empty for the server side.
+        source_ip: Bind the local fabric IP instead of trusting route selection.
         port: Out-of-band port. Concurrent tests must not share one.
         queue_pairs: ``-q``. Bandwidth only; latency is single-QP.
         duration: ``-D`` seconds. Bounds the run in wall-clock rather than
@@ -246,6 +306,8 @@ def build_perftest_cmd(
     if peer_ip:
         parts.append(peer_ip)
     parts.extend(["-d", device, "--report_gbits", "-R"])
+    if source_ip:
+        parts.extend(["--bind_source_ip", source_ip])
     if link_type:
         parts.extend(["--force-link", link_type])
     if queue_pairs:
@@ -255,7 +317,7 @@ def build_perftest_cmd(
     if gid_index is not None:
         parts.extend(["-x", str(gid_index)])
     parts.extend(["-p", str(port)])
-    return " ".join(parts)
+    return " ".join(quote(part) for part in parts)
 
 
 def build_nccl_test_cmd(

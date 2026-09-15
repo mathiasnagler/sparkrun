@@ -404,3 +404,79 @@ The normal readiness probe does not run transfers or persist a cluster-wide
 validation result. Structured API/JSON results include an optional validation
 hint; the text CLI shows guidance only for warnings and failures. The hint does
 not count as a readiness finding.
+
+`rdma-test` derives **candidate paths** from configured CX7 subnets, then runs
+real transfers to test reachability. By default, it samples an adjacent-host
+chain on each shared subnet. Use `sparkrun setup rdma-test --full` to test every
+unordered host pair on each shared subnet. Unique point-to-point subnets keep
+all direct/ring neighbors in either mode. In the complete candidate inventory,
+a switch subnet with four hosts produces six pairs. Two shared subnets across
+those four hosts produce twelve paths.
+
+Each path runs latency and bandwidth tests in both directions, with explicit
+local fabric IP binding. Multiple paths between a pair also run concurrently,
+once in each direction, with separate aggregate verdicts. The aggregate rate
+accounts for logical devices sharing a physical port and the slower endpoint.
+Full coverage takes longer than sampling: duration and the number of paths and
+pairs determine runtime. Up to four host-disjoint pairs run concurrently by
+default, bounded by the number of available disjoint pairs. Both hosts remain
+reserved through every path, both directions, and both aggregate passes; pairs sharing a host never overlap.
+Freed hosts can start another compatible pair without waiting for unrelated
+pairs to finish, while the final report keeps its original pair order.
+
+With `--full`, four switch-connected hosts have six pairs that can run in three
+groups of two:
+`A–B` with `C–D`, `A–C` with `B–D`, and `A–D` with `B–C`. Use
+`--parallel-pairs N` to cap concurrency or `--parallel-pairs 1` for serial
+measurements. Disjoint hosts can still share switch uplinks, so serial mode
+also provides a comparison when investigating switch contention. JSON reports
+the resolved concurrency limit in `parallel_pairs`.
+
+Saved cluster `topology` and `fabric_interfaces` constrain the plan. A declared
+`switch` requires every selected host on every observed fabric subnet. A full
+`ring` requires two distinct neighbors per host and point-to-point subnets;
+`direct` requires two hosts. Explicit host subsets do not require closing the
+whole ring, but untested addressed paths are reported. Unaddressed spare ports
+are excluded. Duplicate addresses or multiple interfaces on one host/subnet
+must be resolved rather than choosing an endpoint arbitrarily.
+
+Coverage failures—including omitted hosts, disconnected groups, incomplete
+probes, and missing switch-subnet members—stop the run before containers or
+transfers start. Without saved topology, coverage is limited to observed
+subnets: the tool cannot identify an intended subnet absent from every host.
+`--dry-run` sends no traffic and leaves coverage unverified because it does not
+probe the hosts.
+
+Nonzero command exits and missing or partial measurements fail the command,
+even if the command printed a result table. Low bandwidth or high latency
+produces a warning, including low concurrent aggregate bandwidth. The summary
+counts one verdict per directional path (latency plus bandwidth) and one per
+directional aggregate; pair rollups are not counted again. The four-host,
+two-subnet example with `--full` therefore has 24 directional path checks and
+12 aggregate checks, for 36 measurement verdicts.
+
+`--json` separates `coverage` (status, subnet members, connected components,
+uncovered hosts and expected/candidate counts) from measurement results.
+`pairs[].links[]` contains directional results: `host_a` sends to `host_b`.
+`pairs[].aggregates[]` contains each direction's bandwidth, expected rate,
+status and detail. Top-level `ok`, `warn`, and `fail` count measurement verdicts;
+`has_failure` also includes coverage failures. A coverage failure can therefore
+exit with status 1 while all measurement counts remain zero.
+
+The default `sparkrun setup rdma-test` selects an adjacent-host spanning chain
+on each subnet: four hosts A, B, C, D test A–B, B–C and C–D, omitting A–C, A–D and B–D. Each subnet retains
+N−1 paths covering all discovered endpoints. Unique direct/ring subnets retain
+their only path. Both directions and concurrent aggregates still run, and
+host-disjoint selected pairs can run concurrently under `--parallel-pairs`.
+The four-host, two-subnet example selects three pairs and six paths, producing
+18 measurement verdicts instead of 36.
+
+The default sample validates the complete discovered inventory before selecting
+tests, so missing hosts, disconnected groups, and missing declared-switch members
+still fail. It verifies the sampled paths; it does **not** prove reachability
+between skipped host pairs. Text output marks the sample and its selected/total
+counts, followed by “Use --full to test all candidate link paths.” JSON exposes
+`full`, `selected_pair_count`, and `selected_path_count` separately from the
+complete candidate counts in `coverage`.
+With `--suite all`, only perftest is sampled by default; NCCL always runs across
+all selected hosts, including with the NCCL-only suite.

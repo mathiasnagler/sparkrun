@@ -30,6 +30,7 @@ from ._mesh import (
     build_install_keys_script,
     mesh_ssh_keys_native,
 )
+from ._rdma_plan import CoverageIssue
 from ._rdma import (
     DEFAULT_RDMA_TEST_IMAGE,
     STATUS_FAIL,
@@ -40,6 +41,8 @@ from ._rdma import (
     SUITE_NCCL,
     SUITE_PERFTEST,
     LinkTestResult,
+    AggregateTestResult,
+    RdmaCoverage,
     NcclTestResult,
     PairTestResult,
     RdmaTestReport,
@@ -100,6 +103,9 @@ __all__ = [
     "RdmaTestReport",
     "PairTestResult",
     "LinkTestResult",
+    "AggregateTestResult",
+    "RdmaCoverage",
+    "CoverageIssue",
     "NcclTestResult",
     # Errors
     "SshAccessError",

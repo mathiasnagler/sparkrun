@@ -20,7 +20,9 @@ from __future__ import annotations
 
 from sparkrun.core.application_profile import render_identity_text
 
+import os
 import sys
+from dataclasses import asdict
 import textwrap
 
 import click
@@ -29,6 +31,8 @@ from sparkrun import api
 from sparkrun.api.setup import STATUS_FAIL, STATUS_OK, STATUS_SKIP, STATUS_WARN
 from sparkrun.api.setup._rdma import (
     ALL_SUITES,
+    DEFAULT_PARALLEL_PAIRS,
+    FULL_COVERAGE_HINT,
     SUITE_ALL,
     SUITE_DESCRIPTIONS,
     SUITE_NCCL,
@@ -38,7 +42,7 @@ from sparkrun.api.setup._rdma import (
 )
 
 from . import setup
-from .._common import _get_context, _resolve_setup_context, dry_run_option, host_options, json_option, print_json
+from .._common import _get_context, resolve_host_context, dry_run_option, host_options, json_option, print_json
 
 SETUP_RDMA_TEST_FEATURE = "cli.setup.rdma_test"
 
@@ -161,18 +165,29 @@ def _rdma_help(available: tuple[str, ...]) -> str:
 
     return """{summary}
 
-Verifies what `sparkrun setup cx7` configured. Host pairs are derived from the
-configured CX7 subnets, so only links that physically exist are tested. Each
-link is measured on its own, then every link between a host pair is driven
-concurrently — on DGX Spark a single QSFP cable presents as two RDMA devices
-and only shows its real throughput when both run at once.
+By default, samples an adjacent-host chain on each shared CX7 subnet.
+Use --full to test every host pair on each shared subnet. Unique point-to-point
+subnets keep all direct/ring neighbors in either mode. Subnet membership
+supplies candidates, not reachability.
+Up to four host-disjoint pairs run concurrently by default; pairs sharing a
+host stay serialized.
+Use --parallel-pairs 1 for serial measurements.
+Both modes check the complete inventory and test both directions and
+aggregates. The default sample leaves skipped host-pair reachability unverified.
+Each path is measured separately, then all paths between a host pair run
+concurrently, with a verdict for each direction and each aggregate.
+
+Saved cluster topology and fabric_interfaces constrain coverage. Missing hosts,
+disconnected groups and incomplete discovery fail before transfers start.
+Without saved topology, coverage is limited to observed subnets. Full coverage
+scales with the number of pairs and paths; larger fabrics take several minutes.
 
 \b
 Suites:
 {suites}
 
-Underperformance is reported as a warning; only a test that could not run at
-all fails the command.
+Underperformance is a warning. Coverage errors, failed commands and incomplete
+measurements fail the command. Pair summaries are not counted as extra tests.
 
 \b
 Examples:
@@ -190,6 +205,33 @@ def _render(report) -> None:
         click.secho("Note: %s" % warning, fg="yellow")
     if report.warnings:
         click.echo()
+
+    coverage = report.coverage
+    if coverage.discovered:
+        basis = "%s topology" % coverage.topology if coverage.topology else "observed subnets; topology unspecified"
+        _echo_status(
+            coverage.status,
+            "Inventory coverage: %d host pair(s), %d candidate path(s) (%s)" % (coverage.pair_count, coverage.path_count, basis),
+            indent="",
+        )
+        for issue in coverage.issues:
+            _echo_status(issue.status, issue.detail)
+        if coverage.status == STATUS_FAIL:
+            click.echo("No transfers started; resolve the coverage failures first.")
+            return
+    else:
+        click.echo("Coverage: not probed; candidate paths and reachability require live discovery.")
+    if not report.full and report.suite in (SUITE_PERFTEST, SUITE_ALL):
+        if coverage.discovered:
+            click.echo(
+                "Quick sample (default): selected %d/%d host pairs and %d/%d paths; skipped pairs remain unverified."
+                % (report.selected_pair_count, coverage.pair_count, report.selected_path_count, coverage.path_count)
+            )
+        else:
+            click.echo("Quick sample (default): would sample a chain on each discovered subnet; skipped pairs remain unverified.")
+        if not coverage.discovered or report.selected_path_count < coverage.path_count:
+            click.echo(FULL_COVERAGE_HINT)
+    click.echo()
 
     if report.dry_run:
         # Nothing was probed, so "host-native perftest" would be a claim about
@@ -216,18 +258,22 @@ def _render(report) -> None:
             if link.expected_gbps:
                 bits.append("of %.0f Gb/s" % link.expected_gbps)
             if report.dry_run:
-                summary = link.link.describe()
+                summary = link.label
             else:
-                summary = "%s — %s" % (link.link.describe(), ", ".join(bits) if bits else "no measurement")
+                summary = "%s — %s" % (link.label, ", ".join(bits) if bits else "no measurement")
             _echo_status(link.status, summary, indent="    ")
             if link.detail and link.status in (STATUS_WARN, STATUS_FAIL):
                 click.echo("           → %s" % link.detail)
 
-        if pair.aggregate_gbps is not None:
-            agg = "aggregate (all links concurrently) — %.1f Gb/s" % pair.aggregate_gbps
-            if pair.expected_aggregate_gbps:
-                agg += " of %.0f Gb/s" % pair.expected_aggregate_gbps
-            click.echo("    %s %s" % ("      ", agg))
+        for aggregate in pair.aggregates:
+            agg = "%s -> %s aggregate (all paths concurrently)" % (aggregate.host_a, aggregate.host_b)
+            if aggregate.bandwidth_gbps is not None:
+                agg += " — %.1f Gb/s" % aggregate.bandwidth_gbps
+            if aggregate.expected_gbps:
+                agg += " of %.0f Gb/s" % aggregate.expected_gbps
+            _echo_status(aggregate.status, agg, indent="    ")
+            if aggregate.detail and aggregate.status in (STATUS_WARN, STATUS_FAIL):
+                click.echo("           → %s" % aggregate.detail)
         if pair.detail:
             click.echo("           → %s" % pair.detail)
         click.echo()
@@ -255,18 +301,24 @@ def _report_to_dict(report) -> dict:
         "image": report.image,
         "used_container": report.used_container,
         "dry_run": report.dry_run,
+        "parallel_pairs": report.parallel_pairs,
+        "full": report.full,
+        "selected_pair_count": report.selected_pair_count,
+        "selected_path_count": report.selected_path_count,
         "warnings": list(report.warnings),
+        "coverage": {**asdict(report.coverage), "status": report.coverage.status},
+        "host_facts": {h: asdict(f) for h, f in report.host_facts.items()},
         "ok": report.ok_count,
         "warn": report.warn_count,
         "fail": report.fail_count,
+        "has_failure": report.has_failure,
         "pairs": [
             {
                 "host_a": p.pair.host_a,
                 "host_b": p.pair.host_b,
                 "status": p.status,
                 "detail": p.detail,
-                "aggregate_gbps": p.aggregate_gbps,
-                "expected_aggregate_gbps": p.expected_aggregate_gbps,
+                "aggregates": [asdict(a) for a in p.aggregates],
                 "links": [
                     {
                         "subnet": link.link.subnet,
@@ -319,7 +371,15 @@ _SUITES_AT_IMPORT = _suites_at_import()
     help=_suite_option_help(_SUITES_AT_IMPORT),
 )
 @click.option("--image", default=None, help="Test container image (default: the pinned sparkrun image)")
-@click.option("-D", "--duration", default=10, show_default=True, type=int, help="Seconds per bandwidth test")
+@click.option("--full", is_flag=True, help="Test all candidate link paths instead of the default adjacent-host chain")
+@click.option(
+    "--parallel-pairs",
+    type=click.IntRange(min=1),
+    default=DEFAULT_PARALLEL_PAIRS,
+    show_default=True,
+    help="Maximum host-disjoint pairs at once; 1 runs serially",
+)
+@click.option("-D", "--duration", default=10, show_default=True, type=click.IntRange(min=1), help="Seconds per directional bandwidth test")
 @click.option(
     "--size",
     "msg_size",
@@ -330,7 +390,7 @@ _SUITES_AT_IMPORT = _suites_at_import()
     hidden=SUITE_NCCL not in _SUITES_AT_IMPORT,
     help="NCCL message size",
 )
-@click.option("--queue-pairs", "-q", default=4, show_default=True, type=int, help="perftest queue pairs")
+@click.option("--queue-pairs", "-q", default=4, show_default=True, type=click.IntRange(min=1), help="perftest queue pairs")
 @click.option("--gid-index", default=None, type=int, help="Force a RoCE GID index (normally auto)")
 @click.option(
     "--link-type",
@@ -352,6 +412,8 @@ def setup_rdma_test(
     user,
     suite,
     image,
+    parallel_pairs,
+    full,
     duration,
     msg_size,
     queue_pairs,
@@ -381,7 +443,13 @@ def setup_rdma_test(
     if suite not in available_suites(sctx.config):
         raise click.ClickException(gated_suite_message(suite))
 
-    host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, sctx.config, user)
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+    hctx = resolve_host_context(hosts, hosts_file, cluster_name, sctx.config, sctx=sctx)
+    host_list = hctx.host_list
+    cluster = hctx.cluster_mgr.get(hctx.cluster_name) if hctx.cluster_name else None
+    ssh_kwargs = build_ssh_kwargs(sctx.config)
+    ssh_kwargs["ssh_user"] = user or sctx.config.ssh_user or os.environ.get("USER", "root")
 
     if len(host_list) < 2:
         raise click.ClickException(
@@ -391,10 +459,12 @@ def setup_rdma_test(
     if not output_json:
         click.echo("Testing RDMA fabric across %d host(s): %s" % (len(host_list), ", ".join(host_list)))
         if not dry_run:
-            # Set expectations honestly per suite: perftest is seconds, while
-            # the collective pulls a ~1 GB image onto every host first.
+            # Full pair/direction coverage scales with the size of the fabric.
             if suite == "perftest":
-                click.echo("Running real RDMA transfers; this takes a few moments.")
+                click.echo(
+                    "Testing %s in both directions; larger fabrics take several minutes."
+                    % ("all shared-subnet pairs" if full else "a quick chain per shared subnet")
+                )
             else:
                 click.echo("Running real transfers and an NCCL collective; this takes several minutes.")
         click.echo()
@@ -405,6 +475,9 @@ def setup_rdma_test(
             host_list,
             ssh_kwargs,
             suite=suite,
+            cluster=cluster,
+            parallel_pairs=parallel_pairs,
+            full=full,
             image=image,
             duration=duration,
             queue_pairs=queue_pairs,
@@ -423,7 +496,10 @@ def setup_rdma_test(
     else:
         _render(report)
         if dry_run:
-            click.echo("[dry-run] Would test %d host pair(s); no containers started and no traffic sent." % len(report.pairs))
+            click.echo(
+                "[dry-run] Would discover the fabric and test %s in both directions; no traffic sent."
+                % ("all candidate pairs" if full else "a chain per subnet")
+            )
         else:
             parts = []
             if report.ok_count:
@@ -432,7 +508,7 @@ def setup_rdma_test(
                 parts.append("%d warning" % report.warn_count)
             if report.fail_count:
                 parts.append("%d failed" % report.fail_count)
-            click.echo("Results: %s." % ", ".join(parts) if parts else "Results: nothing measured.")
+            click.echo("Measurements: %s." % ", ".join(parts) if parts else "Measurements: nothing measured.")
 
     if report.has_failure:
         sys.exit(1)
