@@ -18,6 +18,7 @@ from sparkrun.orchestration.ssh import RemoteResult
 
 FACTS = {
     "CHECK_COMPLETE": "1",
+    "CHECK_DISCOVERY_COMPLETE": "1",
     "CHECK_OS": "Linux",
     "CHECK_APT": "1",
     "CHECK_SYSTEMD": "1",
@@ -39,6 +40,20 @@ def state_context(hardware=None, **facts):
     state = HostState("h1", facts={**FACTS, **facts}, hardware=hardware or default_dgx_spark_hardware())
     ctx = CheckContext("lab", False, config=SparkrunConfig(), executor_names={"h1": "docker"}, gpu_access_modes={"h1": "cdi"}, strict=True)
     return state, ctx
+
+
+def approve_test_steps(monkeypatch, *keys):
+    """Explicitly extend only the test Spark plan, without mutating core plans."""
+    from copy import copy
+    from dataclasses import replace
+    from sparkrun import platforms
+
+    registry = [copy(platform) for platform in platforms.iter_platforms()]
+    spark = next(p for p in registry if p.platform_name == "dgx-spark")
+    spark.setup_plans = tuple(
+        replace(plan, steps=(*plan.steps, *keys)) if plan.executor == "docker" else plan for plan in spark.setup_plans
+    )
+    monkeypatch.setattr(platforms, "_REGISTRY", registry)
 
 
 def test_application_policy_disables_checks_and_actions(monkeypatch):
@@ -88,7 +103,7 @@ def test_unknown_hardware_and_unknown_executor_fail_readiness():
     assert any(i.key == "executor" and i.status == FAIL for i in evaluate_host(state, ctx))
 
 
-def test_dry_run_never_invokes_plugin_action():
+def test_dry_run_never_invokes_plugin_action(monkeypatch):
     register_feature(FeatureFlag("setup.steps.test_action", "test", default=True))
     callback = mock.Mock()
     register_setup_step(
@@ -101,12 +116,13 @@ def test_dry_run_never_invokes_plugin_action():
         )
     )
     state, ctx = state_context()
+    approve_test_steps(monkeypatch, "test_action")
     result = apply_setup_step("test_action", state, ctx, SetupActionContext("tester", dry_run=True))
     assert result.status == SKIP and "would apply" in result.detail
     callback.assert_not_called()
 
 
-def test_plugin_action_dependency_and_registration_rollback(v):
+def test_plugin_action_dependency_and_registration_rollback(v, monkeypatch):
     from sparkrun.core.registration import registry_transaction
     from sparkrun.core.setup_steps import _STEPS
 
@@ -127,6 +143,7 @@ def test_plugin_action_dependency_and_registration_rollback(v):
         )
     )
     state, ctx = state_context()
+    approve_test_steps(monkeypatch, "test_action")
     assert apply_setup_step("test_action", state, ctx, SetupActionContext("tester")).changed
     callback.assert_called_once()
 
@@ -295,6 +312,7 @@ def test_plugin_constraints_exclude_only_affected_hosts_even_when_enabled(key, m
     context.multi_host = True
     assert next(p for p in build_setup_plan(state, context) if p.step.key == key).selected
     state.host = "managed"
+    context.executor_names["managed"] = "docker"
     dispatch = mock.Mock()
     entry = next(p for p in build_setup_plan(state, context) if p.step.key == key)
     assert not entry.selected and entry.reason == "Managed by hardware plugin" and not entry.checks

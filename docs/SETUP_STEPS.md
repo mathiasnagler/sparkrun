@@ -1,6 +1,7 @@
 # Shared setup steps
 
-`core.setup_steps` owns selection, feature policy, prerequisites, and action
+Hardware platforms own explicit setup plans per executor. `core.setup_steps`
+resolves those plans, feature policy, prerequisites, and action
 dispatch. `core.setup_runner` owns multi-step sequencing, recording changes,
 and reprobes before dependent actions. `core.setup_models` contains check/host context models;
 `core.setup_probe` obtains target facts and resolves executors. The CLI only
@@ -18,7 +19,8 @@ A `SetupStep` has:
 - Optional `requires`: prerequisite step IDs. Missing dependencies and cycles
   are errors; disabled/inapplicable or failing prerequisites block the step.
 - Optional `probe_script`: a read-only Bash fragment emitting namespaced
-  `KEY=VALUE` facts. It runs in a subshell only when the step is enabled.
+  `KEY=VALUE` facts. It runs in a subshell only when the hardware plan includes
+  the step and feature policy, constraints, and applicability allow it.
 - Optional `apply(state, context, action_context) -> SetupActionResult`.
 - Optional `undo(host, recorded_details, action_context) -> SetupActionResult`.
 - `order` for stable presentation among independent steps and `requires_sudo`
@@ -52,6 +54,39 @@ def register(v):
     ))
 ```
 
+Registration adds a step to the available catalog; it does **not** select it for
+any host. The hardware integration explicitly composes reusable core and plugin
+steps in its `HardwarePlatformPlugin.setup_plans` declaration:
+
+```python
+from sparkrun.core.setup_plans import SetupPlan
+
+# Inside the hardware platform implementation (alongside matches(), etc.):
+setup_plans = (
+    SetupPlan("docker", ("docker", "docker_group", "host_ipc", "example_service")),
+    SetupPlan("local", ("host_ipc", "example_service")),
+)
+```
+
+Each `SetupPlan` names exactly one executor and an immutable tuple of step IDs.
+`operating_systems` defaults to `("Linux",)` and can be declared explicitly.
+The platform registry's normal matcher selects the owner; setup does not infer
+hardware support from model prefixes or feature names. Integrations should match
+measured identities or explicitly supported authored aliases. A matcher failure
+does not fall through to a less specific platform during setup selection.
+
+There is no automatic union of platform plans. The first matching platform owns
+the complete selection for that host. No matching platform/executor plan means
+hardware discovery and an explanatory readiness finding, with no optional probes
+or actions. Adding a default-enabled core or plugin step does not add it to any
+existing plan. Feature enablement cannot opt into a step outside that plan.
+
+The built-in DGX Spark platform explicitly selects Docker/toolkit/CDI checks and
+its host, memory-protection, sudoers, SSH and fabric steps. Its local executor
+plan omits Docker steps. Generic NVIDIA recognition selects only Docker/access,
+host IPC and peer SSH checks (host IPC and peer SSH for local); vendor identity
+alone does not qualify CDI repair, OS tuning, or Spark fabric configuration.
+
 A plugin being off means its steps and feature definitions are not registered.
 Turning a step off excludes its probe and findings. Application profiles can
 supply baseline and release-channel defaults for registered step features.
@@ -59,29 +94,47 @@ supply baseline and release-channel defaults for registered step features.
 `setup features list` omits `setup.steps.*` by default, including in JSON output.
 Use the hidden `--all` option (`setup features list --all`, optionally with
 `--json`) to include every registered feature. Setup-step flags remain available
-to the normal `enable`, `disable`, and `reset` commands.
+to the normal `enable`, `disable`, and `reset` commands. This prefix is a feature
+naming/display convention, not a hardware-matching or setup-ownership rule.
+Plugin steps reference their `feature_flag` explicitly; it need not use that prefix.
 Applicability runs against each actual target, so mixed clusters need not select
 the same steps. Profile defaults do not establish hardware support.
 
-A plugin's complete setup dependency graph is validated inside its registration
+A plugin's complete setup dependency graph and platform plans are validated inside its registration
 transaction, even for disabled steps. Forward references between steps in the
 same module are allowed. Cross-module prerequisites must already be registered;
 loading does not import or defer a missing provider automatically. Keep tightly
 coupled steps in one module, or explicitly arrange provider loading first. A
-missing prerequisite or cycle rejects the plugin and rolls back its registry
+missing prerequisite, omitted plan dependency, duplicate executor plan, or cycle rejects the plugin and rolls back its registry
 contributions. Required-plugin failures still block launches, while unrelated
 setup/undo remains available. Direct step registration outside a module loader
-must complete its graph before calling a planner.
+must complete its graph and plans before calling a planner. Plan dependencies must
+be included explicitly; they never expand a selection or import another plugin.
 
 Call `sparkrun.application.initialize()` first to load the selected integrations.
 
 `probe_setup_hosts(hosts, ssh_kwargs=..., config=..., cluster=...)` returns a host
 state mapping and a `CheckContext`. The hardware comes from the existing combined
-probe, including selected hardware-plugin enrichers. `build_setup_plan(state,
-context)` returns selected and skipped entries with reasons and findings.
+probe, including selected hardware-plugin enrichers. Probing runs in two stages:
+mandatory hardware/OS discovery first, then executor/plan resolution and only the
+selected readiness probes. Core shell probes, plugin fragments, and CX7/RDMA
+follow-up probes all use the per-host selection. Custom transports use
+`setup_probe_script(state, context)` for selected extension fragments; a config
+alone cannot select hardware-specific probes. Readiness health is evaluated
+after probing; a failing prerequisite blocks its dependent action. Wizard local
+fabric discovery also identifies the control hardware before offering CX7 scans.
+`build_setup_plan(state,
+context)` returns selected and skipped entries with the owning `platform`,
+reasons, and findings. `setup check --json` exposes these fields; text readiness
+reports the hardware/executor plan.
 `apply_setup_step(key, state, context, action_context)` rechecks selection and
 prerequisites before invoking the callback. Actions cannot run without identified,
 reachable target hardware. Dry-run returns a preview without invoking callbacks.
+Standalone `setup cx7` and `setup earlyoom` use the same hardware-plan boundary
+before fabric probes or privileged changes; application identity does not qualify
+hardware. Their dry runs require saved target hardware, perform no discovery, and
+cannot establish current OS/software readiness. `probe_setup_hosts(...,
+discovery_only=True)` supports this preflight without optional readiness probes.
 
 `SetupActionContext` carries the SSH user/options, ephemeral sudo credentials,
 and optional transport dispatcher. Its `run()` method executes a sudo script and
@@ -93,7 +146,7 @@ Results and manifests must not contain passwords or other credentials.
 
 Undo callbacks receive the details for the specific changed host. They run only
 for selected uninstall phases recorded in the application's own manifest. Step
-feature settings do not prevent undoing earlier changes while the plugin is
+feature settings or removal from a current hardware plan do not prevent undoing earlier changes while the plugin is
 loaded. If a recorded plugin has no available teardown implementation, uninstall
 keeps the cluster and manifest so those changes remain discoverable. Supply undo for reversible plugin-owned changes; shared system resources
 without a safe reversal (such as NVIDIA CDI configuration) should remain in place.
@@ -101,10 +154,12 @@ Do not uninstall pre-existing packages or remove configuration another tool owns
 
 ## Hardware constraints on shared steps
 
-A hardware plugin can exclude unsupported core or plugin steps with
+Positive platform plans are the primary support boundary. Additional constraints
+can narrow those plans when an integration needs a further denial rule. A plugin
+can exclude core or plugin steps with
 `register_setup_constraint(name, callback)`. The callback receives
 `(step_key, HostState, CheckContext)` and returns an empty string to leave the
-normal eligibility checks unchanged, or a nonempty reason to exclude that step.
+owned plan's eligibility unchanged, or a nonempty reason to exclude that step.
 It cannot enable a step or suppress mandatory hardware identification.
 
 ```python

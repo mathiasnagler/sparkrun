@@ -279,9 +279,10 @@ software-stack diagnostics, platform registration and compatibility validation.
 contribute target facts and enrich the shared hardware model. The same plugin
 can be selected by Sparkrun or required by an alternate application.
 
-Readiness and wizard behavior use shared setup steps with per-host applicability.
-Plugins can add checks/actions and register constraints that exclude unsupported
-core steps on their hardware. Application defaults select policy; they do not
+Readiness and wizard behavior use explicit `SetupPlan` declarations owned by each
+hardware platform, separately for each executor. Plans compose selected core and
+plugin steps; new registered steps remain inactive until a plan includes them.
+Constraints can further restrict the selection. Application defaults select policy; they do not
 establish hardware or container qualification. See [SETUP_STEPS.md](SETUP_STEPS.md)
 for setup extensions and [APPLICATION_PROFILES.md](APPLICATION_PROFILES.md) for
 the application composition contract.

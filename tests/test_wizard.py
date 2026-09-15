@@ -347,6 +347,7 @@ def test_wizard_cx7_peer_discovery(runner, v, patched_cluster_mgr):
     )
 
     with (
+        mock.patch("sparkrun.core.setup_probe.local_setup_step_supported", return_value=True),
         mock.patch("subprocess.run") as mock_sub,
         mock.patch(
             "sparkrun.orchestration.networking.discover_cx7_peers",

@@ -156,6 +156,10 @@ def validate_action_result(result: SetupActionResult, host: str) -> SetupActionR
 
 
 def docker_group(state, ctx, action):
+    from sparkrun.core.setup_steps import setup_step_reason
+
+    if reason := setup_step_reason("docker_group", state, ctx):
+        return SetupActionResult(state.host, SKIP, reason)
     from sparkrun.utils.shell import validate_unix_username
 
     validate_unix_username(action.user)
@@ -175,12 +179,10 @@ def docker_group(state, ctx, action):
 
 
 def nvidia_cdi(state, ctx, action):
-    from sparkrun.core.setup_steps import setup_constraint_reason
+    from sparkrun.core.setup_steps import setup_step_reason
 
-    if reason := setup_constraint_reason("nvidia_cdi", state, ctx):
+    if reason := setup_step_reason("nvidia_cdi", state, ctx):
         return SetupActionResult(state.host, SKIP, reason)
-    if ctx.gpu_access_modes.get(state.host) != "cdi":
-        return SetupActionResult(state.host, SKIP, "CDI generation requires a qualified target using CDI")
     from sparkrun.scripts import read_script
 
     result = action.run(state.host, read_script("nvidia_cdi_generate_fallback.sh"), timeout=120)
@@ -194,6 +196,10 @@ def nvidia_cdi(state, ctx, action):
 
 
 def sudoers(state, ctx, action):
+    from sparkrun.core.setup_steps import setup_step_reason
+
+    if reason := setup_step_reason("sudoers", state, ctx):
+        return SetupActionResult(state.host, SKIP, reason)
     from sparkrun.scripts import read_script
     from sparkrun.utils.shell import validate_unix_username
     from sparkrun.core.application_profile import get_application_profile
@@ -217,12 +223,12 @@ def sudoers(state, ctx, action):
 
 
 def earlyoom(state, ctx, action):
+    from sparkrun.core.setup_steps import setup_step_reason
+
+    if reason := setup_step_reason("earlyoom", state, ctx):
+        return SetupActionResult(state.host, SKIP, reason)
     from sparkrun.scripts import read_script
 
-    from sparkrun.core.setup_steps import setup_constraint_reason
-
-    if reason := setup_constraint_reason("earlyoom", state, ctx):
-        return SetupActionResult(state.host, SKIP, reason)
     script = read_script("earlyoom_install_fallback.sh").format(
         prefer=_build_earlyoom_regex(EARLYOOM_PREFER_PATTERNS), avoid=_build_earlyoom_regex(EARLYOOM_AVOID_PATTERNS)
     )

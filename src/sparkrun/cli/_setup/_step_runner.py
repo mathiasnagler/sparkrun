@@ -107,3 +107,31 @@ def run_setup_step_command(key, hosts, hosts_file, cluster_name, user, dry_run):
     )
     if not dry_run and results.get(key) == FAIL:
         raise click.ClickException("Setup step %s failed on one or more hosts; see results above" % key)
+
+
+def require_setup_step_targets(key, host_list, ssh_kwargs, config, *, cluster_name, explicit_hosts, dry_run):
+    """Require an owned plan before standalone host changes or fabric probes."""
+    from .._common import _get_cluster_manager
+    from sparkrun.core.setup_models import HostState
+    from sparkrun.core.setup_probe import probe_setup_hosts, resolve_setup_context
+    from sparkrun.core.setup_steps import setup_step_reason
+
+    manager = _get_cluster_manager()
+    name = cluster_name or (manager.get_default() if not explicit_hosts else None)
+    cluster = manager.get(name) if name else None
+    if dry_run:
+        inventory = cluster.hosts_hardware if cluster else {}
+        states = {host: HostState(host, hardware=inventory.get(host)) for host in host_list}
+        context = resolve_setup_context(states, config=config, cluster=cluster, cluster_name=name, strict=False)
+    else:
+        states, context = probe_setup_hosts(
+            host_list,
+            ssh_kwargs=ssh_kwargs,
+            config=config,
+            cluster=cluster,
+            cluster_name=name,
+            discovery_only=True,
+        )
+    denied = ["%s: %s" % (host, reason) for host, state in states.items() if (reason := setup_step_reason(key, state, context))]
+    if denied:
+        raise click.ClickException("Setup step %s is unavailable; %s" % (key, "; ".join(denied)))

@@ -261,13 +261,12 @@ depends on a present, non-stale `/etc/cdi/nvidia.yaml` — the spec pins version
 absolute paths, so a driver upgrade can leave it dangling and containers then
 fail to start. `--gpus` resolves through the container runtime at launch instead.
 
-`sparkrun setup check` reports on the spec at a severity that follows this
-setting: it resolves each host's effective `gpu_access_mode` through the real
-executor chain, so a missing spec is a **FAIL** only for a cluster that would
-actually read it. Under `gpus` the finding drops to **SKIP** (it doesn't count
-as a gap or affect the exit code) while still naming the staleness, because it
-becomes real the moment the mode changes. A mode that can't be resolved fails
-safe to "CDI required".
+`sparkrun setup check` selects the CDI probe and check only when the resolved
+GPU access mode requires CDI and the hardware plan supports it. A missing or
+empty spec is a **FAIL**; a present spec with missing referenced paths is a
+**WARN**. Under `gpus`, the CDI probe and finding are omitted entirely. Switching
+the executor to `cdi` makes them applicable again. An unresolved or unrecognized
+mode retains the CDI requirement, matching Docker's fallback.
 
 The default comes from the resolved hardware platform
 (`HardwarePlatformPlugin.default_executor_config("docker")`), which sits just

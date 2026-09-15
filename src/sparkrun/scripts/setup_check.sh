@@ -3,13 +3,15 @@
 # Emits key=value pairs on stdout; NEVER modifies host state. Diagnostic
 # noise goes to stderr. Mirrors the parse style of spark_diagnose.sh.
 #
-# Params: {peers}  — space-separated peer hosts for the SSH-mesh probe.
+# Params: {steps} — explicitly selected step IDs; {peers} — selected SSH peers.
 set -uo pipefail
+SETUP_STEPS={steps}
 
 WHO=$(id -un 2>/dev/null || echo unknown)
 echo "CHECK_USER=$WHO"
 echo "CHECK_UID=$(id -u 2>/dev/null || echo unknown)"
 
+case " $SETUP_STEPS " in *" host_ipc "*)
 # --- systemd-logind IPC reaping ---
 # `RemoveIPC=yes` (the Ubuntu 24.04 / DGX OS default) makes logind delete every
 # POSIX semaphore, shared-memory segment and message queue owned by a regular
@@ -61,35 +63,35 @@ if [ "$_LINGER" = unknown ] && [ -d /var/lib/systemd/linger ]; then
     if [ -e "/var/lib/systemd/linger/$WHO" ]; then _LINGER=1; else _LINGER=0; fi
 fi
 echo "CHECK_LOGIND_LINGER=$_LINGER"
-
-# --- Host setup prerequisites ---
-command -v apt-get >/dev/null 2>&1 && echo "CHECK_APT=1" || echo "CHECK_APT=0"
-[ -d /run/systemd/system ] && echo "CHECK_SYSTEMD=1" || echo "CHECK_SYSTEMD=0"
-command -v netplan >/dev/null 2>&1 && echo "CHECK_NETPLAN=1" || echo "CHECK_NETPLAN=0"
-echo "CHECK_OS=$(uname -s)"
+;; esac
 
 # --- Docker ---
+case " $SETUP_STEPS " in *" docker "*)
 if command -v docker >/dev/null 2>&1; then
     echo "CHECK_DOCKER_INSTALLED=1"
-    if docker info >/dev/null 2>&1; then
-        echo "CHECK_DOCKER_USABLE=1"
-    else
-        echo "CHECK_DOCKER_USABLE=0"
-    fi
 else
     echo "CHECK_DOCKER_INSTALLED=0"
+fi
+;; esac
+
+case " $SETUP_STEPS " in *" docker_group "*)
+if docker info >/dev/null 2>&1; then
+    echo "CHECK_DOCKER_USABLE=1"
+else
     echo "CHECK_DOCKER_USABLE=0"
 fi
-
 if id -nG "$WHO" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
     echo "CHECK_DOCKER_GROUP=1"
 else
     echo "CHECK_DOCKER_GROUP=0"
 fi
+;; esac
 
 # --- NVIDIA GPU / Container Toolkit / CDI ---
-command -v nvidia-smi >/dev/null 2>&1 && echo "CHECK_GPU_PRESENT=1" || echo "CHECK_GPU_PRESENT=0"
+case " $SETUP_STEPS " in *" nvidia_container "*)
 command -v nvidia-ctk >/dev/null 2>&1 && echo "CHECK_NVIDIA_CTK=1" || echo "CHECK_NVIDIA_CTK=0"
+;; esac
+case " $SETUP_STEPS " in *" nvidia_cdi "*)
 if [ -s /etc/cdi/nvidia.yaml ]; then
     echo "CHECK_CDI_SPEC=1"
     # Staleness. A CDI spec pins absolute host paths -- versioned driver
@@ -114,7 +116,9 @@ if [ -s /etc/cdi/nvidia.yaml ]; then
 else
     echo "CHECK_CDI_SPEC=0"
 fi
+;; esac
 
+case " $SETUP_STEPS " in *" earlyoom "*)
 # --- earlyoom ---
 command -v earlyoom >/dev/null 2>&1 && echo "CHECK_EARLYOOM_INSTALLED=1" || echo "CHECK_EARLYOOM_INSTALLED=0"
 if systemctl is-active --quiet earlyoom 2>/dev/null; then
@@ -122,7 +126,9 @@ if systemctl is-active --quiet earlyoom 2>/dev/null; then
 else
     echo "CHECK_EARLYOOM_ACTIVE=0"
 fi
+;; esac
 
+case " $SETUP_STEPS " in *" sudoers "*)
 # --- Sudoers entries (best-effort) ---
 # Only inspect when passwordless sudo is available so the probe never blocks
 # on a password prompt; otherwise report "unknown".
@@ -141,7 +147,9 @@ else
     echo "CHECK_SUDOERS_CHOWN=unknown"
     echo "CHECK_SUDOERS_DROPCACHES=unknown"
 fi
+;; esac
 
+case " $SETUP_STEPS " in *" ssh_mesh "*)
 # --- SSH mesh (non-destructive) ---
 # Attempt a BatchMode SSH to each peer; write no known_hosts entries.
 # NOTE: `ssh -n` (stdin from /dev/null) is REQUIRED here. This whole script
@@ -160,5 +168,6 @@ for peer in $PEERS; do
 done
 echo "CHECK_MESH_TOTAL=$MESH_TOTAL"
 echo "CHECK_MESH_OK=$MESH_OK"
+;; esac
 
 echo "CHECK_COMPLETE=1"

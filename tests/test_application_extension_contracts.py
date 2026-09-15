@@ -81,7 +81,7 @@ def test_headless_setup_records_changes_and_reprobes_dependencies(monkeypatch, c
     from sparkrun.core.setup_actions import SetupActionContext, SetupActionResult
     from sparkrun.core.setup_models import CheckItem, OK, FAIL
     from sparkrun.core.setup_steps import SetupStep, register_setup_step
-    from test_setup_steps import state_context
+    from test_setup_steps import state_context, approve_test_steps
 
     state, context = state_context()
     log = []
@@ -102,6 +102,8 @@ def test_headless_setup_records_changes_and_reprobes_dependencies(monkeypatch, c
             return SetupActionResult(state.host, OK, "done", changed=True, extra={"created": name})
 
         register_setup_step(SetupStep(name, name, checks=(check,), apply=action, requires=requires, feature_flag=flag))
+
+    approve_test_steps(monkeypatch, "first", "second")
 
     def reprobe(*args, **kwargs):
         log.append("probe")
@@ -144,7 +146,7 @@ def test_setup_records_partial_changes_before_progress_failure(monkeypatch):
     from sparkrun.core.setup_actions import SetupActionContext, SetupActionResult
     from sparkrun.core.setup_models import CheckItem, FAIL
     from sparkrun.core.setup_steps import SetupStep, register_setup_step
-    from test_setup_steps import state_context
+    from test_setup_steps import state_context, approve_test_steps
 
     state, context = state_context()
     register_feature(FeatureFlag("setup.steps.partial", "partial", default=True))
@@ -160,6 +162,8 @@ def test_setup_records_partial_changes_before_progress_failure(monkeypatch):
     )
     manifests = Mock()
     manifests.recording.return_value = nullcontext()
+
+    approve_test_steps(monkeypatch, "partial")
 
     def progress(event):
         if event.kind == "result":

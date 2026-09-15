@@ -9,6 +9,7 @@ from __future__ import annotations
 from sparkrun.core.hardware import AcceleratorSpec, HostHardware, DGX_SPARK_MEMORY_GB
 from sparkrun.orchestration.collectives import CollectiveBackend, NcclBackend
 from sparkrun.platforms.base import HardwarePlatformPlugin
+from sparkrun.core.setup_plans import SetupPlan
 
 
 # Per-runtime defaults curated for GB10 / Spark Arena.  ``None`` means
@@ -77,6 +78,14 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
     platform_name = "dgx-spark"
     display_name = "DGX Spark"
     vendors = frozenset({"nvidia"})
+
+    setup_plans = (
+        SetupPlan(
+            "docker",
+            ("docker", "docker_group", "nvidia_container", "nvidia_cdi", "host_ipc", "earlyoom", "sudoers", "ssh_mesh", "cx7", "rdma"),
+        ),
+        SetupPlan("local", ("host_ipc", "earlyoom", "sudoers", "ssh_mesh", "cx7", "rdma")),
+    )
 
     def matches(self, host_hardware: HostHardware) -> bool:
         return any(a.vendor == "nvidia" and a.model == "gb10" for a in host_hardware.accelerators)

@@ -12,10 +12,11 @@ from sparkrun.core.setup_actions import SetupActionContext, SetupActionResult
 from sparkrun.core.setup_manifest import ManifestManager
 from sparkrun.core.setup_models import CheckItem, WARN, OK, FAIL, SKIP
 from sparkrun.core.setup_steps import SetupStep, register_setup_step
-from test_setup_steps import state_context
+from test_setup_steps import state_context, approve_test_steps
 
 
-def _step(action, status=WARN):
+def _step(monkeypatch, action, status=WARN):
+    approve_test_steps(monkeypatch, "review")
     register_feature(FeatureFlag("setup.steps.review", "review", default=True))
     register_setup_step(
         SetupStep(
@@ -25,10 +26,10 @@ def _step(action, status=WARN):
 
 
 @pytest.mark.parametrize("text", ["distribution: jetsonrun\ncluster: lab\nphases: {}\n", "[invalid\n", "cluster: other\nphases: {}\n"])
-def test_manifest_rejection_precedes_approval_credentials_and_actions(tmp_path, text):
+def test_manifest_rejection_precedes_approval_credentials_and_actions(tmp_path, text, monkeypatch):
     state, context = state_context()
     action, approve, credentials = Mock(), Mock(), Mock()
-    _step(action)
+    _step(monkeypatch, action)
     manager = ManifestManager(tmp_path / "clusters")
     path = manager.clusters_dir / "lab.manifest.yaml"
     path.write_text(text)
@@ -51,7 +52,7 @@ def test_manifest_rejection_precedes_approval_credentials_and_actions(tmp_path, 
 def test_setup_records_changes_and_preserves_existing_phases(tmp_path, monkeypatch, existing):
     state, context = state_context()
     details = {"files": ["created"], "phase": "plugin-owned-value"}
-    _step(lambda s, *_: SetupActionResult(s.host, OK, "done", changed=True, extra=details))
+    _step(monkeypatch, lambda s, *_: SetupActionResult(s.host, OK, "done", changed=True, extra=details))
     manager = ManifestManager(tmp_path / "clusters")
     if existing:
         manager.record_phase("lab", "tester", ["other"], "old")
@@ -65,10 +66,10 @@ def test_setup_records_changes_and_preserves_existing_phases(tmp_path, monkeypat
     probe.assert_called_once()
 
 
-def test_preview_never_locks_or_writes_manifest(tmp_path):
+def test_preview_never_locks_or_writes_manifest(tmp_path, monkeypatch):
     state, context = state_context()
     action, approve, credentials = Mock(), Mock(), Mock()
-    _step(action)
+    _step(monkeypatch, action)
     manager = ManifestManager(tmp_path / "clusters")
     manager.recording = Mock(side_effect=AssertionError("preview cannot lock"))
     result = run_setup_steps(
@@ -87,10 +88,10 @@ def test_preview_never_locks_or_writes_manifest(tmp_path):
 
 
 @pytest.mark.parametrize("bad_name", [None, "other"])
-def test_inconsistent_recording_inputs_fail_before_actions(tmp_path, bad_name):
+def test_inconsistent_recording_inputs_fail_before_actions(tmp_path, bad_name, monkeypatch):
     state, context = state_context()
     action = Mock()
-    _step(action)
+    _step(monkeypatch, action)
     if bad_name is None:
         context = replace(context, cluster_name=None)
     manager = ManifestManager(tmp_path / "clusters")
@@ -103,11 +104,11 @@ def test_inconsistent_recording_inputs_fail_before_actions(tmp_path, bad_name):
 
 
 @pytest.mark.parametrize("first_status", [WARN, FAIL, SKIP])
-def test_step_aggregation_is_order_independent(first_status):
+def test_step_aggregation_is_order_independent(first_status, monkeypatch):
     first, context = state_context()
     second = replace(first, host="h2")
     context.executor_names[second.host] = "docker"
-    _step(lambda s, *_: SetupActionResult(s.host, first_status if s.host == first.host else OK, "host detail"))
+    _step(monkeypatch, lambda s, *_: SetupActionResult(s.host, first_status if s.host == first.host else OK, "host detail"))
     expected = OK if first_status == SKIP else first_status
     for states in ({first.host: first, second.host: second}, {second.host: second, first.host: first}):
         result = run_setup_steps(states, context, SetupActionContext("tester"), only_steps={"review"})
@@ -116,10 +117,11 @@ def test_step_aggregation_is_order_independent(first_status):
         assert result.outcomes["review"][second.host].detail == "host detail"
 
 
-def test_satisfied_and_topology_steps_have_explicit_outcomes():
+def test_satisfied_and_topology_steps_have_explicit_outcomes(monkeypatch):
     state, context = state_context()
+    context.multi_host = True
     action = Mock()
-    _step(action, status=OK)
+    _step(monkeypatch, action, status=OK)
     result = run_setup_steps({state.host: state}, context, SetupActionContext("tester"), only_steps={"review", "ssh_mesh"})
     assert result.steps == {"ssh_mesh": SKIP, "review": OK}
     assert result.outcomes["review"][state.host].detail == "already satisfied"
@@ -168,7 +170,7 @@ def test_wizard_preflight_rejects_before_ssh_access(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("invalid", ["mismatch", "empty", "value", "not_mapping"])
-def test_invalid_host_states_fail_before_callbacks_and_recording(tmp_path, dry_run, invalid):
+def test_invalid_host_states_fail_before_callbacks_and_recording(tmp_path, dry_run, invalid, monkeypatch):
     state, context = state_context()
     states = {
         "mismatch": {"other": state},
@@ -178,7 +180,7 @@ def test_invalid_host_states_fail_before_callbacks_and_recording(tmp_path, dry_r
     }[invalid]
     callbacks = [Mock() for _ in range(4)]
     action, approve, credentials, progress = callbacks
-    _step(action)
+    _step(monkeypatch, action)
     manager = ManifestManager(tmp_path / "clusters")
     manager.recording = Mock()
     with pytest.raises(SetupFailed, match="Setup state"):
@@ -202,7 +204,7 @@ def test_invalid_reprobe_stops_further_actions_and_preserves_recorded_change(tmp
     state, context = state_context()
     first = Mock(side_effect=lambda current, *_: SetupActionResult(current.host, OK, "changed", changed=True))
     second = Mock()
-    _step(first)
+    _step(monkeypatch, first)
     register_setup_step(
         SetupStep(
             "review_next",
@@ -213,6 +215,7 @@ def test_invalid_reprobe_stops_further_actions_and_preserves_recorded_change(tmp
             feature_flag="setup.steps.review",
         )
     )
+    approve_test_steps(monkeypatch, "review_next")
     refreshed = {state.host: replace(state, host="other")} if invalid == "mismatch" else {"other": replace(state, host="other")}
     monkeypatch.setattr("sparkrun.core.setup_probe.probe_setup_hosts", lambda *a, **kw: (refreshed, context))
     manager = ManifestManager(tmp_path / "clusters")
@@ -234,11 +237,11 @@ def test_invalid_reprobe_stops_further_actions_and_preserves_recorded_change(tmp
     assert manifest.phases["review"].hosts == [state.host]
 
 
-def test_setup_without_config_fails_before_actions_or_approval():
+def test_setup_without_config_fails_before_actions_or_approval(monkeypatch):
     state, context = state_context()
     context.config = None
     action, approve = Mock(), Mock()
-    _step(action)
+    _step(monkeypatch, action)
     with pytest.raises(SetupFailed, match="requires a configuration"):
         run_setup_steps({state.host: state}, context, SetupActionContext("tester"), only_steps={"review"}, approve=approve)
     action.assert_not_called()

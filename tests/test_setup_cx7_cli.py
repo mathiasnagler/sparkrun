@@ -38,6 +38,9 @@ def _run(args, detections, cluster_mgr=None):
         cluster_mgr = mock.Mock()
         cluster_mgr.get_default.return_value = None
     with (
+        # Hardware selection is covered in test_setup_plans; these cases
+        # exercise the already-approved topology adapter.
+        mock.patch("sparkrun.cli._setup._step_runner.require_setup_step_targets"),
         mock.patch("sparkrun.cli._setup._commands._resolve_setup_context", return_value=(list(detections), "me", {})),
         mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts", return_value=detections),
         mock.patch("sparkrun.cli._setup._commands._get_cluster_manager", return_value=cluster_mgr),

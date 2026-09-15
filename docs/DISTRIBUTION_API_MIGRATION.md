@@ -14,7 +14,7 @@ shared unless noted below. The tables also cover pre-release plugin contracts.
 | Catalog/front-end callers | `sparkrun.api`: catalog functions and `Catalog*` dictionary types; see the [headless catalog guide](CATALOG_API.md#browse-preview-and-retain). |
 | Setup callers | `sparkrun.api.setup`: checks/models, probe/plan helpers, apply/undo runners, manifest manager, statuses, and `SetupFailed`. |
 | Benchmark integration authors | `sparkrun.core.benchmark_integrations`: registration, `BenchmarkIntegration`, `BenchmarkDefaults`, context and immutable measurement/state snapshots. |
-| Setup extension authors | `sparkrun.core.setup_steps`: step/constraint registration; caller-facing types are also exported by `api.setup`. |
+| Setup extension authors | `sparkrun.core.setup_steps`: step/constraint registration; `sparkrun.core.setup_plans.SetupPlan`: hardware-owned, opt-in executor plans; caller-facing types are also exported by `api.setup`. |
 | Other extension authors | Documented registries such as `core.cli_registry`, `core.run_handlers`, `core.hardware_probe_extensions`, and `core.features`; shared transactions and `PLUGIN_API_VERSION` in `core.registration`. |
 | Gateway plugin authors | `sparkrun.proxy.contracts`: shared `ProxyModel`, `GatewayOperationError`, `GatewayQueryError`, and optional console/credential protocols; `proxy.supervisor.GatewaySupervisor` for lifecycle and `proxy.gateway` for registration. |
 | Kubernetes callers | `sparkrun.plugins.k8s.api`, `plugins.k8s.config`, and `plugins.k8s.executor`. |

@@ -18,6 +18,7 @@ from ._runner import SetupEvent, SetupRunResult, SetupUndoResult, run_setup_step
 # registration remains in core.setup_steps; frontends need only this facade.
 from sparkrun.core.setup_actions import SetupActionContext, SetupActionResult
 from sparkrun.core.setup_manifest import ManifestManager, SetupManifest, PhaseRecord
+from sparkrun.core.setup_plans import SetupPlan
 from sparkrun.core.setup_models import CheckContext, CheckItem, HostState, OK, WARN, FAIL, SKIP
 from sparkrun.core.setup_probe import probe_setup_hosts, resolve_setup_context
 from sparkrun.core.setup_steps import PlannedStep, SetupStep, build_setup_plan, apply_setup_step, evaluate_host
@@ -71,6 +72,7 @@ __all__ = [
     "resolve_setup_context",
     "PlannedStep",
     "SetupStep",
+    "SetupPlan",
     "build_setup_plan",
     "apply_setup_step",
     "evaluate_host",

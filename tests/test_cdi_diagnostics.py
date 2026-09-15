@@ -17,7 +17,6 @@ import pytest
 from sparkrun.core.setup_checks import (
     FAIL,
     OK,
-    SKIP,
     WARN,
     CheckContext,
     HostState,
@@ -92,26 +91,35 @@ def _cdi_ctx() -> CheckContext:
     return CheckContext(cluster_name="mylab", multi_host=True, gpu_access_modes={"h1": "cdi"})
 
 
-def test_absent_spec_is_not_a_gap_when_gpus_mode():
-    """No FAIL for a mechanism this cluster never uses (the DGX Spark default)."""
-    item = _check_cdi_spec(_state(CHECK_CDI_SPEC="0"), _gpus_ctx())
-    assert item.status == SKIP
-    assert "not needed" in item.detail
-    assert "gpu_access_mode" in item.detail
+@pytest.mark.parametrize("mode", ["gpus", " GPUS "])
+@pytest.mark.parametrize(
+    "facts",
+    [
+        {"CHECK_CDI_SPEC": "0"},
+        {"CHECK_CDI_SPEC": "1", "CHECK_CDI_PATHS_CHECKED": "53", "CHECK_CDI_PATHS_MISSING": "27"},
+        {"CHECK_CDI_SPEC": "1", "CHECK_CDI_PATHS_CHECKED": "53", "CHECK_CDI_PATHS_MISSING": "0"},
+        {"CHECK_GPU_PRESENT": "0", "CHECK_NVIDIA_CTK": "0"},
+    ],
+)
+def test_unused_cdi_has_no_finding(mode, facts):
+    context = _gpus_ctx()
+    context.gpu_access_modes["h1"] = mode
+    assert _check_cdi_spec(_state(**facts), context) is None
 
 
-def test_stale_spec_is_not_a_gap_when_gpus_mode():
-    item = _check_cdi_spec(_state(CHECK_CDI_SPEC="1", CHECK_CDI_PATHS_CHECKED="12", CHECK_CDI_PATHS_MISSING="5"), _gpus_ctx())
-    assert item.status == SKIP
-    # The staleness itself is still reported — it becomes real on a mode switch.
-    assert "5 of 12" in item.detail
-    assert "switching to cdi" in item.detail
-
-
-def test_healthy_spec_is_ok_regardless_of_mode():
+def test_healthy_spec_is_reported_for_cdi():
     facts = dict(CHECK_CDI_SPEC="1", CHECK_CDI_PATHS_CHECKED="12", CHECK_CDI_PATHS_MISSING="0")
-    assert _check_cdi_spec(_state(**facts), _gpus_ctx()).status == OK
     assert _check_cdi_spec(_state(**facts), _cdi_ctx()).status == OK
+
+
+@pytest.mark.parametrize("mode", [None, "", "unknown", " CDI "])
+def test_mode_normalization_and_fallback_match_docker(mode):
+    from sparkrun.orchestration.executors.docker import _nvidia_gpu_args
+
+    context = CheckContext("mylab", True, gpu_access_modes={"h1": mode})
+    assert _nvidia_gpu_args("all", mode)[0] == "--device"
+    assert context.cdi_required("h1")
+    assert _check_cdi_spec(_state(CHECK_CDI_SPEC="0"), context).status == FAIL
 
 
 def test_explicit_cdi_mode_keeps_the_hard_failure():

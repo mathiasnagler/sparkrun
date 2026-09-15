@@ -11,6 +11,7 @@ from __future__ import annotations
 from sparkrun.core.hardware import HostHardware
 from sparkrun.orchestration.collectives import CollectiveBackend, NcclBackend
 from sparkrun.platforms.base import HardwarePlatformPlugin
+from sparkrun.core.setup_plans import SetupPlan
 
 
 # Upstream defaults for generic NVIDIA hosts (H100, H200, B200, RTX
@@ -32,6 +33,13 @@ class GenericNvidiaPlatform(HardwarePlatformPlugin):
     platform_name = "nvidia-generic"
     display_name = "Generic NVIDIA"
     vendors = frozenset({"nvidia"})
+
+    # Vendor recognition alone does not qualify driver/CDI, OS tuning, or
+    # fabric changes. A more specific platform can opt into those steps.
+    setup_plans = (
+        SetupPlan("docker", ("docker", "docker_group", "host_ipc", "ssh_mesh")),
+        SetupPlan("local", ("host_ipc", "ssh_mesh")),
+    )
 
     def matches(self, host_hardware: HostHardware) -> bool:
         return any(a.vendor == "nvidia" for a in host_hardware.accelerators)

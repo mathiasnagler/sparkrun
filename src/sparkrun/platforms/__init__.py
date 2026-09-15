@@ -67,6 +67,9 @@ def register_platform(platform: HardwarePlatformPlugin, *, prepend: bool = False
             wins ties.  Default appends, so the built-in NVIDIA
             platforms keep their specificity ordering.
     """
+    from sparkrun.core.setup_plans import validate_platform_setup_plans
+
+    validate_platform_setup_plans(platform)
     for existing in _REGISTRY:
         if existing.platform_name == platform.platform_name:
             if type(existing) is type(platform):
@@ -103,18 +106,21 @@ def get_platform_by_name(platform_name: str) -> HardwarePlatformPlugin | None:
     return None
 
 
-def resolve_platform(host_hardware: HostHardware) -> HardwarePlatformPlugin | None:
+def resolve_platform(host_hardware: HostHardware, *, strict: bool = False) -> HardwarePlatformPlugin | None:
     """Return the first platform that claims *host_hardware*, or ``None``.
 
     Order is determined by registration order — built-ins are
     registered most-specific first so the DGX Spark plugin pre-empts
-    the generic NVIDIA plugin on GB10 hosts.
+    the generic NVIDIA plugin on GB10 hosts. With ``strict=True``, matcher
+    errors propagate instead of falling through to a less specific platform.
     """
     for p in _REGISTRY:
         try:
             if p.matches(host_hardware):
                 return p
         except Exception as e:
+            if strict:
+                raise
             logger.warning("Platform %r matcher raised: %s", p.platform_name, e)
     return None
 

@@ -118,11 +118,11 @@ def run_setup_steps(
             per_host = outcomes[step.key] = {}
             candidates = []
             for host, entry in entries.items():
-                if step.key in {"ssh_mesh", "cx7"}:
-                    outcome = SetupActionResult(host, SKIP, "requires the frontend topology adapter")
-                elif not entry.selected or entry.blocked_by:
+                if not entry.selected or entry.blocked_by:
                     detail = entry.reason or "blocked by " + ", ".join(entry.blocked_by)
                     outcome = SetupActionResult(host, FAIL if only_steps is not None else SKIP, detail)
+                elif step.key in {"ssh_mesh", "cx7"}:
+                    outcome = SetupActionResult(host, SKIP, "requires the frontend topology adapter")
                 elif entry.needs_action:
                     if not action_context.dry_run:
                         candidates.append(host)

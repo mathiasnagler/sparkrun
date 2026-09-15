@@ -405,7 +405,10 @@ guards; the shared wizard applies its hardware and executor prerequisites.
 
 `setup wizard` and `setup check` use the shared `core.setup_steps` plan. Each host
 is probed through the hardware integration API, then its executor is resolved
-from that hardware and cluster/config settings. Wizard runs persist successfully
+from that hardware and cluster/config settings. The matching hardware platform
+explicitly names the core/plugin steps supported by that executor; application
+features can narrow this selection but cannot add unsupported steps. Optional
+probes run only after that plan is selected. Wizard runs persist successfully
 identified hardware in the cluster. Unknown or unreachable targets cannot receive
 host actions. Recipe-specific executor overrides still need launch-time checks.
 
@@ -426,7 +429,9 @@ feature_defaults={
 The remaining built-in step IDs are `docker`, `docker_group`, `nvidia_container`,
 `host_ipc`, and `ssh_mesh`. Hardware identification is mandatory. Disabled and
 inapplicable steps do not count as readiness gaps; failed or disabled prerequisites
-block dependent actions. Explicit enabling never bypasses hardware applicability.
+block dependent actions. Explicit enabling never bypasses hardware-plan membership
+or applicability. Hardware integrations own support; application profiles own
+preferences. See [SETUP_STEPS.md](SETUP_STEPS.md) for the opt-in plan declaration.
 
 The wizard does not install the controller CLI: use `setup install` explicitly.
 `--dry-run` does not probe hosts, apply actions, install software, or save cluster

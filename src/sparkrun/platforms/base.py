@@ -22,6 +22,7 @@ from logging import Logger
 from scitrera_app_framework import Plugin, Variables
 
 from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+from sparkrun.core.setup_plans import SetupPlan
 from sparkrun.orchestration.collectives import CollectiveBackend
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,9 @@ class HardwarePlatformPlugin(Plugin):
 
     vendors: frozenset[str] = frozenset()
     """Accelerator vendors this platform serves (``"nvidia"`` / ``"amd"`` / ``"intel"``)."""
+
+    setup_plans: tuple[SetupPlan, ...] = ()
+    """Explicit setup steps per executor. Empty means discovery only."""
 
     # --- SAF Plugin interface ---
 

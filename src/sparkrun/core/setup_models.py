@@ -70,9 +70,11 @@ class CheckContext:
         missing or stale spec is not a gap for it.
 
         Fails **safe**: an unresolvable mode is treated as requiring CDI, which
-        is the historical behavior (a missing spec is a hard failure).
+        is the historical behavior (a missing spec is a hard failure). Unrecognized
+        modes also require CDI, matching Docker's fallback.
         """
-        return self.gpu_access_modes.get(host, GPU_ACCESS_CDI) == GPU_ACCESS_CDI
+        # Match Docker's case/whitespace normalization and unknown-mode fallback.
+        return (self.gpu_access_modes.get(host) or GPU_ACCESS_CDI).strip().lower() != "gpus"
 
     def shares_host_ipc(self, host: str) -> bool:
         """Would a launch on *host* put the workload on the host IPC namespace?

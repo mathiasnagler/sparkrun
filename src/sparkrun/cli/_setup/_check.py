@@ -93,7 +93,13 @@ def register(setup_group) -> None:
             json_hosts[host] = {
                 "reachable": True,
                 "steps": [
-                    {"key": p.step.key, "selected": p.selected, "reason": p.reason, "blocked_by": list(p.blocked_by)}
+                    {
+                        "key": p.step.key,
+                        "selected": p.selected,
+                        "platform": p.platform,
+                        "reason": p.reason,
+                        "blocked_by": list(p.blocked_by),
+                    }
                     for p in build_setup_plan(state, check_ctx)
                 ],
                 "checks": [{"key": i.key, "label": i.label, "status": i.status, "detail": i.detail, "guidance": i.guidance} for i in items],

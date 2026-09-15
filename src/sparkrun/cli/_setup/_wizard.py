@@ -256,6 +256,11 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 pass
 
         if not host_list:
+            # Identify the control host before offering hardware-specific discovery.
+            if cx7_enabled and not dry_run:
+                from sparkrun.core.setup_probe import local_setup_step_supported
+
+                cx7_enabled = local_setup_step_supported("cx7", config)
             # Step 1a: Local CX7 detection
             local_cx7 = None
             if cx7_enabled and not dry_run:

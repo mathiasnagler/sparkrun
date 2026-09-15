@@ -26,10 +26,6 @@ def _int_fact(facts: dict[str, str], key: str) -> int:
 #: runs it.
 _CDI_REGENERATE = "sparkrun setup wizard%s (NVIDIA CDI step) — or: sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml"
 
-#: Why a CDI finding is reported at SKIP rather than FAIL/WARN. Shown verbatim
-#: in the detail so the reader knows it is a mode question, not a broken host.
-_CDI_UNUSED = "this cluster requests GPUs with --gpus (executor_config.gpu_access_mode); regenerate before switching to cdi"
-
 
 def _as_int(value: str | None) -> int:
     try:
@@ -101,19 +97,14 @@ def _check_nvidia_ctk(state: HostState, ctx: CheckContext) -> CheckItem:
     )
 
 
-def _check_cdi_spec(state: HostState, ctx: CheckContext) -> CheckItem:
+def _check_cdi_spec(state: HostState, ctx: CheckContext) -> CheckItem | None:
+    if not ctx.cdi_required(state.host):
+        return None
     facts = state.facts
     if not state.has_nvidia:
         return CheckItem("cdi_spec", "NVIDIA CDI spec (/etc/cdi/nvidia.yaml)", SKIP, "no NVIDIA GPU detected")
     if not _truthy(facts, "CHECK_NVIDIA_CTK"):
         return CheckItem("cdi_spec", "NVIDIA CDI spec (/etc/cdi/nvidia.yaml)", SKIP, "requires nvidia-ctk (see above)")
-
-    # Severity is conditional on how this cluster actually asks for GPUs. With
-    # ``gpu_access_mode: gpus`` (the DGX Spark default) nothing reads the CDI
-    # spec, so its absence is not a gap — reporting FAIL would send the user to
-    # fix something that cannot affect their launches. The finding is still
-    # surfaced, at SKIP, because it becomes real the moment they switch modes.
-    required = ctx.cdi_required(state.host)
 
     missing = _int_fact(facts, "CHECK_CDI_PATHS_MISSING")
     checked = _int_fact(facts, "CHECK_CDI_PATHS_CHECKED")
@@ -128,19 +119,15 @@ def _check_cdi_spec(state: HostState, ctx: CheckContext) -> CheckItem:
         if not stale:
             return CheckItem("cdi_spec", "NVIDIA CDI spec (/etc/cdi/nvidia.yaml)", OK)
         detail = "%d of %d referenced paths missing — spec looks stale (driver upgraded?)" % (missing, checked)
-        if required:
-            return CheckItem("cdi_spec", "NVIDIA CDI spec (/etc/cdi/nvidia.yaml)", WARN, detail, _CDI_REGENERATE % ctx.cluster_flag)
-        return CheckItem("cdi_spec", "NVIDIA CDI spec (/etc/cdi/nvidia.yaml)", SKIP, "%s — %s" % (detail, _CDI_UNUSED))
+        return CheckItem("cdi_spec", "NVIDIA CDI spec (/etc/cdi/nvidia.yaml)", WARN, detail, _CDI_REGENERATE % ctx.cluster_flag)
 
-    if required:
-        return CheckItem(
-            "cdi_spec",
-            "NVIDIA CDI spec (/etc/cdi/nvidia.yaml)",
-            FAIL,
-            "/etc/cdi/nvidia.yaml missing or empty",
-            _CDI_REGENERATE % ctx.cluster_flag,
-        )
-    return CheckItem("cdi_spec", "NVIDIA CDI spec (/etc/cdi/nvidia.yaml)", SKIP, "not needed — %s" % _CDI_UNUSED)
+    return CheckItem(
+        "cdi_spec",
+        "NVIDIA CDI spec (/etc/cdi/nvidia.yaml)",
+        FAIL,
+        "/etc/cdi/nvidia.yaml missing or empty",
+        _CDI_REGENERATE % ctx.cluster_flag,
+    )
 
 
 #: systemd never reaps IPC for UIDs at or below this — ``SYSTEM_UID_MAX``, whose

@@ -273,18 +273,6 @@ def remote_cache_path(suffix: str = "", *, home: str = "$HOME") -> str:
     return root + ("/" + suffix.lstrip("/") if suffix else "")
 
 
-def require_legacy_host_setup(operation: str) -> None:
-    """Spark-specific shared host changes need an application profile integration."""
-    if get_application_profile().id != "sparkrun":
-        raise RuntimeError(
-            "Host setup operation %r is not supported by %s; use a qualified platform integration"
-            % (
-                operation,
-                get_application_profile().id,
-            )
-        )
-
-
 def render_identity_text(text: str) -> str:
     """Render explicit product tokens in human-facing command text."""
     profile = get_application_profile()

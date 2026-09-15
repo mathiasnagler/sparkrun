@@ -5516,7 +5516,23 @@ class TestSetupEarlyoom:
         from sparkrun.core.cluster_manager import ClusterManager
 
         mgr = ClusterManager(config_root)
-        mgr.create("oom-cluster", ["10.0.0.1", "10.0.0.2"], user="dgxuser")
+        from sparkrun.core.hardware import default_dgx_spark_hardware
+        from sparkrun.core.setup_models import HostState, CheckContext
+        from test_setup_steps import FACTS
+
+        hosts = ["10.0.0.1", "10.0.0.2"]
+        inventory = {host: default_dgx_spark_hardware() for host in hosts}
+        mgr.create("oom-cluster", hosts, user="dgxuser", hosts_hardware=inventory)
+
+        def discover(targets, **kwargs):
+            assert kwargs["discovery_only"]
+            states = {host: HostState(host, facts=dict(FACTS), hardware=inventory[host]) for host in targets}
+            context = CheckContext(
+                "oom-cluster", True, config=kwargs["config"], executor_names={host: "docker" for host in targets}, strict=True
+            )
+            return states, context
+
+        monkeypatch.setattr("sparkrun.core.setup_probe.probe_setup_hosts", discover)
         return config_root
 
     def test_earlyoom_help(self, runner):

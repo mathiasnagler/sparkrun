@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from unittest import mock
+import json
+import shlex
 
 import pytest
 from click.testing import CliRunner
@@ -18,6 +20,7 @@ from sparkrun.cli._setup._check import (
     evaluate_host,
 )
 from sparkrun.core.cluster_manager import ClusterManager
+from sparkrun.core.hardware import default_dgx_spark_hardware
 from sparkrun.orchestration.networking import CX7HostDetection, CX7Interface, CX7Persistence
 from sparkrun.orchestration.ssh import RemoteResult
 
@@ -68,6 +71,7 @@ _FACTS_ALL_GOOD = {
     "CHECK_MESH_TOTAL": "0",
     "CHECK_MESH_OK": "0",
     "CHECK_COMPLETE": "1",
+    "CHECK_DISCOVERY_COMPLETE": "1",
 }
 
 
@@ -80,8 +84,12 @@ def _facts_kv(facts: dict[str, str]) -> str:
     return hardware + "\n".join("%s=%s" % (k, v) for k, v in facts.items()) + "\n"
 
 
+def _context(cluster_name=None, multi_host=False, **kwargs):
+    return CheckContext(cluster_name, multi_host, executor_names={"10.0.0.1": "docker"}, **kwargs)
+
+
 def _state(facts: dict[str, str], cx7=None, host: str = "10.0.0.1") -> HostState:
-    return HostState(host=host, facts=facts, cx7=cx7)
+    return HostState(host=host, facts=facts, cx7=cx7, hardware=default_dgx_spark_hardware())
 
 
 def _cx7_detection(
@@ -124,7 +132,7 @@ def _status(items, key):
 
 
 def test_evaluate_all_good_single_host():
-    ctx = CheckContext(cluster_name="mylab", multi_host=False)
+    ctx = _context(cluster_name="mylab", multi_host=False)
     items = evaluate_host(_state(_FACTS_ALL_GOOD), ctx)
     assert _status(items, "docker_installed") == OK
     assert _status(items, "docker_group") == OK
@@ -139,7 +147,7 @@ def test_evaluate_all_good_single_host():
 
 def test_evaluate_missing_cdi_is_critical():
     facts = dict(_FACTS_ALL_GOOD, CHECK_CDI_SPEC="0")
-    items = evaluate_host(_state(facts), CheckContext("mylab", False))
+    items = evaluate_host(_state(facts), _context("mylab", False))
     cdi = next(i for i in items if i.key == "cdi_spec")
     assert cdi.status == FAIL
     assert "nvidia-ctk cdi generate" in cdi.guidance
@@ -148,7 +156,11 @@ def test_evaluate_missing_cdi_is_critical():
 
 def test_evaluate_nvidia_checks_skipped_without_gpu():
     facts = dict(_FACTS_ALL_GOOD, CHECK_GPU_PRESENT="0", CHECK_NVIDIA_CTK="0", CHECK_CDI_SPEC="0")
-    items = evaluate_host(_state(facts), CheckContext(None, False))
+    from sparkrun.core.setup_checks import _check_nvidia_ctk, _check_cdi_spec
+
+    # Exercise the checks in isolation: an unidentified host now has no plan.
+    state = HostState("10.0.0.1", facts=facts)
+    items = [_check_nvidia_ctk(state, _context()), _check_cdi_spec(state, _context())]
     # No GPU → toolkit + CDI are SKIP, not FAIL.
     assert _status(items, "nvidia_ctk") == SKIP
     assert _status(items, "cdi_spec") == SKIP
@@ -156,7 +168,7 @@ def test_evaluate_nvidia_checks_skipped_without_gpu():
 
 def test_evaluate_docker_group_and_earlyoom_advisories():
     facts = dict(_FACTS_ALL_GOOD, CHECK_DOCKER_GROUP="0", CHECK_DOCKER_USABLE="0", CHECK_EARLYOOM_ACTIVE="0", CHECK_EARLYOOM_INSTALLED="0")
-    items = evaluate_host(_state(facts), CheckContext("mylab", False))
+    items = evaluate_host(_state(facts), _context("mylab", False))
     assert _status(items, "docker_group") == WARN
     assert _status(items, "earlyoom") == WARN
     # The access problem is a critical gap; group membership is the remedy.
@@ -165,13 +177,13 @@ def test_evaluate_docker_group_and_earlyoom_advisories():
 
 def test_evaluate_sudoers_unknown_is_skip():
     facts = dict(_FACTS_ALL_GOOD, CHECK_SUDOERS_CHOWN="unknown", CHECK_SUDOERS_DROPCACHES="unknown")
-    items = evaluate_host(_state(facts), CheckContext(None, False))
+    items = evaluate_host(_state(facts), _context(None, False))
     assert _status(items, "sudoers") == SKIP
 
 
 def test_evaluate_multi_host_mesh_warns_on_unreachable_peer():
     facts = dict(_FACTS_ALL_GOOD, CHECK_MESH_TOTAL="2", CHECK_MESH_OK="1")
-    items = evaluate_host(_state(facts), CheckContext("mylab", True))
+    items = evaluate_host(_state(facts), _context("mylab", True))
     mesh = next(i for i in items if i.key == "ssh_mesh")
     assert mesh.status == WARN
     assert "1/2" in mesh.detail
@@ -180,14 +192,14 @@ def test_evaluate_multi_host_mesh_warns_on_unreachable_peer():
 def test_evaluate_cx7_ok_when_interfaces_up_and_persistent():
     # Two CX7 interfaces up with IPs + a persistent netplan → OK.
     cx7 = _cx7_detection(states=["up", "up"], ips=["192.168.10.1", "192.168.11.1"], netplan=True)
-    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), CheckContext("mylab", True))
+    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), _context("mylab", True))
     assert _status(items, "cx7") == OK
 
 
 def test_evaluate_cx7_warns_when_interface_down():
     # One interface up, one down → effective-state gap (not a mere file check).
     cx7 = _cx7_detection(states=["up", "down"], ips=["192.168.10.1", ""], netplan=True)
-    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), CheckContext("mylab", True))
+    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), _context("mylab", True))
     cx7_item = next(i for i in items if i.key == "cx7")
     assert cx7_item.status == WARN
     assert "not ready" in cx7_item.detail
@@ -196,7 +208,7 @@ def test_evaluate_cx7_warns_when_interface_down():
 def test_evaluate_cx7_warns_when_nothing_persists_the_address():
     # Up with IPs but no config source declares them → won't survive reboot.
     cx7 = _cx7_detection(states=["up"], ips=["192.168.10.1"], netplan=False, persistence=CX7Persistence.EPHEMERAL)
-    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), CheckContext("mylab", True))
+    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), _context("mylab", True))
     cx7_item = next(i for i in items if i.key == "cx7")
     assert cx7_item.status == WARN
     assert "won't survive reboot" in cx7_item.detail
@@ -213,7 +225,7 @@ def test_evaluate_cx7_ok_when_persisted_outside_sparkrun_netplan():
         source="networkmanager",
         detail="cx7-a",
     )
-    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), CheckContext("mylab", True))
+    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), _context("mylab", True))
     cx7_item = next(i for i in items if i.key == "cx7")
     assert cx7_item.status == OK
     assert "networkmanager (cx7-a)" in cx7_item.detail
@@ -222,7 +234,7 @@ def test_evaluate_cx7_ok_when_persisted_outside_sparkrun_netplan():
 def test_evaluate_cx7_unverifiable_persistence_is_visible_but_not_a_warning():
     # No probe available on the host: "couldn't tell" must not read as "gone".
     cx7 = _cx7_detection(states=["up"], ips=["192.168.10.1"], netplan=False, persistence=CX7Persistence.UNKNOWN)
-    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), CheckContext("mylab", True))
+    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), _context("mylab", True))
     cx7_item = next(i for i in items if i.key == "cx7")
     assert cx7_item.status == OK
     assert "could not verify persistence" in cx7_item.detail
@@ -231,7 +243,7 @@ def test_evaluate_cx7_unverifiable_persistence_is_visible_but_not_a_warning():
 def test_evaluate_cx7_warns_on_dhcp_leased_fabric_address():
     # Persistent, but not pinned — NCCL peer addressing needs stable IPs.
     cx7 = _cx7_detection(states=["up"], ips=["192.168.10.1"], dhcp=True)
-    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), CheckContext("mylab", True))
+    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), _context("mylab", True))
     cx7_item = next(i for i in items if i.key == "cx7")
     assert cx7_item.status == WARN
     assert "DHCP" in cx7_item.detail
@@ -240,19 +252,19 @@ def test_evaluate_cx7_warns_on_dhcp_leased_fabric_address():
 def test_evaluate_cx7_skips_without_hardware():
     # No CX7 interfaces detected → SKIP (not every cluster has CX7).
     cx7 = CX7HostDetection(host="h", interfaces=[], detected=False)
-    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), CheckContext("mylab", True))
+    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), _context("mylab", True))
     assert _status(items, "cx7") == SKIP
 
 
 def test_evaluate_cx7_skips_when_detection_unavailable():
     # Detection couldn't run (None) → SKIP, never a false gap.
-    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=None), CheckContext("mylab", True))
+    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=None), _context("mylab", True))
     assert _status(items, "cx7") == SKIP
 
 
 def test_evaluate_docker_not_installed_fails():
     facts = dict(_FACTS_ALL_GOOD, CHECK_DOCKER_INSTALLED="0", CHECK_DOCKER_USABLE="0")
-    items = evaluate_host(_state(facts), CheckContext(None, False))
+    items = evaluate_host(_state(facts), _context(None, False))
     assert _status(items, "docker_installed") == FAIL
     # docker_usable omitted when docker isn't installed.
     assert all(i.key != "docker_usable" for i in items)
@@ -296,7 +308,15 @@ def test_check_reports_critical_gap_exits_one(runner, v, patched_cluster_mgr):
     assert "sparkrun setup docker-group" in result.output
 
 
-def test_check_missing_cdi_is_not_a_gap_when_cluster_uses_gpus_mode(runner, v, patched_cluster_mgr):
+@pytest.mark.parametrize(
+    "cdi_facts",
+    [
+        {"CHECK_CDI_SPEC": "0"},
+        {"CHECK_CDI_SPEC": "1", "CHECK_CDI_PATHS_CHECKED": "53", "CHECK_CDI_PATHS_MISSING": "27"},
+        {"CHECK_CDI_SPEC": "1", "CHECK_CDI_PATHS_CHECKED": "53", "CHECK_CDI_PATHS_MISSING": "0"},
+    ],
+)
+def test_check_omits_cdi_when_cluster_uses_gpus_mode(runner, v, patched_cluster_mgr, cdi_facts):
     """A DGX Spark cluster requests GPUs with --gpus, so no CDI spec is needed.
 
     The target probe identifies a DGX Spark, whose platform tier pins
@@ -304,26 +324,49 @@ def test_check_missing_cdi_is_not_a_gap_when_cluster_uses_gpus_mode(runner, v, p
     """
     patched_cluster_mgr.create("mylab", ["10.0.0.1"])
 
-    facts = dict(_FACTS_ALL_GOOD, CHECK_CDI_SPEC="0")
+    facts = dict(_FACTS_ALL_GOOD, **cdi_facts)
     with mock.patch("sparkrun.orchestration.ssh.run_remote_script") as mock_run:
         mock_run.return_value = RemoteResult("10.0.0.1", 0, _facts_kv(facts), "")
         result = runner.invoke(main, ["setup", "check", "--cluster", "mylab"])
+        as_json = runner.invoke(main, ["setup", "check", "--cluster", "mylab", "--json"])
 
     assert result.exit_code == 0
     assert "No setup gaps found" in result.output
 
+    assert "NVIDIA CDI spec" not in result.output
+    assert as_json.exit_code == 0
+    report = json.loads(as_json.output)
+    host = report["results"]["10.0.0.1"]
+    assert all(item["key"] != "cdi_spec" for item in host["checks"])
+    entry = next(step for step in host["steps"] if step["key"] == "nvidia_cdi")
+    assert not entry["selected"]
+    assert "does not require CDI" in entry["reason"]
+    readiness = [call.args[1] for call in mock_run.call_args_list if "SETUP_STEPS=" in call.args[1]]
+    assert len(readiness) == 2
+    for script in readiness:
+        selected = next(line.partition("=")[2] for line in script.splitlines() if line.startswith("SETUP_STEPS="))
+        assert "nvidia_cdi" not in shlex.split(selected)[0].split()
 
-def test_check_missing_cdi_is_critical_when_cluster_pins_cdi_mode(runner, v, patched_cluster_mgr):
-    """The same host fails the check once the cluster opts back into CDI."""
+
+@pytest.mark.parametrize(
+    "facts_override, marker, exit_code",
+    [
+        ({"CHECK_CDI_SPEC": "0"}, "[FAIL]", 1),
+        ({"CHECK_CDI_SPEC": "1", "CHECK_CDI_PATHS_CHECKED": "53", "CHECK_CDI_PATHS_MISSING": "27"}, "[WARN]", 0),
+    ],
+)
+def test_check_reports_cdi_gaps_when_cluster_pins_cdi_mode(runner, v, patched_cluster_mgr, facts_override, marker, exit_code):
+    """The same host reports missing/stale specs once the cluster uses CDI."""
     patched_cluster_mgr.create("mylab", ["10.0.0.1"], executor_config={"gpu_access_mode": "cdi"})
 
-    facts = dict(_FACTS_ALL_GOOD, CHECK_CDI_SPEC="0")
+    facts = dict(_FACTS_ALL_GOOD, **facts_override)
     with mock.patch("sparkrun.orchestration.ssh.run_remote_script") as mock_run:
         mock_run.return_value = RemoteResult("10.0.0.1", 0, _facts_kv(facts), "")
         result = runner.invoke(main, ["setup", "check", "--cluster", "mylab"])
 
-    assert result.exit_code == 1
-    assert "critical gap" in result.output
+    assert result.exit_code == exit_code
+    assert marker in result.output
+    assert "NVIDIA CDI spec" in result.output
     assert "nvidia-ctk cdi generate" in result.output
 
 
@@ -394,7 +437,7 @@ _HOST = "10.0.0.1"
 
 
 def _ipc_ctx(exposure: str | None = "host") -> CheckContext:
-    return CheckContext(
+    return _context(
         cluster_name="mylab",
         multi_host=False,
         ipc_exposure={_HOST: exposure} if exposure is not None else {},

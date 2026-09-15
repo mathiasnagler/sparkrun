@@ -160,9 +160,9 @@ def load_and_register_plugin(
             if type(api_version) is not int or api_version != PLUGIN_API_VERSION:
                 raise PluginCompatibilityError(module.__name__, api_version)
             _register_plugin_module(module, v, tier=tier)
-            from sparkrun.core.setup_steps import all_setup_steps
+            from sparkrun.core.setup_steps import validate_setup_plans
 
-            all_setup_steps()  # Validate forward references after the whole module registered.
+            validate_setup_plans()  # Validate forward references after the whole module registered.
     except BaseException as error:
         if source is not None:
             _LOAD_FAILURES[source] = format_plugin_failure(error)

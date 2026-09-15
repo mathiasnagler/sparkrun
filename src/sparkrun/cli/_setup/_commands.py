@@ -1207,10 +1207,6 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
 
       {app_command} setup cx7 --cluster two --port 1              # same, by port index
     """
-    from sparkrun.core.application_profile import require_legacy_host_setup
-
-    require_legacy_host_setup("setup_cx7")
-
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.networking import (
         CX7_NETPLAN_FILE,
@@ -1247,6 +1243,17 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
 
     config = SparkrunConfig()
     host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
+    from ._step_runner import require_setup_step_targets
+
+    require_setup_step_targets(
+        "cx7",
+        host_list,
+        ssh_kwargs,
+        config,
+        cluster_name=cluster_name,
+        explicit_hosts=bool(hosts or hosts_file),
+        dry_run=dry_run,
+    )
 
     # Step 1: Detect CX7 interfaces (with MACs)
     detections = detect_cx7_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
@@ -2000,15 +2007,22 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
 
       {app_command} setup earlyoom --cluster mylab --dry-run
     """
-    from sparkrun.core.application_profile import require_legacy_host_setup
-
-    require_legacy_host_setup("setup_earlyoom")
-
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host
 
     config = SparkrunConfig()
     host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
+    from ._step_runner import require_setup_step_targets
+
+    require_setup_step_targets(
+        "earlyoom",
+        host_list,
+        ssh_kwargs,
+        config,
+        cluster_name=cluster_name,
+        explicit_hosts=bool(hosts or hosts_file),
+        dry_run=dry_run,
+    )
 
     # Build prefer/avoid pattern lists
     prefer = list(EARLYOOM_PREFER_PATTERNS)

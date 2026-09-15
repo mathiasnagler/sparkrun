@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sparkrun.core.setup_actions import SetupActionContext, SetupActionResult
 
-from sparkrun.core.setup_models import CheckContext, CheckItem, HostState, FAIL, OK, SKIP
+from sparkrun.core.setup_models import CheckContext, CheckItem, HostState, FAIL, OK, SKIP, WARN
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,7 @@ class PlannedStep:
     reason: str = ""
     checks: list[CheckItem] = field(default_factory=list)
     blocked_by: tuple[str, ...] = ()
+    platform: str | None = None
 
     @property
     def needs_action(self) -> bool:
@@ -117,15 +118,17 @@ def _host_executor(state, ctx):
         return "hardware has not been identified"
     if ctx.strict and state.host not in ctx.executor_names:
         return "executor could not be resolved"
-    if ctx.executor_names.get(state.host, "docker") not in {"docker", "local"}:
+    if ctx.executor_names.get(state.host) not in {"docker", "local"}:
         return "executor manages its own hosts"
     return ""
 
 
 def _docker(state, ctx):
-    return _host_executor(state, ctx) or (
-        "not using the Docker executor" if ctx.executor_names.get(state.host, "docker") != "docker" else ""
-    )
+    return _host_executor(state, ctx) or ("not using the Docker executor" if ctx.executor_names.get(state.host) != "docker" else "")
+
+
+def _cdi(state, ctx):
+    return _docker(state, ctx) or ("executor GPU access mode does not require CDI" if not ctx.cdi_required(state.host) else "")
 
 
 def _earlyoom(state, ctx):
@@ -171,18 +174,44 @@ def _executor_check(state, ctx):
     )
 
 
+def _setup_plan_check(state, ctx):
+    if not ctx.strict or not state.reachable or state.hardware is None or state.host not in ctx.executor_names:
+        return None
+    from sparkrun.platforms import resolve_platform
+
+    try:
+        platform = resolve_platform(state.hardware, strict=True)
+    except Exception:
+        return CheckItem("setup_plan", "Hardware setup plan", FAIL, "hardware platform could not be resolved")
+    executor = ctx.executor_names[state.host]
+    declared = next((plan for plan in platform.setup_plans if plan.executor == executor), None) if platform else None
+    if declared is None:
+        return CheckItem(
+            "setup_plan",
+            "Hardware setup plan",
+            WARN,
+            "no setup plan for this hardware/executor; discovery only",
+            "Select a hardware integration with a setup plan for the configured executor",
+        )
+    if state.facts.get("CHECK_OS") not in declared.operating_systems:
+        return CheckItem(
+            "setup_plan", "Hardware setup plan", WARN, "setup plan requires operating system: " + ", ".join(declared.operating_systems)
+        )
+    return CheckItem("setup_plan", "Hardware setup plan", OK, "%s/%s" % (platform.platform_name, executor))
+
+
 def builtin_steps() -> tuple[SetupStep, ...]:
     from sparkrun.core import setup_checks as c
     from sparkrun.core import setup_actions as a
 
     return (
-        SetupStep("hardware", "Target hardware", (_hardware_check, _executor_check), order=0),
+        SetupStep("hardware", "Target hardware", (_hardware_check, _executor_check, _setup_plan_check), order=0),
         SetupStep("docker", "Docker installed", (c._check_docker_installed,), _docker, order=10),
         SetupStep(
             "docker_group", "Docker access", (c._check_docker_group, c._check_docker_usable), _docker, a.docker_group, ("docker",), order=20
         ),
         SetupStep("nvidia_container", "NVIDIA Container Toolkit", (c._check_nvidia_ctk,), _docker, order=30),
-        SetupStep("nvidia_cdi", "NVIDIA CDI spec", (c._check_cdi_spec,), _docker, a.nvidia_cdi, ("docker", "nvidia_container"), order=40),
+        SetupStep("nvidia_cdi", "NVIDIA CDI spec", (c._check_cdi_spec,), _cdi, a.nvidia_cdi, ("docker", "nvidia_container"), order=40),
         SetupStep("host_ipc", "Host IPC", (c._check_host_ipc,), _host_executor, order=50),
         SetupStep("earlyoom", "earlyoom OOM protection", (c._check_earlyoom,), _earlyoom, a.earlyoom, order=60),
         SetupStep("sudoers", "Scoped sudoers rules", (c._check_sudoers,), _host_executor, a.sudoers, order=70),
@@ -221,21 +250,85 @@ def _order_setup_steps(steps: dict[str, SetupStep]) -> tuple[SetupStep, ...]:
     return tuple(ordered)
 
 
-def build_setup_plan(state: HostState, ctx: CheckContext) -> list[PlannedStep]:
-    from sparkrun.core.features import is_feature_enabled
-    from sparkrun.core.application_profile import get_application_profile
+def validate_setup_plans() -> None:
+    """Validate step graphs and owned plans after a complete plugin registration."""
+    from sparkrun.platforms import iter_platforms
+    from sparkrun.core.setup_plans import validate_platform_setup_plans
 
-    plan: dict[str, PlannedStep] = {}
-    for step in all_setup_steps():
-        enabled = step.key == "hardware" or is_feature_enabled(step.feature_flag or "setup.steps." + step.key, config=ctx.config)
-        reason = "disabled by application or user policy" if not enabled else ""
-        if not reason and not state.reachable:
-            reason = "host is unreachable" if step.key != "hardware" else ""
+    steps = {s.key: s for s in all_setup_steps()}
+    for platform in iter_platforms():
+        validate_platform_setup_plans(platform, steps)
+
+
+def setup_selection(state: HostState, ctx: CheckContext) -> tuple[str | None, dict[str, str]]:
+    """Select probes/checks/actions without using readiness results.
+
+    Empty reasons denote eligible steps. Feature policy and constraints can
+    narrow a platform's selection, but cannot add steps or their prerequisites.
+    A failed or absent platform match never falls back to implicit host actions.
+    """
+    from sparkrun.core.features import is_feature_enabled
+    from sparkrun.core.setup_plans import validate_platform_setup_plans
+    from sparkrun.platforms import resolve_platform
+
+    steps = all_setup_steps()
+    platform = None
+    approved = ()
+    if not state.reachable:
+        unavailable = "host is unreachable"
+    elif state.hardware is None:
+        unavailable = "hardware has not been identified"
+    else:
+        try:
+            platform = resolve_platform(state.hardware, strict=True)
+        except Exception:
+            unavailable = "hardware platform could not be resolved"
+        else:
+            executor = ctx.executor_names.get(state.host)
+            unavailable = "no setup plan for hardware platform and executor"
+            if platform is not None:
+                validate_platform_setup_plans(platform, {s.key: s for s in steps})
+                declared = next((p for p in platform.setup_plans if p.executor == executor), None)
+                unavailable = "not included in %s/%s setup plan" % (platform.platform_name, executor or "unresolved")
+                if declared is not None:
+                    if ctx.strict and state.facts.get("CHECK_OS") not in declared.operating_systems:
+                        unavailable = "setup plan requires operating system: " + ", ".join(declared.operating_systems)
+                    else:
+                        approved = declared.steps
+    reasons = {}
+    for step in steps:
+        if step.key == "hardware":
+            reasons[step.key] = ""
+            continue
+        reason = unavailable if step.key not in approved else ""
+        if not reason and not is_feature_enabled(step.feature_flag or "setup.steps." + step.key, config=ctx.config):
+            reason = "disabled by application or user policy"
         if not reason:
             reason = setup_constraint_reason(step.key, state, ctx)
         if not reason and step.applicability:
             reason = step.applicability(state, ctx)
-        checks = [item for check in step.checks if (item := check(state, ctx)) is not None] if not reason else []
+        missing = [key for key in step.requires if reasons[key]]
+        if not reason and missing:
+            reason = "prerequisites unavailable: " + ", ".join(missing)
+        reasons[step.key] = reason
+    return platform.platform_name if platform else None, reasons
+
+
+def setup_step_reason(key: str, state: HostState, ctx: CheckContext) -> str:
+    """Return selection denial at a direct action or topology adapter boundary."""
+    _, reasons = setup_selection(state, ctx)
+    if key not in reasons:
+        raise ValueError("Unknown setup step: %s" % key)
+    return reasons[key]
+
+
+def build_setup_plan(state: HostState, ctx: CheckContext) -> list[PlannedStep]:
+    from sparkrun.core.application_profile import get_application_profile
+
+    platform, reasons = setup_selection(state, ctx)
+    plan: dict[str, PlannedStep] = {}
+    for step in all_setup_steps():
+        reason = reasons[step.key]
         blocked = tuple(
             key
             for key in step.requires
@@ -243,10 +336,10 @@ def build_setup_plan(state: HostState, ctx: CheckContext) -> list[PlannedStep]:
         )
         if blocked and not reason:
             reason = "prerequisites unavailable: " + ", ".join(blocked)
-            checks = []
+        checks = [item for check in step.checks if (item := check(state, ctx)) is not None] if not reason else []
         command = get_application_profile().command
         checks = [replace(item, guidance=item.guidance.replace("sparkrun ", command + " ")) for item in checks]
-        plan[step.key] = PlannedStep(step, state.host, not reason, reason, checks, blocked)
+        plan[step.key] = PlannedStep(step, state.host, not reason, reason, checks, blocked, platform)
     return list(plan.values())
 
 
@@ -277,12 +370,7 @@ def apply_setup_step(key: str, state: HostState, ctx: CheckContext, action_conte
     return validate_action_result(apply(state, ctx, action_context), state.host)
 
 
-def setup_probe_script(config=None) -> str:
-    """Only enabled plugin steps contribute read-only shell probes."""
-    from sparkrun.core.features import is_feature_enabled
-
-    return "\n".join(
-        "(\n%s\n)" % s.probe_script
-        for s in _STEPS.values()
-        if s.probe_script and s.feature_flag is not None and is_feature_enabled(s.feature_flag, config=config)
-    )
+def setup_probe_script(state: HostState, ctx: CheckContext) -> str:
+    """Only steps selected for this host contribute read-only shell probes."""
+    _, reasons = setup_selection(state, ctx)
+    return "\n".join("(\n%s\n)" % s.probe_script for s in all_setup_steps() if s.probe_script and not reasons[s.key])
