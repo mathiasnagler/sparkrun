@@ -427,6 +427,16 @@ with `declared_hash` added for declared inputs. See the
 [provenance contract](BENCHMARK_API.md#effective-measurement-provenance).
 
 
+### Observed names during eviction
+
+`api.stop(..., discovered=snapshot)` accepts the `ClusterStatus` returned by
+`api.status()`. Eviction passes its existing snapshot so a surviving `node_1`
+is stopped by its observed name, even when only one host remains. Container
+names stay scoped to their observed hosts and executor; recorded destination
+coverage must match the teardown target. Missing names or mismatched coverage
+fail without deleting job metadata. Native controller teardown retains its
+executor-owned lifecycle.
+
 ### Operation transport and preview results
 
 `api.status()`, `status_report()`, and `stop_all()` now honor application SSH

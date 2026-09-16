@@ -803,7 +803,9 @@ def _evict_superseded_deployments(
             ", ".join(occupied[cid]),
         )
         try:
-            result = api.stop(cluster_id=cid, hosts=occupied[cid], cluster=cluster_def, sctx=sctx)
+            # The host subset may contain only node_3 of a former four-node
+            # job. Preserve observed names rather than renumbering survivors.
+            result = api.stop(cluster_id=cid, hosts=occupied[cid], cluster=cluster_def, discovered=status, sctx=sctx)
         except Exception as e:
             if strict:
                 raise RuntimeError("could not stop earlier deployment %s: %s" % (cid, e)) from e

@@ -1,0 +1,215 @@
+"""Eviction must tear down observed ranks through the real stop path."""
+
+from dataclasses import replace
+from types import SimpleNamespace
+
+import pytest
+
+import sparkrun.api as api
+from sparkrun.api._run import _evict_superseded_deployments
+from sparkrun.core.cluster_manager import ClusterDefinition
+from sparkrun.core.cluster_status import ClusterStatus, ContainerDetail, HostOccupancy, RunningWorkload
+from sparkrun.core.status_observation import ExecutorCoverage
+from sparkrun.orchestration.executor import resolve_executor
+from sparkrun.orchestration.ssh import RemoteResult
+
+INTENT = "aaaaaaaaaaaa"
+PRIOR = f"sparkrun_{INTENT}_111111111111"
+NEW = f"sparkrun_{INTENT}_222222222222"
+FOREIGN = "sparkrun_bbbbbbbbbbbb_333333333333"
+
+
+@pytest.fixture
+def observed_job(monkeypatch, v):
+    def create(backend="docker", ranks=(1,), fail=False, metadata=True):
+        cluster = ClusterDefinition(
+            "test",
+            ["h0", "h1", "h2", "h3"],
+            user="alice",
+            executor=backend,
+            executor_config={"pid_dir": "/srv/native-jobs"} if backend == "local" else {},
+        )
+        sctx = api.default_sctx().for_cluster(cluster)
+        executor = resolve_executor(cluster=cluster, config=sctx.config, v=v, rootless=False, auto_user=False)
+        target = executor.resolve_target(dry_run=True)
+        names = tuple(f"{PRIOR}_node_{rank}" for rank in ranks)
+        foreign = FOREIGN + "_node_1"
+        workload = RunningWorkload(
+            cluster_id=PRIOR,
+            intent_id=INTENT,
+            containers=tuple(
+                ContainerDetail(name, f"node_{rank}", "Up", "image", backend) for name, rank in zip(names, ranks, strict=True)
+            ),
+        )
+        snapshot = ClusterStatus(
+            hosts=(
+                HostOccupancy("h0"),
+                HostOccupancy(
+                    "h1",
+                    workloads=(
+                        workload,
+                        RunningWorkload(cluster_id=FOREIGN, containers=(ContainerDetail(foreign, "node_1", "Up", "image", backend),)),
+                    ),
+                ),
+            ),
+            executor=backend,
+            coverage=(ExecutorCoverage(target, "host", frozenset(cluster.hosts), frozenset(cluster.hosts), "alice"),),
+        )
+        meta = {
+            "hosts": list(cluster.hosts),
+            "executor": backend,
+            "executor_config": dict(target.config),
+            "executor_destination_key": target.destination_key,
+            "executor_user_scoped": target.user_scoped,
+            "ssh_user": "alice",
+        }
+        monkeypatch.setattr("sparkrun.orchestration.job_metadata.load_job_metadata", lambda *a, **k: meta if metadata else None)
+        forgotten = []
+        monkeypatch.setattr("sparkrun.orchestration.job_metadata.remove_job_metadata", lambda cid, **k: forgotten.append(cid))
+        monkeypatch.setattr("sparkrun.orchestration.executor.query_status_for_cluster", lambda *a, **k: snapshot)
+        monkeypatch.setattr("sparkrun.api._status.status", lambda *a, **k: pytest.fail("must reuse eviction discovery"))
+        alive = set(names) | {foreign}
+        calls = []
+
+        def cleanup(mapping, *, executor, ssh_kwargs):
+            calls.append((mapping, executor, ssh_kwargs))
+            results = {}
+            for host, candidates in mapping.items():
+                present = alive.intersection(candidates)
+                if not fail:
+                    alive.difference_update(candidates)
+                left = alive.intersection(candidates)
+                results[host] = RemoteResult(
+                    host,
+                    returncode=1 if left else 0,
+                    stdout=f"sparkrun_removed={0 if left else len(present)}\n",
+                    stderr="worker still running" if left else "",
+                )
+            return results
+
+        monkeypatch.setattr("sparkrun.orchestration.primitives.cleanup_containers_by_host", cleanup)
+        return SimpleNamespace(
+            cluster=cluster, sctx=sctx, snapshot=snapshot, names=names, foreign=foreign, alive=alive, calls=calls, forgotten=forgotten
+        )
+
+    return create
+
+
+def evict(job):
+    return _evict_superseded_deployments(
+        intent_id=INTENT,
+        cluster_id_for_launch=NEW,
+        candidate_hosts=job.cluster.hosts,
+        target_hosts=["h1"],
+        cluster_def=job.cluster,
+        config=job.sctx.config,
+        sctx=job.sctx,
+        strict=True,
+    )
+
+
+@pytest.mark.parametrize("backend", ["docker", "local"])
+@pytest.mark.parametrize("ranks", [(1,), (1, 3)])
+@pytest.mark.parametrize("metadata", [True, False])
+def test_eviction_removes_observed_survivors_and_only_then_forgets_job(observed_job, backend, ranks, metadata):
+    job = observed_job(backend, ranks, metadata=metadata)
+    evicted, _ = evict(job)
+    assert evicted == [PRIOR]
+    assert job.alive == {job.foreign}
+    assert job.calls[0][0] == {"h1": list(job.names)}
+    assert job.calls[0][1].executor_name == backend
+    assert job.calls[0][2]["ssh_user"] == "alice"
+    assert job.forgotten == [PRIOR]
+
+
+def test_failed_survivor_teardown_preserves_metadata_and_aborts_strict_eviction(observed_job):
+    job = observed_job(fail=True)
+    with pytest.raises(RuntimeError, match="not confirmed on h1"):
+        evict(job)
+    assert set(job.names) <= job.alive
+    assert job.calls[0][0] == {"h1": list(job.names)}
+    assert job.forgotten == []
+
+
+def test_stop_with_discovery_reports_actual_removed_count(observed_job):
+    job = observed_job(ranks=(1, 3))
+    result = api.stop(cluster_id=PRIOR, hosts=["h1"], cluster=job.cluster, sctx=job.sctx, discovered=job.snapshot)
+    assert result.containers_removed == 2
+    assert result.hosts_failed == () and result.errors == ()
+
+
+@pytest.mark.parametrize("mismatch", ["executor", "destination", "user", "missing_names"])
+def test_unusable_observation_never_forgets_job(observed_job, mismatch):
+    job = observed_job("local")
+    snapshot = job.snapshot
+    if mismatch == "missing_names":
+        host = snapshot.hosts[1]
+        snapshot = replace(snapshot, hosts=(snapshot.hosts[0], replace(host, workloads=(replace(host.workloads[0], containers=()),))))
+    elif mismatch == "executor":
+        host = snapshot.hosts[1]
+        workload = host.workloads[0]
+        wrong = replace(workload.containers[0], executor="docker")
+        snapshot = replace(snapshot, hosts=(snapshot.hosts[0], replace(host, workloads=(replace(workload, containers=(wrong,)),))))
+    else:
+        coverage = snapshot.coverage[0]
+        if mismatch == "user":
+            coverage = replace(coverage, ssh_user="bob")
+        else:
+            coverage = replace(
+                coverage, target=replace(coverage.target, destination_key="/srv/other-jobs", config={"pid_dir": "/srv/other-jobs"})
+            )
+        snapshot = replace(snapshot, coverage=(coverage,))
+    with pytest.raises(api.SparkrunError):
+        api.stop(cluster_id=PRIOR, hosts=["h1"], cluster=job.cluster, sctx=job.sctx, discovered=snapshot)
+    assert job.calls == []
+    assert job.forgotten == []
+    assert set(job.names) <= job.alive
+
+
+def test_missing_metadata_uses_observed_executor_not_cluster_default(observed_job):
+    job = observed_job("local", metadata=False)
+    job.cluster.executor = "docker"
+    evict(job)
+    assert job.calls[0][1].executor_name == "local"
+    assert job.alive == {job.foreign}
+
+
+def test_observed_host_mapping_does_not_copy_ranks_to_other_hosts(observed_job):
+    job = observed_job(ranks=(1, 3))
+    other = PRIOR + "_node_2"
+    job.alive.add(other)
+    snapshot = replace(
+        job.snapshot,
+        hosts=(
+            job.snapshot.hosts[1],
+            HostOccupancy(
+                "h2",
+                workloads=(
+                    RunningWorkload(
+                        cluster_id=PRIOR,
+                        containers=(ContainerDetail(other, "node_2", "Up", "image", "docker"),),
+                    ),
+                ),
+            ),
+        ),
+    )
+    result = api.stop(cluster_id=PRIOR, hosts=["h1", "h2"], cluster=job.cluster, sctx=job.sctx, discovered=snapshot)
+    assert job.calls[0][0] == {"h1": list(job.names), "h2": [other]}
+    assert result.containers_removed == 3
+    assert job.alive == {job.foreign}
+
+
+def test_nonstrict_failed_eviction_retains_live_metadata(observed_job):
+    job = observed_job(fail=True)
+    _, observation = _evict_superseded_deployments(
+        intent_id=INTENT,
+        cluster_id_for_launch=NEW,
+        candidate_hosts=job.cluster.hosts,
+        target_hosts=["h1"],
+        cluster_def=job.cluster,
+        config=job.sctx.config,
+        sctx=job.sctx,
+    )
+    assert job.forgotten == []
+    assert PRIOR in observation.cluster_ids
+    assert set(job.names) <= job.alive

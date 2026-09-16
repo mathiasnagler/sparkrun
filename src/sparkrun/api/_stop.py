@@ -5,7 +5,8 @@ Two modes:
 - **By cluster_id**: provide the literal ``cluster_id`` (as returned
   by :func:`sparkrun.api.run`); the API loads the job metadata, picks
   the executor that originally launched it, and stops its native controller
-  resource or runs ``stop_cmd`` against candidate containers on every host.
+  resource or tears down observed container names on each host. Without
+  a discovery snapshot, it falls back to candidate names.
 - **By recipe+hosts+overrides**: derive the same ``cluster_id`` the
   launcher would have produced and dispatch identically.  Useful for
   ``sparkrun stop <recipe>`` semantics.
@@ -24,6 +25,7 @@ from sparkrun.api._models import StopResult
 
 if TYPE_CHECKING:
     from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.cluster_status import ClusterStatus
     from sparkrun.core.context import SparkrunContext
     from sparkrun.core.recipe import Recipe
 
@@ -38,6 +40,7 @@ def stop(
     overrides: dict | None = None,
     cluster: "str | ClusterDefinition | None" = None,
     cache_dir: str | None = None,
+    discovered: "ClusterStatus | None" = None,
     sctx: "SparkrunContext | None" = None,
 ) -> StopResult:
     """Stop a running sparkrun workload.
@@ -46,6 +49,11 @@ def stop(
     When both are provided, ``cluster_id`` wins.
 
     Args:
+        discovered: Optional status snapshot for exact per-host container names.
+            Reuses discovery during eviction instead of inferring ranks from
+            the surviving host count. The snapshot must cover the requested
+            hosts and match the resolved executor/destination; missing container
+            detail is an error, not permission to fall back to guessed names.
         cache_dir: Explicit metadata root, otherwise the supplied or current
             application's configured cache. Resolved before job lookup.
         sctx: Optional shared :class:`SparkrunContext` for chained
@@ -145,7 +153,13 @@ def stop(
         # its record is dropped as a confirmed stop.  Metadata does go
         # missing — an interrupted launch, a manually cleared cache, or the
         # very bug this guards against.
-        discovered_exec = _discover_executor_name(cluster_id, target_hosts, cluster_def=cluster_def, sctx=sctx)
+        discovered_exec = _discover_executor_name(
+            cluster_id,
+            target_hosts,
+            cluster_def=cluster_def,
+            sctx=sctx,
+            discovered=discovered,
+        )
         if discovered_exec:
             cli_overrides = dict(cli_overrides or {})
             cli_overrides["executor"] = discovered_exec
@@ -161,8 +175,17 @@ def stop(
 
     from sparkrun.api._resolve import bind_job_cluster
 
-    cluster_def = bind_job_cluster(cluster_def, executor.resolve_target(dry_run=True), meta)
+    target = executor.resolve_target(dry_run=True)
+    cluster_def = bind_job_cluster(cluster_def, target, meta)
     sctx = sctx.for_cluster(cluster_def)
+    if discovered is not None and discovered.coverage:
+        covered = {
+            host for coverage in discovered.coverage if coverage.matches(target, ssh_user=sctx.config.ssh_user) for host in coverage.hosts
+        }
+        if not set(target_hosts) <= covered:
+            raise SparkrunError(
+                "Stop discovery does not cover the requested executor destination and hosts; refresh status before teardown."
+            )
 
     try:
         native_removed = executor.stop_workload(cluster_id, metadata=meta)
@@ -178,7 +201,14 @@ def stop(
             hosts_failed=tuple(target_hosts),
         )
     if native_removed is None:
-        removed_count, hosts_failed, errors = _stop_containers(cluster_id, target_hosts, cluster_def, executor, sctx)
+        removed_count, hosts_failed, errors = _stop_containers(
+            cluster_id,
+            target_hosts,
+            cluster_def,
+            executor,
+            sctx,
+            discovered=discovered,
+        )
     else:
         removed_count, hosts_failed, errors = native_removed, (), []
 
@@ -206,11 +236,15 @@ def stop(
     )
 
 
-def _stop_containers(cluster_id, target_hosts, cluster_def, executor, sctx):
+def _stop_containers(cluster_id, target_hosts, cluster_def, executor, sctx, *, discovered=None):
     from sparkrun.api._resolve import scope_operation
     from sparkrun.orchestration.teardown import parse_teardown_removed
 
-    container_names = executor.enumerate_containers(cluster_id, len(target_hosts))
+    if discovered is None:
+        container_names = executor.enumerate_containers(cluster_id, len(target_hosts))
+        host_containers = {host: list(container_names) for host in target_hosts}
+    else:
+        host_containers = _observed_container_names(cluster_id, target_hosts, executor.executor_name, discovered)
 
     # ``cleanup_containers_by_host`` is the shared teardown primitive: it
     # dispatches local-vs-SSH per host, verifies the workloads are actually
@@ -226,7 +260,7 @@ def _stop_containers(cluster_id, target_hosts, cluster_def, executor, sctx):
     errors: list[str] = []
     try:
         results = cleanup_containers_by_host(
-            {host: list(container_names) for host in target_hosts},
+            host_containers,
             ssh_kwargs=ssh_kwargs,
             executor=executor,
         )
@@ -244,12 +278,40 @@ def _stop_containers(cluster_id, target_hosts, cluster_def, executor, sctx):
     return removed_count, hosts_failed, errors
 
 
+def _observed_container_names(cluster_id, hosts, executor_name, discovered):
+    """Use actual ranks on each host; never turn incomplete discovery into success."""
+    names: dict[str, list[str]] = {host: [] for host in hosts}
+    for entry in discovered.hosts:
+        if entry.host not in names:
+            continue
+        if entry.host in discovered.errors:
+            raise SparkrunError("Stop discovery failed on %s; refresh status before teardown." % entry.host)
+        for workload in entry.workloads:
+            if workload.cluster_id != cluster_id:
+                continue
+            if not workload.containers:
+                raise SparkrunError("Stop discovery lacks container names for %s on %s." % (cluster_id, entry.host))
+            for container in workload.containers:
+                owner = container.executor or discovered.executor
+                if owner and owner != executor_name:
+                    raise SparkrunError("Stop discovery reports %s via another executor; use fresh stop_all discovery." % cluster_id)
+                if not container.name:
+                    raise SparkrunError("Stop discovery contains an unnamed container for %s." % cluster_id)
+                if container.name not in names[entry.host]:
+                    names[entry.host].append(container.name)
+    missing = [host for host, containers in names.items() if not containers]
+    if missing:
+        raise SparkrunError("Stop discovery lacks container names for %s on: %s." % (cluster_id, ", ".join(missing)))
+    return names
+
+
 def _discover_executor_name(
     cluster_id: str,
     hosts: list[str],
     *,
     cluster_def,
     sctx: "SparkrunContext | None",
+    discovered: "ClusterStatus | None" = None,
 ) -> str | None:
     """Return the executor currently reporting *cluster_id*, or ``None``.
 
@@ -262,22 +324,28 @@ def _discover_executor_name(
     fails or finds nothing.  A workload that isn't running needs no
     substrate-specific teardown, and a failed sweep must not block a stop.
     """
-    try:
-        from sparkrun.api._status import status
+    snapshot = discovered
+    if snapshot is None:
+        try:
+            from sparkrun.api._status import status
 
-        snapshot = status(list(hosts), cluster=cluster_def, sctx=sctx)
-    except Exception:
-        logger.debug("Executor discovery sweep failed for %s", cluster_id, exc_info=True)
-        return None
+            snapshot = status(list(hosts), cluster=cluster_def, sctx=sctx)
+        except Exception:
+            logger.debug("Executor discovery sweep failed for %s", cluster_id, exc_info=True)
+            return None
 
-    for entry in snapshot.hosts:
-        for workload in entry.workloads:
-            if workload.cluster_id != cluster_id:
-                continue
-            for container in workload.containers:
-                if container.executor:
-                    return container.executor
-    return None
+    names = {
+        container.executor
+        for entry in snapshot.hosts
+        if entry.host in hosts
+        for workload in entry.workloads
+        if workload.cluster_id == cluster_id
+        for container in workload.containers
+        if container.executor
+    }
+    if len(names) > 1:
+        raise SparkrunError("Workload %s spans multiple executors; use fresh stop_all discovery." % cluster_id)
+    return next(iter(names), None)
 
 
 __all__ = ["stop"]
