@@ -185,7 +185,7 @@ def _setup_plan_check(state, ctx):
         return CheckItem("setup_plan", "Hardware setup plan", FAIL, "hardware platform could not be resolved")
     executor = ctx.executor_names[state.host]
     declared = next((plan for plan in platform.setup_plans if plan.executor == executor), None) if platform else None
-    if declared is None:
+    if platform is None or declared is None:
         return CheckItem(
             "setup_plan",
             "Hardware setup plan",

@@ -417,7 +417,7 @@ def _snapshot_download(
     """
     try:
         from huggingface_hub import snapshot_download
-        from huggingface_hub.utils import enable_progress_bars
+        from huggingface_hub.utils.tqdm import enable_progress_bars
 
         from sparkrun.models.hub import configure_hub_client
 

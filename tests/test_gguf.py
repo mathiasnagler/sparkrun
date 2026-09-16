@@ -314,7 +314,7 @@ class TestDownloadModelGguf:
     def test_gguf_already_cached_still_verifies(self, mock_resolve):
         """GGUF model already cached still calls snapshot_download to verify completeness."""
         mock_hf = mock.MagicMock()
-        with mock.patch.dict("sys.modules", {"huggingface_hub": mock_hf, "huggingface_hub.utils": mock_hf.utils}):
+        with mock.patch.dict("sys.modules", {"huggingface_hub": mock_hf, "huggingface_hub.utils.tqdm": mock_hf.utils}):
             rc = download_model("Qwen/Qwen3-1.7B-GGUF:Q4_K_M", cache_dir="/fake")
             assert rc == 0
             mock_resolve.assert_called_once()

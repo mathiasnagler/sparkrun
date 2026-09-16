@@ -228,7 +228,7 @@ def fetch_remote_gguf_quant(
     """
     try:
         from huggingface_hub import hf_hub_url
-        from huggingface_hub.utils import build_hf_headers
+        from huggingface_hub.utils._headers import build_hf_headers
         from urllib.request import Request, urlopen
     except ImportError:
         logger.debug("huggingface_hub not available for GGUF header fetch")

@@ -3,48 +3,6 @@
   "pyright": "1.1.414",
   "diagnostics": [
     {
-      "file": "src/sparkrun/models/download.py",
-      "severity": "error",
-      "rule": "reportPrivateImportUsage",
-      "message": "\"enable_progress_bars\" is not exported from module \"huggingface_hub.utils\"\n  Import from \"huggingface_hub.utils.tqdm\" instead",
-      "count": 1
-    },
-    {
-      "file": "src/sparkrun/models/gguf.py",
-      "severity": "error",
-      "rule": "reportPrivateImportUsage",
-      "message": "\"build_hf_headers\" is not exported from module \"huggingface_hub.utils\"\n  Import from \"huggingface_hub.utils._headers\" instead",
-      "count": 1
-    },
-    {
-      "file": "src/sparkrun/models/quantization.py",
-      "severity": "error",
-      "rule": "reportPrivateImportUsage",
-      "message": "\"disable_progress_bars\" is not exported from module \"huggingface_hub.utils\"\n  Import from \"huggingface_hub.utils.tqdm\" instead",
-      "count": 1
-    },
-    {
-      "file": "src/sparkrun/models/quantization.py",
-      "severity": "error",
-      "rule": "reportPrivateImportUsage",
-      "message": "\"enable_progress_bars\" is not exported from module \"huggingface_hub.utils\"\n  Import from \"huggingface_hub.utils.tqdm\" instead",
-      "count": 1
-    },
-    {
-      "file": "src/sparkrun/models/vram.py",
-      "severity": "error",
-      "rule": "reportPrivateImportUsage",
-      "message": "\"disable_progress_bars\" is not exported from module \"huggingface_hub.utils\"\n  Import from \"huggingface_hub.utils.tqdm\" instead",
-      "count": 2
-    },
-    {
-      "file": "src/sparkrun/models/vram.py",
-      "severity": "error",
-      "rule": "reportPrivateImportUsage",
-      "message": "\"enable_progress_bars\" is not exported from module \"huggingface_hub.utils\"\n  Import from \"huggingface_hub.utils.tqdm\" instead",
-      "count": 2
-    },
-    {
       "file": "src/sparkrun/orchestration/nv_monitor.py",
       "severity": "warning",
       "rule": "reportMissingImports",

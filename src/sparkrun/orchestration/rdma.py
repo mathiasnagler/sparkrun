@@ -249,6 +249,8 @@ def pair_test_rounds(pairs: list[RdmaPair]) -> list[list[RdmaPair]]:
     for _ in range(len(circle) - 1):
         batch = []
         for a, b in zip(circle[: len(circle) // 2], reversed(circle[len(circle) // 2 :]), strict=True):
+            if a is None or b is None:
+                continue  # The dummy endpoint is a bye, not a candidate pair.
             pair = by_hosts.get(frozenset((a, b)))
             if pair is not None:
                 batch.append(pair)

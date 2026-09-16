@@ -196,7 +196,7 @@ def _fetch_model_config(
 ) -> dict[str, Any] | None:
     try:
         from huggingface_hub import hf_hub_download
-        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
+        from huggingface_hub.utils.tqdm import disable_progress_bars, enable_progress_bars
         import json
 
         from sparkrun.models.download import _hub_cache
@@ -323,7 +323,7 @@ def _fetch_safetensors_size(
 ) -> int | None:
     try:
         from huggingface_hub import hf_hub_download
-        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
+        from huggingface_hub.utils.tqdm import disable_progress_bars, enable_progress_bars
         import json
 
         from sparkrun.models.download import _hub_cache

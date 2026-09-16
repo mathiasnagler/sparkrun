@@ -805,8 +805,8 @@ class TestFetchSafetensorsSizeOrder:
         with (
             mock.patch("huggingface_hub.model_info", side_effect=_fake_model_info),
             mock.patch("huggingface_hub.hf_hub_download", side_effect=_fake_download),
-            mock.patch("huggingface_hub.utils.disable_progress_bars"),
-            mock.patch("huggingface_hub.utils.enable_progress_bars"),
+            mock.patch("huggingface_hub.utils.tqdm.disable_progress_bars"),
+            mock.patch("huggingface_hub.utils.tqdm.enable_progress_bars"),
         ):
             result = fetch_safetensors_size("org/awq-model")
 
@@ -838,8 +838,8 @@ class TestFetchSafetensorsSizeOrder:
             mock.patch("huggingface_hub.model_info", side_effect=_fake_model_info),
             mock.patch("huggingface_hub.list_repo_tree", return_value=iter(tree)),
             mock.patch("huggingface_hub.hf_hub_download", side_effect=Exception("no index")),
-            mock.patch("huggingface_hub.utils.disable_progress_bars"),
-            mock.patch("huggingface_hub.utils.enable_progress_bars"),
+            mock.patch("huggingface_hub.utils.tqdm.disable_progress_bars"),
+            mock.patch("huggingface_hub.utils.tqdm.enable_progress_bars"),
         ):
             result = fetch_safetensors_size("org/single-file-model")
 
@@ -858,8 +858,8 @@ class TestFetchSafetensorsSizeOrder:
             mock.patch("huggingface_hub.model_info", return_value=mi),
             mock.patch("huggingface_hub.list_repo_tree", return_value=iter([])),
             mock.patch("huggingface_hub.hf_hub_download", side_effect=Exception("not found")),
-            mock.patch("huggingface_hub.utils.disable_progress_bars"),
-            mock.patch("huggingface_hub.utils.enable_progress_bars"),
+            mock.patch("huggingface_hub.utils.tqdm.disable_progress_bars"),
+            mock.patch("huggingface_hub.utils.tqdm.enable_progress_bars"),
         ):
             result = fetch_safetensors_size("org/single-file-model")
 
@@ -901,8 +901,8 @@ class TestFetchSafetensorsSizeOrder:
             mock.patch("huggingface_hub.model_info", return_value=mi),
             mock.patch("huggingface_hub.list_repo_tree", return_value=iter(tree)),
             mock.patch("huggingface_hub.hf_hub_download", side_effect=_fake_download),
-            mock.patch("huggingface_hub.utils.disable_progress_bars"),
-            mock.patch("huggingface_hub.utils.enable_progress_bars"),
+            mock.patch("huggingface_hub.utils.tqdm.disable_progress_bars"),
+            mock.patch("huggingface_hub.utils.tqdm.enable_progress_bars"),
         ):
             result = fetch_safetensors_size("org/nvfp4-single-file")
 
