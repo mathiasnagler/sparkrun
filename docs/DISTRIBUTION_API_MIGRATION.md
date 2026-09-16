@@ -734,10 +734,16 @@ Image preparation selects prepared overrides before unused defaults, and applies
 the same alignment/string/runtime validation to both. Image-less executors have
 no `PreparedImageSet.image_plan`; the image accessors return `None`/an empty tuple.
 Pass its `container_distribution` to `distribute_from_config` when staging images;
-generated transfer entries no longer mutate the recipe. The unused
-`stage_prepared_images`, `StagedImageSet`, and `resolve_content_images` surface has
-been removed. Standalone staging uses the shared distribution function and one
-operation-scoped configuration for transport. The unused `prepare_images(strategy_name=...)` diagnostic input is removed.
+generated transfer entries no longer mutate the recipe. Standalone integrations
+such as ColdSnap use `stage_prepared_images()` and its `StagedImageSet` receipt;
+this delegates to the same distribution function with the prepared container
+policy and one operation-scoped configuration (`config.for_cluster(cluster)`).
+`require_content_ids=True` verifies every host after image transfer and before
+model transfer. Mutable tags become local Docker content IDs, while already
+pinned references retain their identity. Missing or invalid host identities abort
+staging; dry runs perform no live inspection. `resolve_content_images()` exposes
+that strict per-host check independently. An optional `ssh_kwargs` mapping must
+match the operation config rather than select a second transport. The unused `prepare_images(strategy_name=...)` diagnostic input is removed.
 `ImagePlan.image_for_node` now raises `IndexError` for invalid resolved-node indices.
 
 

@@ -2,12 +2,16 @@
 
 The result carries a launch-local distribution policy for the shared transfer
 layer. Image preparation does not transfer assets or open a second transport.
+Standalone integrations can stage that plan and require immutable per-host
+identities through the shared distribution transaction below.
 """
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import logging
+import re
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from sparkrun.core.images import (
@@ -23,13 +27,17 @@ if TYPE_CHECKING:
     from scitrera_app_framework import Variables
 
     from sparkrun.builders.base import BuilderPlugin
-    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.cluster_manager import ClusterDefinition, ModelDistributionPrefs
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe, DistributionResourceConfig, DistributionContainerEntry
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
+    from sparkrun.core.timing import Timeline
     from sparkrun.runtimes.base import RuntimePlugin
 
 
 logger = logging.getLogger(__name__)
+_IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
+_PINNED_IMAGE = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 
 
 class ImagePreparationError(RuntimeError):
@@ -60,6 +68,18 @@ class PreparedImageSet:
     @property
     def head_image(self) -> str | None:
         return self.image_plan.head_image() if self.image_plan is not None else None
+
+
+@dataclass(frozen=True)
+class StagedImageSet:
+    """Prepared images after container distribution completed."""
+
+    prepared: PreparedImageSet
+    content_images_by_node: tuple[str, ...]
+    comm_env: ClusterCommEnv | None = None
+    ib_ip_map: dict[str, str] | None = None
+    mgmt_ip_map: dict[str, str] | None = None
+    ib_iface_map: dict[str, str] | None = None
 
 
 def builder_transforms_image(recipe: Recipe, v: Variables | None = None) -> bool:
@@ -193,10 +213,142 @@ def prepare_images(
     return PreparedImageSet(source_image=source, image_plan=image_plan, builder=builder, container_distribution=container_distribution)
 
 
+def stage_prepared_images(
+    prepared: PreparedImageSet,
+    recipe: Recipe,
+    host_list: list[str],
+    cache_dir: str,
+    config: SparkrunConfig,
+    *,
+    dry_run: bool = False,
+    recipe_name: str = "",
+    transfer_mode: str = "local",
+    transfer_interface: str | None = None,
+    local_cache_dir: str | None = None,
+    pre_ib=None,
+    topology: str | None = None,
+    prefs: ModelDistributionPrefs | None = None,
+    require_content_ids: bool = False,
+    ssh_kwargs: dict | None = None,
+    stage_models: bool = False,
+    timeline: Timeline | None = None,
+) -> StagedImageSet:
+    """Stage a prepared container plan without launching a workload.
+
+    Pass an operation-scoped config (``config.for_cluster(cluster)``). The
+    optional SSH mapping must describe that same transport. Distribution owns
+    image/model transfers and consumes the prepared, launch-local container
+    policy; neither reusable recipe templates nor the policy are mutated.
+    Required image identities are verified on every host after image transfer
+    and before model transfer. Dry runs never inspect a Docker daemon.
+    """
+    from sparkrun.orchestration.distribution import distribute_from_config
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+    if prepared.image_plan is None or not host_list or len(prepared.images_by_node) != len(host_list):
+        raise ImagePreparationError("image staging requires one prepared container image per host")
+    connection = build_ssh_kwargs(config)
+    if ssh_kwargs is not None and ssh_kwargs != connection:
+        raise ImagePreparationError("image staging SSH settings must match the operation-scoped config")
+    content_images = prepared.images_by_node
+
+    def verify_images() -> None:
+        nonlocal content_images
+        content_images = resolve_content_images(
+            prepared.images_by_node,
+            host_list,
+            ssh_kwargs=connection,
+            dry_run=dry_run,
+        )
+
+    comm_env, ib_ip_map, mgmt_ip_map, ib_iface_map = distribute_from_config(
+        recipe,
+        prepared.image_plan.head_image(),
+        host_list,
+        cache_dir,
+        config,
+        dry_run,
+        recipe_name=recipe_name,
+        transfer_mode=transfer_mode,
+        transfer_interface=transfer_interface,
+        local_cache_dir=local_cache_dir,
+        pre_ib=pre_ib,
+        topology=topology,
+        prefs=prefs,
+        skip_model=not stage_models,
+        skip_container=False,
+        after_container_sync=verify_images if require_content_ids else None,
+        container_distribution=prepared.container_distribution,
+        timeline=timeline,
+    )
+    return StagedImageSet(
+        prepared=prepared,
+        content_images_by_node=content_images,
+        comm_env=comm_env,
+        ib_ip_map=ib_ip_map,
+        mgmt_ip_map=mgmt_ip_map,
+        ib_iface_map=ib_iface_map,
+    )
+
+
+def resolve_content_images(
+    images_by_node: Sequence[str],
+    host_list: Sequence[str],
+    *,
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
+) -> tuple[str, ...]:
+    """Return immutable, locally runnable image references for every node."""
+    if len(images_by_node) != len(host_list):
+        raise ImagePreparationError("image identity resolution requires one image per host")
+    if dry_run:
+        return tuple(images_by_node)
+
+    resolved: list[str | None] = [None] * len(host_list)
+    pending: dict[Any, int] = {}
+    with ThreadPoolExecutor(max_workers=min(max(len(host_list), 1), 16)) as pool:
+        for index, (host, image) in enumerate(zip(host_list, images_by_node, strict=True)):
+            preserve = bool(_PINNED_IMAGE.fullmatch(image) or _IMAGE_ID.fullmatch(image))
+            pending[pool.submit(_resolve_host_image_id, host, image, ssh_kwargs or {}, preserve)] = index
+        for future in as_completed(pending):
+            resolved[pending[future]] = future.result()
+
+    missing = [str(index) for index, image in enumerate(resolved) if not image]
+    if missing:
+        raise ImagePreparationError("could not resolve immutable image identities for node(s): %s" % ", ".join(missing))
+    return tuple(str(image) for image in resolved)
+
+
+def _resolve_host_image_id(host: str, image: str, ssh_kwargs: dict, preserve_reference: bool) -> str:
+    from sparkrun.orchestration.primitives import run_command_on_host
+    from sparkrun.utils.shell import quote
+
+    result = run_command_on_host(
+        host,
+        "docker image inspect --format '{{.Id}}' %s" % quote(image),
+        ssh_kwargs=ssh_kwargs,
+        timeout=30,
+        quiet=True,
+    )
+    value = str(getattr(result, "stdout", "") or "").strip().splitlines()[:1]
+    identity = value[0].strip() if value else ""
+    if not getattr(result, "success", False) or not _IMAGE_ID.fullmatch(identity):
+        detail = str(getattr(result, "stderr", "") or "").strip()
+        raise ImagePreparationError(
+            "host %r could not resolve prepared image %r%s" % (host, image, ": " + detail[-1000:] if detail else "")
+        )
+    if _IMAGE_ID.fullmatch(image) and identity != image:
+        raise ImagePreparationError("host %r resolved prepared image %r to a different content ID" % (host, image))
+    return image if preserve_reference else identity
+
+
 __all__ = [
     "ImagePreparationError",
     "PreparedImageSet",
+    "StagedImageSet",
     "builder_transforms_image",
     "prepare_images",
+    "stage_prepared_images",
+    "resolve_content_images",
     "validate_image_configuration",
 ]
