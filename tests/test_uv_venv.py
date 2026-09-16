@@ -548,3 +548,39 @@ def test_a_misconfigured_builder_does_not_break_executor_resolution(v):
     )
     ex = resolve_executor(recipe=recipe, rootless=False, auto_user=False, v=v)
     assert ex.config.env_file is None
+
+
+def test_verify_only_reuses_preseed_without_uv_and_rejects_mismatch(tmp_path):
+    """Execute the guard: neither a missing nor stale preseed may run uv."""
+    import os
+    import subprocess
+
+    venv = tmp_path / "venv"
+    env_file = tmp_path / "runtime" / "activate.sh"
+    spec = _resolve_spec(
+        _recipe({"requirements": ["vllm==0.25.0"], "venv_path": str(venv), "env_file": str(env_file), "verify_only": True})
+    )
+    ordinary = _resolve_spec(_recipe({"requirements": ["vllm==0.25.0"], "venv_path": str(venv)}))
+    assert ordinary.dep_hash() == spec.dep_hash()
+    script = _provision_script(spec)
+    result = subprocess.run(["bash"], input=script, text=True, capture_output=True)
+    assert result.returncode != 0
+    assert "preseed missing or mismatched" in result.stderr
+    assert not venv.exists()
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin/python").symlink_to("/usr/bin/python3")
+    marker = venv / ".sparkrun-uv-venv.hash"
+    marker.write_text("stale")
+    result = subprocess.run(["bash"], input=script, text=True, capture_output=True)
+    assert result.returncode != 0
+    assert marker.read_text() == "stale"
+    marker.write_text(spec.dep_hash())
+    result = subprocess.run(["bash"], input=script, text=True, capture_output=True, env={**os.environ, "UV_OFFLINE": "1"})
+    assert result.returncode == 0, result.stderr
+    assert str(venv / "bin") in env_file.read_text()
+
+
+@pytest.mark.parametrize("value", ["false", "true", 1, None])
+def test_verify_only_requires_boolean(value):
+    with pytest.raises(UvVenvError, match="verify_only must be a boolean"):
+        _resolve_spec(_recipe({"requirements": ["vllm"], "verify_only": value}))

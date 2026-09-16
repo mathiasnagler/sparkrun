@@ -30,6 +30,7 @@ Recipe (self-contained)::
       torch_backend: auto                    # default `auto`; `none` disables the flag
       cuda_home: /usr/local/cuda             # optional -> exported + on PATH in env_file
       python: "3.12"                         # optional (default 3.12)
+      verify_only: false                     # true: fail instead of installing missing/mismatched deps
       # venv_path: /abs/path                 # optional; default $HOME/.cache/sparkrun/uv-venv/<dep-hash>
       # env_file:  /abs/path.sh              # optional; default <venv_path>/sparkrun-env.sh
     executor: local                          # env_file auto-wired from the builder
@@ -130,6 +131,7 @@ class _Spec:
     torch_backend: str | None = _DEFAULT_TORCH_BACKEND
     cuda_home: str | None = None
     env_file: str = ""
+    verify_only: bool = False
     requirements: list[str] = field(default_factory=list)
     # Requirement files staged into the venv at build time: (host_filename, content).
     staged: list[tuple[str, str]] = field(default_factory=list)
@@ -199,7 +201,12 @@ def _resolve_spec(recipe: "Recipe") -> _Spec:
     if cuda_home:
         _validate_host_path(cuda_home, field_name="cuda_home")
 
+    verify_only = cfg.get("verify_only", False)
+    if not isinstance(verify_only, bool):
+        raise UvVenvError("uv-venv: verify_only must be a boolean")
+
     spec = _Spec(
+        verify_only=verify_only,
         venv_path="",  # set below (depends on dep_hash)
         python=python,
         torch_backend=torch_backend,
@@ -279,6 +286,7 @@ def _provision_script(spec: _Spec) -> str:
         'if [ -x "$VENV/bin/python" ] && [ "$(cat "$MARKER" 2>/dev/null || true)" = "$WANT" ]; then\n'
         '  echo "uv-venv: up-to-date ($VENV)"\n'
         "else\n"
+        "%(verify_guard)s"
         # Both acquisition routes are version-pinned in sparkrun.core.tooling.
         # The unversioned installer URL is whatever Astral published this
         # morning, which is not a thing to fan out across a cluster.
@@ -310,6 +318,9 @@ def _provision_script(spec: _Spec) -> str:
         "EOF\n"
         'echo "uv-venv: env_file $ENV_FILE"\n'
     ) % {
+        "verify_guard": (
+            '  echo "uv-venv: preseed missing or mismatched ($VENV); rebuild the serving image" >&2\n  exit 1\n' if spec.verify_only else ""
+        ),
         "venv": spec.venv_path,
         "env_file": spec.env_file,
         "want": want,
