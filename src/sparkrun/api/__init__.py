@@ -3,6 +3,9 @@
 This package is the contract that non-CLI Python callers (tests, third-
 party automation, the CLI itself) depend on.  Surfaces:
 
+- **Preparation** — :class:`BuildOptions`, :class:`BuildPlan`,
+  :class:`BuildResult`, ``plan_build``, and ``build`` prepare assets without
+  starting inference. ``materialize`` continues to resolve launch specs only.
 - **Data models** — :class:`RunOptions`, :class:`RunPlan`, :class:`RunResult`,
   :class:`StopResult`, :class:`LogLine`, :class:`JobInfo`,
   :class:`RecipeSummary`, :class:`BenchmarkOptions`,
@@ -35,6 +38,8 @@ from __future__ import annotations
 from sparkrun.api import proxy
 from sparkrun.api import setup
 from sparkrun.api import tailscale
+from sparkrun.api._build import build, plan_build
+from sparkrun.api._build_models import BuildOptions, BuildPlan, BuildResult
 from sparkrun.api._benchmark import benchmark, resume_benchmark
 from sparkrun.api._benchmark_models import (
     BenchmarkOptions,
@@ -162,7 +167,12 @@ __all__ = [
     # Session context
     "SparkrunContext",
     "default_sctx",
+    "build",
+    "plan_build",
     # Data models
+    "BuildOptions",
+    "BuildPlan",
+    "BuildResult",
     "RunOptions",
     "RunPlan",
     "RunResult",

@@ -231,6 +231,8 @@ def stage_prepared_images(
     require_content_ids: bool = False,
     ssh_kwargs: dict | None = None,
     stage_models: bool = False,
+    mgmt_interface: str | None = None,
+    cluster_name: str = "",
     timeline: Timeline | None = None,
 ) -> StagedImageSet:
     """Stage a prepared container plan without launching a workload.
@@ -274,6 +276,8 @@ def stage_prepared_images(
         local_cache_dir=local_cache_dir,
         pre_ib=pre_ib,
         topology=topology,
+        mgmt_interface=mgmt_interface,
+        cluster_name=cluster_name,
         prefs=prefs,
         skip_model=not stage_models,
         skip_container=False,

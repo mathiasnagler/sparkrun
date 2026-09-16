@@ -96,6 +96,10 @@ paths, defaults, and plugins. Use `sparkrun.application.initialize()` for Python
 API use without the Sparkrun CLI. The [catalog API](docs/CATALOG_API.md) supports
 headless browsing, previews, and persistent recipe selection.
 
+[Preparation-only builds](docs/BUILD.md) build images or native Python environments
+and stage model assets before launch. Set `SPARKRUN_ADVANCED=1` to show
+`sparkrun build` in CLI help.
+
 [Benchmarking](docs/BENCHMARK_API.md) separates measurement frameworks from
 publication integrations. [Plugin authors](docs/PLUGINS.md) register installed
 integrations through `sparkrun.plugins`.

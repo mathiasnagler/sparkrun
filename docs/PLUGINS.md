@@ -142,6 +142,41 @@ Three boundaries are not negotiable:
   choices belong there and are deliberately excluded from the recipe
   fingerprint and intent ID, the same way serve flags are.
 
+## Preparation-only build hooks
+
+`sparkrun build` and `api.build()` run builders and asset staging without the
+execution strategy or its preparation DAG. A plugin that needs to contribute
+build inputs can register a separate, recipe-local callback:
+
+~~~python
+from sparkrun.core.build_preparation import BuildContext
+
+
+def prepare_build(context: BuildContext):
+    context.recipe.distribution_config.add_model("org/auxiliary", revision="commit-sha")
+    return {"engine": "vllm"}
+
+
+register_recipe_item(
+    "snapshot",
+    SnapshotHandler(),
+    owner=__name__,
+    build_preparation=prepare_build,
+)
+~~~
+
+The hook receives an operation-local recipe copy, resolved build plan, options,
+and session context. It may declare distribution resources and return builder
+context defaults (a mapping or `None`). Core supplies the runtime family as
+`engine`; explicit `BuildOptions.builder_context` values override defaults.
+Conflicting context values from two plugins are rejected.
+
+Hooks must honor `context.options.dry_run`. They must not start inference,
+capture or restore snapshots, reserve capacity, or evict workloads. Build hooks
+require the same recipe trust authorization as executable recipe content, and
+their items must participate in the recipe fingerprint. Installing a plugin
+does not run its hook unless the recipe contains its registered key.
+
 ## Plugin settings that do not belong in a recipe
 
 A recipe is portable; operational policy for a given site is not. `plugins.<name>`

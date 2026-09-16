@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 if TYPE_CHECKING:
+    from sparkrun.core.build_preparation import BuildContext
     from sparkrun.core.execution import ExecutionContext, PreparationStep, RecipeExecutionStrategy
     from sparkrun.core.recipe import Recipe
 
@@ -57,6 +58,7 @@ class RecipeItemRegistration:
     execution_strategy: "RecipeExecutionStrategy | None" = None
     preparation_steps: "Callable[[ExecutionContext], tuple[PreparationStep, ...]] | None" = None
     affects_fingerprint: bool = True
+    build_preparation: "Callable[[BuildContext], dict[str, Any] | None] | None" = None
 
 
 _RECIPE_ITEMS: dict[str, RecipeItemRegistration] = {}
@@ -72,6 +74,7 @@ def register_recipe_item(
     execution_strategy: "RecipeExecutionStrategy | None" = None,
     preparation_steps: "Callable[[ExecutionContext], tuple[PreparationStep, ...]] | None" = None,
     affects_fingerprint: bool = True,
+    build_preparation: "Callable[[BuildContext], dict[str, Any] | None] | None" = None,
 ) -> None:
     """Claim a top-level recipe *key* for *owner*.
 
@@ -105,9 +108,11 @@ def register_recipe_item(
                 raise TypeError("recipe execution strategy must implement %s()" % method)
     if preparation_steps is not None and not callable(preparation_steps):
         raise TypeError("recipe preparation_steps must be callable")
+    if build_preparation is not None and not callable(build_preparation):
+        raise TypeError("recipe build_preparation must be callable")
     if not isinstance(affects_fingerprint, bool):
         raise TypeError("recipe affects_fingerprint must be a bool")
-    if not affects_fingerprint and (execution_strategy is not None or preparation_steps is not None):
+    if not affects_fingerprint and (execution_strategy is not None or preparation_steps is not None or build_preparation is not None):
         raise ValueError("recipe items contributing execution or preparation must affect the fingerprint")
     existing = _RECIPE_ITEMS.get(key)
     if existing is not None:
@@ -117,6 +122,7 @@ def register_recipe_item(
             and existing.execution_strategy is execution_strategy
             and existing.preparation_steps is preparation_steps
             and existing.affects_fingerprint == affects_fingerprint
+            and existing.build_preparation is build_preparation
         ):
             return
         raise ValueError("recipe item %r is already owned by %s" % (key, existing.owner))
@@ -127,6 +133,7 @@ def register_recipe_item(
         execution_strategy=execution_strategy,
         preparation_steps=preparation_steps,
         affects_fingerprint=affects_fingerprint,
+        build_preparation=build_preparation,
     )
 
 

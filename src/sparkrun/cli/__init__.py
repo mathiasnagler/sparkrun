@@ -20,6 +20,7 @@ from ._common import (
     json_option,
 )
 from ._adv import adv
+from ._build import build
 from ._benchmark import benchmark
 from ._cluster import cluster, cluster_status
 from ._export import export
@@ -78,6 +79,7 @@ def main(ctx, verbose, quiet):
 
 # Register command groups and commands
 main.add_command(run)
+main.add_command(build)
 main.add_command(stop)
 main.add_command(logs_cmd)
 main.add_command(setup)
