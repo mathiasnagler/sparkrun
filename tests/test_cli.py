@@ -2826,57 +2826,18 @@ class TestFollowLogs:
         assert result.exit_code == 0
         assert "--no-follow" in result.output
 
-    def test_follow_logs_called_after_successful_run(self, runner, reset_bootstrap):
-        """follow_logs is called after a successful detached run."""
+    @pytest.mark.parametrize("flags,show_logs", [([], True), (["--no-follow"], False)])
+    def test_detached_run_waits_for_readiness(self, runner, reset_bootstrap, flags, show_logs):
         with (
             mock.patch("sparkrun.orchestration.distribution.distribute_from_config", return_value=(None, {}, {}, {})),
             mock.patch.object(SglangRuntime, "run", return_value=0),
-            mock.patch.object(SglangRuntime, "follow_logs") as mock_follow,
+            mock.patch("sparkrun.cli._run_lifecycle.wait_for_run", return_value=0) as wait,
         ):
-            result = runner.invoke(
-                main,
-                [
-                    "run",
-                    _TEST_RECIPE_NAME,
-                    "--solo",
-                    "--hosts",
-                    "localhost",
-                ],
-            )
-
-            assert result.exit_code == 0
-            mock_follow.assert_called_once()
-            call_kwargs = mock_follow.call_args.kwargs
-            assert call_kwargs["cluster_id"].startswith("sparkrun_")
-            assert call_kwargs["dry_run"] is False
-
-    def test_no_follow_flag_skips_follow_logs(self, runner, reset_bootstrap):
-        """--no-follow prevents follow_logs from being called."""
-        with (
-            mock.patch("sparkrun.orchestration.distribution.distribute_from_config", return_value=(None, {}, {}, {})),
-            mock.patch.object(SglangRuntime, "run", return_value=0),
-            mock.patch.object(SglangRuntime, "follow_logs") as mock_follow,
-            mock.patch("sparkrun.orchestration.job_metadata.check_job_running") as mock_check,
-        ):
-            from sparkrun.orchestration.job_metadata import JobStatus
-
-            mock_check.return_value = JobStatus(running=True, cluster_id="test")
-
-            result = runner.invoke(
-                main,
-                [
-                    "run",
-                    _TEST_RECIPE_NAME,
-                    "--solo",
-                    "--no-follow",
-                    "--hosts",
-                    "localhost",
-                ],
-            )
-
-            assert result.exit_code == 0
-            mock_follow.assert_not_called()
-            mock_check.assert_called_once()
+            result = runner.invoke(main, ["run", _TEST_RECIPE_NAME, "--solo", "--hosts", "localhost", *flags])
+        assert result.exit_code == 0, result.output
+        wait.assert_called_once()
+        assert wait.call_args.kwargs["show_logs"] is show_logs
+        assert wait.call_args.kwargs["keep_following"] is False
 
     def test_dry_run_skips_follow_logs(self, runner, reset_bootstrap):
         """--dry-run prevents follow_logs from being called."""
@@ -6261,7 +6222,7 @@ class TestRunEnsureFlag:
         ):
             result = runner.invoke(
                 main,
-                ["run", _TEST_RECIPE_NAME, "--hosts", "localhost", "--ensure", "--solo"],
+                ["run", _TEST_RECIPE_NAME, "--hosts", "localhost", "--ensure", "--solo", "--no-ready-wait"],
             )
         assert result.exit_code == 0, result.output
         assert "already running" in result.output
@@ -6281,7 +6242,7 @@ class TestRunEnsureFlag:
         ):
             result = runner.invoke(
                 main,
-                ["run", _TEST_RECIPE_NAME, "--hosts", "localhost,10.0.0.9", "--ensure", "--solo"],
+                ["run", _TEST_RECIPE_NAME, "--hosts", "localhost,10.0.0.9", "--ensure", "--solo", "--no-ready-wait"],
             )
         assert result.exit_code == 0, result.output
         assert "already running" in result.output

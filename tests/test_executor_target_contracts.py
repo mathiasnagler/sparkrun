@@ -205,7 +205,7 @@ def test_cli_early_ensure_observes_recipe_target(lifecycle_env, monkeypatch):
     monkeypatch.setattr("sparkrun.cli._run._get_context", lambda ctx: env.sctx)
     monkeypatch.setattr("sparkrun.cli._run._load_recipe", lambda *a, **kw: (env.recipe, None, None))
     monkeypatch.setattr(api, "plan", Mock(side_effect=AssertionError("ensure should return before placement")))
-    result = CliRunner().invoke(main, ["run", "test", "--hosts", "localhost", "--ensure"])
+    result = CliRunner().invoke(main, ["run", "test", "--hosts", "localhost", "--ensure", "--no-ready-wait"])
     assert result.exit_code == 0, (result.output, result.exception)
     assert "Job already running (cluster_id: %s)" % second.cluster_id in result.output
     api.plan.assert_not_called()

@@ -50,7 +50,9 @@ sparkrun status
 Ctrl+C detaches from logs — it never kills your inference job. Your model keeps serving.
 
 Watched launches also report Docker-start TTR and TTFT using a rank-local
-streaming readiness check for Docker vLLM/SGLang launches. See
+streaming readiness check for Docker vLLM/SGLang launches. By default, `run`
+follows startup logs and exits when ready; use `--follow` to stay attached,
+`--no-follow` to wait without model logs, or `--no-ready-wait` to return after launch. See
 [startup readiness](docs/STARTUP_READINESS.md) for configuration, timing
 boundaries, per-recipe overrides, and execution-strategy integration.
 

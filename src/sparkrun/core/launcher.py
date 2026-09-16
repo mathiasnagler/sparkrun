@@ -1993,9 +1993,8 @@ def wait_for_endpoint_ready(
         ssh_kwargs: SSH parameters for probing the head host.
         dry_run: Report ready without waiting.
         port_timeout_s: Wall-clock budget for the port stage
-            (:data:`DEFAULT_PORT_READY_TIMEOUT_S`).  ``math.inf`` polls
-            until cancelled, which is what the background watcher on
-            ``sparkrun run`` uses.
+            (:data:`DEFAULT_PORT_READY_TIMEOUT_S`). ``math.inf`` polls
+            until cancelled.
         port_retry_interval: Seconds between port polls.
         health_timeout_s: Wall-clock budget for the health stage
             (:data:`DEFAULT_HEALTH_READY_TIMEOUT_S`).
@@ -2062,6 +2061,7 @@ def wait_for_endpoint_ready(
         dry_run=dry_run,
         container_name=container,
         cancel=cancel,
+        executor=runtime.executor,
     )
     port_wait_s = time.monotonic() - t0
     # Checked before the span is closed: the waiters report cancellation and
@@ -2100,7 +2100,10 @@ def wait_for_endpoint_ready(
 
 
 class ReadinessWatcher:
-    """Run :func:`wait_for_endpoint_ready` on a background thread.
+    """Run :func:`wait_for_serve_ready` on a background thread.
+
+    ``done`` signals every terminal outcome, including exceptions in ``error``.
+    Consumers must check both ``error`` and ``readiness`` before accepting success.
 
     Exists for the one case where the readiness wait cannot own the
     terminal: ``sparkrun run`` attaches to the container logs immediately
@@ -2145,6 +2148,8 @@ class ReadinessWatcher:
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
         self._serving_span: int | None = None
+        self.done = threading.Event()
+        self.error: Exception | None = None
         self.readiness: ServeReadiness | None = None
         """Outcome, once the wait has finished.  ``None`` while still polling."""
 
@@ -2158,22 +2163,22 @@ class ReadinessWatcher:
 
     def _run(self) -> None:
         try:
-            readiness = wait_for_serve_ready(
-                self._result,
-                ssh_kwargs=self._ssh_kwargs,
-                timeline=self._timeline,
-                cancel=self._cancel,
-                dry_run=self._dry_run,
-                # Explicit, not inherited: this runs off the main thread, and
-                # a span taken from the shared open-span stack would be closed
-                # (with the wrong status) by the next main-thread ``end()``.
-                parent=TIMELINE_ROOT,
-            )
-        except Exception:
-            # Observational only — this thread must never be why a launch
-            # that already succeeded reports a problem.
+            self._observe()
+        except Exception as error:
+            self.error = error
             logger.debug("Readiness watch failed", exc_info=True)
-            return
+        finally:
+            self.done.set()
+
+    def _observe(self) -> None:
+        readiness = wait_for_serve_ready(
+            self._result,
+            ssh_kwargs=self._ssh_kwargs,
+            timeline=self._timeline,
+            cancel=self._cancel,
+            dry_run=self._dry_run,
+            parent=TIMELINE_ROOT,
+        )
         self.readiness = readiness
         if not readiness.ready:
             return
@@ -2231,6 +2236,8 @@ def post_launch_lifecycle(
     trust: bool = False,
     dry_run: bool = False,
     progress: LaunchProgress | None = None,
+    *,
+    readiness: ServeReadiness | None = None,
 ) -> None:
     """Run post-serve lifecycle: port polling, health checks, hooks, conditional stop.
 
@@ -2248,6 +2255,7 @@ def post_launch_lifecycle(
         remote_cache_dir: Remote cache directory for hook context.
         trust: Trust post_commands from non-default registries without prompting.
         dry_run: Show what would be done without executing.
+        readiness: A completed readiness check to reuse instead of probing again.
     """
     import sys
 
@@ -2272,17 +2280,9 @@ def post_launch_lifecycle(
 
     _ssh_kw = build_ssh_kwargs(config)
 
-    click.echo("Waiting for server to become ready...")
-    # Same budget as every other readiness wait, config-overridable.  This
-    # path blocks the CLI, which is the argument for keeping it *tight* —
-    # but the failure it would guard against (a dead workload) is already
-    # caught within one interval by the container-liveness check, so a
-    # tight budget here only ever mislabels a slow engine as a broken one.
-    readiness = wait_for_serve_ready(
-        result,
-        ssh_kwargs=_ssh_kw,
-        dry_run=dry_run,
-    )
+    if readiness is None:
+        click.echo("Waiting for server to become ready...")
+        readiness = wait_for_serve_ready(result, ssh_kwargs=_ssh_kw, dry_run=dry_run)
     head_host = readiness.head_host
     head_ip = readiness.head_ip
     effective_port = readiness.port

@@ -1,6 +1,42 @@
 # Startup readiness and timing
 
-By default, watched supported Docker launches for vLLM and SGLang use one
+`sparkrun run <recipe>` follows startup logs and waits for readiness by default.
+It exits **0** once ready and any required post-launch hooks finish, or **1**
+when launch/readiness/hooks fail. A timeout means readiness is unconfirmed;
+it does not necessarily mean the model crashed. Detached workloads remain
+available for inspection after a failed wait.
+
+| Option | Model logs | Completion |
+| --- | --- | --- |
+| Default | Follow startup | Ready or startup failure |
+| `--no-follow` | Suppressed | Ready or startup failure |
+| `--no-ready-wait` | No ongoing attachment | Launch completed; readiness not checked |
+| `--follow` | Continue after readiness | Ctrl-C or log attachment ends |
+
+`--no-follow` still prints launch progress and the readiness summary. Combine it
+with `--no-ready-wait` for submission-only behavior. Build, distribution, and
+synchronous launch checks still run with `--no-ready-wait`.
+
+`--follow` conflicts with either negative flag. `--no-ready-wait` also conflicts
+with `--foreground` and with post-launch hooks, which require a ready server.
+Invalid combinations exit **2**, before launching. Ctrl-C during waiting/following
+exits **130**, detaches the observers, and leaves the detached workload running.
+A broken log stream does not establish readiness or workload failure: startup
+waiting continues independently. With explicit `--follow`, a terminated log
+attachment returns **1** because continued observation has ended.
+
+`--ensure` waits for an existing job's readiness too, using its recorded head
+and port; it does not rerun post-launch hooks. If its original placement cannot
+be recovered or only part of the job is observed, readiness is unconfirmed and
+the command fails. `--ensure --no-ready-wait` checks presence only.
+
+`--foreground` retains workload-lifetime behavior, including generated systemd
+units. `api.run()` remains submit-oriented, and `sparkrun logs --follow` keeps
+its existing independent behavior. Executors without a supported host endpoint
+(currently Kubernetes) require `--no-ready-wait` for CLI submission. Dry runs
+never wait for a live endpoint.
+
+By default, supported Docker launches for vLLM and SGLang use one
 streaming chat request as the final readiness signal. A listening port or a
 successful health response alone does not establish that a model can generate.
 Runtimes and executors without compatible declarations retain endpoint checks.
@@ -178,11 +214,11 @@ launches use the same effective policy. Benchmarks wait for startup readiness
 before running their framework's requests. The probe needs Python 3 and Docker
 access on the head host; it does not install software there.
 
-Default log-following launches and post-launch hooks use this readiness path.
-`--no-follow` retains its fast return after the existing boot-liveness check;
-it does not block for inference or promise a TTFT. Ctrl+C detaches from the
-workload and cancels the local probe/SSH process. Probe operations also have
-bounded timeouts; cancelling observation does not stop the serving container.
+Default launches, including `--no-follow`, and post-launch hooks use this
+readiness path. `--no-ready-wait` skips the CLI wait and makes no readiness or
+TTFT claim. Ctrl+C detaches from the workload and cancels the local probe/SSH
+process. Probe operations also have bounded timeouts; cancelling observation
+does not stop the serving container.
 
 ## Execution strategies
 

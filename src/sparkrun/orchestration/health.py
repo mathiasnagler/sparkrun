@@ -125,6 +125,7 @@ def wait_for_port(
     container_name: str | None = None,
     cancel: "threading.Event | None" = None,
     timeout_s: float | None = None,
+    executor=None,
 ) -> bool:
     """Poll until a TCP port is listening on a host.
 
@@ -138,6 +139,7 @@ def wait_for_port(
         retry_interval: Seconds between retries.
         ssh_kwargs: SSH connection parameters.
         dry_run: Skip waiting in dry-run mode.
+        executor: Optional substrate for liveness checks (including native processes).
         container_name: If provided, verify the container is still
             running on each iteration.  Aborts early if the container
             has exited (e.g. crashed on startup).
@@ -175,15 +177,24 @@ def wait_for_port(
         # Check container liveness before polling the port.  This — not the
         # budget — is what detects a genuine failure, which is why the
         # budget can afford to be generous.
-        if container_name and attempt > 1:
-            if not is_container_running(host, container_name, ssh_kwargs=ssh_kwargs):
+        if container_name and (executor is not None or attempt > 1):
+            if executor is None:
+                running = is_container_running(host, container_name, ssh_kwargs=ssh_kwargs)
+            else:
+                status = run_command_on_host(host, executor.status_cmd(container_name), ssh_kwargs=ssh_kwargs, timeout=10)
+                if status.returncode not in (0, 1):
+                    raise RuntimeError("Cannot check workload %s on %s (status %s)" % (container_name, host, status.returncode))
+                running = status.success
+            if not running:
                 logger.error(
-                    "  Container %s is no longer running on %s — aborting wait",
+                    "  Workload %s is not running or liveness could not be confirmed on %s — aborting wait",
                     container_name,
                     host,
                 )
                 return False
 
+        if cancel is not None and cancel.is_set():
+            return False
         result = run_command_on_host(host, check_cmd, ssh_kwargs=ssh_kwargs, timeout=5, quiet=True)
         if result.success:
             logger.info("  Port %d ready after %ds", port, int(time.monotonic() - t0))

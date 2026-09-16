@@ -96,7 +96,7 @@ def _echo_hub_notice() -> None:
 
 
 def _echo_endpoint_ready(readiness) -> None:
-    """Announce a now-serving endpoint from the readiness watcher thread.
+    """Announce a now-serving endpoint while the log attachment is active.
 
     Called while ``docker logs -f`` is writing to the same terminal, so it
     must be **one short line in one write**: a multi-line block would be
@@ -148,17 +148,7 @@ def _echo_endpoint_ready(readiness) -> None:
 
 
 def _report_readiness_outcome(readiness) -> None:
-    """Report a readiness watch that ended without the endpoint serving.
-
-    Deliberately does **not** touch the exit code.  The watch is
-    observational: it runs on every launch now, and a slow-loading model
-    that outlasts the poll budget must not turn a successful launch into a
-    failure for everything scripted around ``sparkrun run``.
-
-    Silent for ``None`` (still polling when we exited) and for
-    ``"cancelled"`` (the user stopped the stream) — neither says anything
-    about the workload.
-    """
+    """Describe failure without confusing an expired wait with confirmed death."""
     if readiness is None or readiness.ready or readiness.reason == "cancelled":
         return
     if readiness.reason == "port":
@@ -168,8 +158,8 @@ def _report_readiness_outcome(readiness) -> None:
     else:
         detail = "%s never returned HTTP 200" % readiness.health_url
     click.secho(
-        render_identity_text("[{app_command}] WARNING: endpoint did not become ready — %s." % detail),
-        fg="yellow",
+        render_identity_text("[{app_command}] ERROR: endpoint did not become ready — %s." % detail),
+        fg="red",
         err=True,
     )
 
@@ -264,8 +254,10 @@ def _summarize_platforms(
 @click.option("--dashboard-port", type=int, default=8265, help="Ray dashboard port", hidden=HIDE_ADVANCED_OPTIONS)
 @dry_run_option
 @click.option("--foreground", is_flag=True, help="Run in foreground (don't detach)")
-@click.option("--ensure", is_flag=True, default=False, help="Only launch if not already running; exit 0 if already up")
-@click.option("--no-follow", is_flag=True, help="Don't follow container logs after launch")
+@click.option("--ensure", is_flag=True, default=False, help="Reuse an existing job when present; still wait for readiness")
+@click.option("--no-follow", is_flag=True, help="Suppress model logs; still wait for readiness")
+@click.option("--follow", is_flag=True, help="Keep following model logs after readiness (Ctrl-C detaches)")
+@click.option("--no-ready-wait", is_flag=True, help="Return after launch without waiting for readiness or following logs")
 @click.option(
     "--no-auto-detect",
     is_flag=True,
@@ -387,6 +379,8 @@ def run(
     ensure,
     foreground,
     no_follow,
+    follow,
+    no_ready_wait,
     no_auto_detect,
     no_sync_tuning,
     no_rm,
@@ -430,6 +424,11 @@ def run(
       {app_command} run my-recipe.yaml -e VLLM_USE_V1=1 -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     """
     from sparkrun.core.bootstrap import get_runtime
+
+    if follow and (no_follow or no_ready_wait):
+        raise click.UsageError("--follow cannot be combined with --no-follow or --no-ready-wait")
+    if foreground and no_ready_wait:
+        raise click.UsageError("--foreground cannot be combined with --no-ready-wait")
 
     sctx = _get_context(ctx)
     v = sctx.variables
@@ -620,6 +619,25 @@ def run(
         recipe_ref=recipe_ref,
     )
 
+    has_post_hooks = bool(recipe.post_exec or recipe.post_commands)
+    if no_ready_wait and has_post_hooks:
+        raise click.UsageError("--no-ready-wait cannot be used with post-launch hooks that require readiness")
+    if not foreground and not no_ready_wait and not dry_run:
+        from sparkrun.orchestration.executor import resolve_executor
+
+        wait_executor = resolve_executor(
+            recipe=recipe,
+            runtime=runtime,
+            cluster=cluster_def,
+            config=config,
+            cli_overrides=run_options.executor_overrides(),
+            v=v,
+            rootless=False,
+            auto_user=False,
+        )
+        if not wait_executor.supports_host_endpoint:
+            raise click.UsageError("This executor has no supported readiness endpoint; use --no-ready-wait for submission only")
+
     # --ensure: if this workload is already serving, don't launch — and don't
     # schedule either, which is why this runs before the plan.
     #
@@ -663,7 +681,22 @@ def run(
                     % (len(_match.other_cluster_ids), ", ".join(_match.other_cluster_ids)),
                     err=True,
                 )
-            sys.exit(0)
+            if no_ready_wait or dry_run or foreground:
+                click.echo("Existing job found; readiness not checked.")
+                sys.exit(0)
+            from sparkrun.cli._run_lifecycle import existing_launch, wait_for_run
+
+            existing = existing_launch(_match, recipe=recipe, overrides=overrides, cluster=cluster_def, sctx=sctx)
+            sys.exit(
+                wait_for_run(
+                    existing,
+                    show_logs=not no_follow,
+                    keep_following=follow,
+                    on_ready=_echo_endpoint_ready,
+                    on_failure=_report_readiness_outcome,
+                    run_hooks=False,
+                )
+            )
 
     # Identity half of the banner, printed *before* the plan.
     #
@@ -826,6 +859,11 @@ def run(
     _run_span = sctx.timing.begin("run") if sctx.timing is not None else None
     try:
         run_result = api.run(run_options, sctx=sctx, plan=run_plan)
+    except KeyboardInterrupt:
+        click.echo("\nLaunch interrupted; inspect workload status before retrying.", err=True)
+        if diag:
+            diag.close()
+        sys.exit(130)
     except TransferError as e:
         if diag:
             diag.phase_end("launch", error=str(e))
@@ -892,102 +930,42 @@ def run(
 
     # endregion
 
-    # Post-serve lifecycle: run post_exec and post_commands if recipe defines them
-    has_post_hooks = bool(recipe.post_exec or recipe.post_commands)
-    if launch_result is not None and result.rc == 0 and has_post_hooks and not foreground:
-        from sparkrun.core.launcher import post_launch_lifecycle
-
-        post_launch_lifecycle(
-            launch_result, remote_cache_dir=launch_result.effective_cache_dir, trust=trust, dry_run=dry_run, progress=sctx.progress
-        )
-    else:
-        if sctx.progress:
-            sctx.progress.phase_skip(6)
-
     exit_code = result.rc
+    if result.rc == 0 and not foreground:
+        if dry_run:
+            if launch_result is not None and has_post_hooks:
+                from sparkrun.core.launcher import post_launch_lifecycle
 
-    # Follow container logs after a successful detached launch
-    watcher = None
-    serving_span = None
-    if launch_result is not None and result.rc == 0 and not foreground and not dry_run:
-        if not no_follow:
-            # The readiness poll runs *alongside* the log stream rather than
-            # before it.  ``launch_inference`` returns once the containers are
-            # up, which for a large model is minutes before the server accepts
-            # a request — and those minutes are precisely what the user is
-            # watching scroll past.  Waiting first would blank the screen for
-            # the most informative part of the launch; not waiting at all is
-            # what left `serve.port_open` / `serve.health_ok` unrecorded on
-            # every run of a recipe without post hooks.
-            #
-            # Skipped when the recipe *has* post hooks: `post_launch_lifecycle`
-            # above already waited synchronously and recorded those spans, so a
-            # watcher here would duplicate them and re-poll a live endpoint.
-            if not has_post_hooks:
-                from sparkrun.core.launcher import ReadinessWatcher
-                from sparkrun.orchestration.primitives import build_ssh_kwargs as _watch_ssh
-
-                watcher = ReadinessWatcher(
+                post_launch_lifecycle(
                     launch_result,
-                    ssh_kwargs=_watch_ssh(config),
-                    on_ready=_echo_endpoint_ready,
-                    timeline=sctx.timing,
-                ).start()
-            elif sctx.timing is not None:
-                # The post-hook path waited synchronously above, so the
-                # endpoint is already serving and there is no watcher to own
-                # the interval — but the log stream below still runs for as
-                # long as the user watches, and that time is just as
-                # unaccounted here as it would be there.
-                from sparkrun.core.timing import ROOT as _TIMELINE_ROOT
-
-                serving_span = sctx.timing.begin("serve.serving", parent=_TIMELINE_ROOT, label="serving")
-
-            # `finally`, not a plain follow-up statement: the watcher holds a
-            # thread that polls over SSH, and it must be cancelled even if the
-            # stream ends by an exception rather than by the user.
-            try:
-                runtime.follow_logs(
-                    hosts=host_list,
-                    cluster_id=result.cluster_id,
-                    config=config,
-                    dry_run=dry_run,
+                    remote_cache_dir=launch_result.effective_cache_dir,
+                    trust=trust,
+                    dry_run=True,
+                    progress=sctx.progress,
                 )
-            finally:
-                # ``watcher.stop()`` closes its own serving span; this one is
-                # the post-hook path's, which has no watcher.
-                readiness = watcher.stop() if watcher is not None else None
-                if serving_span is not None and sctx.timing is not None:
-                    sctx.timing.end(serving_span)
-
-            # Reached when the user interrupts the stream (Ctrl-C is caught
-            # inside the log printer) or the container exits and `docker logs
-            # -f` ends.  Either way nothing else owns the terminal from here.
-            _report_readiness_outcome(readiness)
+            elif sctx.progress:
+                sctx.progress.phase_skip(6)
+        elif no_ready_wait:
+            if sctx.progress:
+                sctx.progress.phase_skip(6)
+            click.echo("Launch completed; readiness not checked (--no-ready-wait).")
+        elif launch_result is None:
+            click.echo("Error: launch returned no supported readiness handle; readiness is unconfirmed.", err=True)
+            exit_code = 1
         else:
-            # Perform a 5s boot liveness check for detached containers to catch crashes
-            import time
+            from sparkrun.cli._run_lifecycle import wait_for_run
 
-            from sparkrun.orchestration.job_metadata import check_job_running
-            from sparkrun.orchestration.primitives import build_ssh_kwargs
-
-            time.sleep(5.0)
-            ssh_kwargs = build_ssh_kwargs(config)
-
-            status = check_job_running(
-                cluster_id=result.cluster_id,
-                hosts=host_list,
-                ssh_kwargs=ssh_kwargs,
-                cache_dir=str(config.cache_dir),
+            exit_code = wait_for_run(
+                launch_result,
+                show_logs=not no_follow,
+                keep_following=follow,
+                on_ready=_echo_endpoint_ready,
+                on_failure=_report_readiness_outcome,
+                trust=trust,
+                progress=sctx.progress,
             )
-            if not status.running:
-                click.secho(
-                    render_identity_text("\n[{app_command}] CRITICAL: Container died unexpectedly after detached launch."),
-                    fg="red",
-                    err=True,
-                    bold=True,
-                )
-                exit_code = 1
+    elif sctx.progress:
+        sctx.progress.phase_skip(6)
 
     # Printed last, and only here.  The tables are multi-line, so they cannot
     # be emitted while `docker logs -f` is writing to the same terminal
@@ -1005,11 +983,8 @@ def run(
     if show_timings:
         from sparkrun.utils.cli_formatters import STARTUP_SPAN_NAMES, format_launch_timings, format_startup_readiness
 
-        # Read off the result rather than off `readiness`: the watcher path
-        # stores the observation there, and the post-hook path — which has no
-        # watcher, so `readiness` is None above — reaches the same field
-        # through its own synchronous wait.  Empty for a legacy endpoint wait,
-        # whose two stages the tree below already carries.
+        # The observer stores the shared result here, including hook launches.
+        # Empty for a legacy endpoint wait, whose stages remain in the tree.
         _startup = format_startup_readiness(
             getattr(result, "startup_observation", None),
             host=host_list[0] if host_list else None,
@@ -1037,17 +1012,13 @@ def run(
 
     # --- Diagnostics finalize ---
     if diag:
-        if launch_result is not None and exit_code != 0:
-            # Capture container logs on failure for debugging
-            from sparkrun.orchestration.docker import generate_container_name, generate_node_container_name
-            from sparkrun.orchestration.primitives import build_ssh_kwargs as _diag_ssh2
-
-            _head = host_list[0] if host_list else "localhost"
-            _cname = generate_container_name(result.cluster_id, "solo") if is_solo else generate_node_container_name(result.cluster_id, 0)
-            try:
-                diag.capture_container_logs(_head, _cname, _diag_ssh2(config))
-            except Exception:
-                pass
+        if exit_code != 0:
+            diag.emit_error("completion", "CLI observation interrupted" if exit_code == 130 else "Run did not complete successfully")
+            if launch_result is not None and exit_code != 130:
+                try:
+                    diag.capture_workload_logs(launch_result)
+                except Exception:
+                    logger.debug("Could not collect workload failure logs", exc_info=True)
         diag.emit_timeline(sctx.timing)
         diag.emit_summary()
         diag.close()

@@ -29,11 +29,13 @@ renders it.  Nothing here imports ``api`` (layering).
 from __future__ import annotations
 
 import logging
+import os
 import queue
+import signal
 import subprocess
 import threading
 import time
-from typing import Iterator, Sequence
+from typing import Generator, Iterator, Sequence
 
 from sparkrun.core.log_source import LogLine, LogSource
 
@@ -79,7 +81,7 @@ def build_read_command(
 
 
 def _spawn(cmd: list[str]) -> subprocess.Popen:
-    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
 
 
 def _line(source: LogSource, text: str, *, timestamp: float | None = None) -> LogLine:
@@ -128,19 +130,25 @@ def read_log_command(cmd: list[str], source: LogSource, *, check: bool = False) 
 
 
 def _terminate(proc: subprocess.Popen) -> None:
-    """Best-effort teardown of a reader subprocess."""
-    if proc.poll() is not None:
-        return
+    """Reap the reader session, including children that outlive their shell."""
     try:
-        proc.terminate()
-        proc.wait(timeout=5)
-    except Exception:
-        logger.debug("Log reader terminate failed; killing", exc_info=True)
         try:
-            proc.kill()
-            proc.wait(timeout=5)
-        except Exception:
-            logger.debug("Log reader kill failed", exc_info=True)
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        # A shell can exit before a child that ignores TERM. Always finish
+        # the owned process group, even if poll()/wait() says the shell exited.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=1)
+    except Exception:
+        logger.debug("Log reader cleanup failed", exc_info=True)
 
 
 def read_log_sources(
@@ -150,18 +158,13 @@ def read_log_sources(
     follow: bool = False,
     tail: int | None = None,
     ssh_kwargs: dict | None = None,
-) -> Iterator[LogLine]:
-    """Yield :class:`LogLine` records from every source in *sources*.
+    cancel: threading.Event | None = None,
+    check: bool = False,
+) -> Generator[LogLine, None, None]:
+    """Read sources in arrival order when following, otherwise rank-grouped.
 
-    See the module docstring for the ordering contract: arrival-interleaved
-    when *follow*, rank-grouped otherwise.
-
-    Args:
-        executor: Executor whose substrate the sources live on.
-        sources: Sources to read, head-first (the non-follow emit order).
-        follow: Keep streaming new lines instead of dumping and exiting.
-        tail: Number of existing lines per source; ``None`` for all.
-        ssh_kwargs: SSH connection parameters.
+    For live streams, ``cancel`` ends even a silent reader and ``check``
+    propagates reader failures. Neither option changes workload lifetime.
     """
     if not sources:
         return
@@ -169,7 +172,7 @@ def read_log_sources(
         for source in sources:
             yield from _read_one(executor, source, follow=False, tail=tail, ssh_kwargs=ssh_kwargs)
         return
-    yield from _interleave(executor, sources, tail=tail, ssh_kwargs=ssh_kwargs)
+    yield from _interleave(executor, sources, tail=tail, ssh_kwargs=ssh_kwargs, cancel=cancel, check=check)
 
 
 def _interleave(
@@ -178,51 +181,128 @@ def _interleave(
     *,
     tail: int | None,
     ssh_kwargs: dict | None,
+    cancel: threading.Event | None = None,
+    check: bool = False,
 ) -> Iterator[LogLine]:
-    """Follow every source concurrently, yielding lines as they arrive.
-
-    One thread per source pushing into a shared queue.  Arrival order *is*
-    time order for a live stream, and each line is stamped on arrival so
-    downstream consumers can re-sort or display times.
-    """
+    """Follow sources concurrently, with bounded, cancellation-aware queues."""
     lines: queue.Queue = queue.Queue(maxsize=1000)
     procs: list[subprocess.Popen] = []
     stop = threading.Event()
+    lock = threading.Lock()
 
-    def _pump(source: LogSource) -> None:
+    def put(item) -> None:
+        # A full queue must not strand a producer after its consumer exits.
+        while not stop.is_set():
+            try:
+                lines.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                pass
+
+    def pump(source: LogSource) -> None:
+        proc = None
         try:
             cmd = build_read_command(executor, source, follow=True, tail=tail, ssh_kwargs=ssh_kwargs)
             logger.debug("Following logs from %s: %s", source.label, " ".join(cmd))
-            proc = _spawn(cmd)
-            procs.append(proc)
+            with lock:
+                if stop.is_set():
+                    return
+                proc = _spawn(cmd)
+                procs.append(proc)
             assert proc.stdout is not None
             for text in proc.stdout:
                 if stop.is_set():
                     break
-                lines.put(_line(source, text, timestamp=time.time()))
-        except Exception as e:  # pragma: no cover - defensive; one source must not kill the rest
-            logger.debug("Log reader for %s failed: %s", source.label, e)
+                put(_line(source, text, timestamp=time.time()))
+            if check and not stop.is_set() and (rc := proc.wait()) != 0:
+                raise subprocess.CalledProcessError(rc, cmd)
+        except Exception as error:
+            logger.debug("Log reader for %s failed: %s", source.label, error)
+            if check:
+                put(error)
         finally:
-            lines.put(_QUEUE_SENTINEL)
+            if proc is not None:
+                _terminate(proc)
+                if proc.stdout is not None:
+                    proc.stdout.close()
+            put(_QUEUE_SENTINEL)
 
-    threads = [threading.Thread(target=_pump, args=(source,), daemon=True, name="sparkrun-logs-%s" % source.label) for source in sources]
+    threads = [threading.Thread(target=pump, args=(source,), daemon=True, name="sparkrun-logs-%s" % source.label) for source in sources]
     for thread in threads:
         thread.start()
-
     remaining = len(threads)
     try:
         while remaining:
-            item = lines.get()
+            if cancel is not None and cancel.is_set():
+                break
+            try:
+                item = lines.get(timeout=0.1)
+            except queue.Empty:
+                continue
             if item is _QUEUE_SENTINEL:
                 remaining -= 1
-                continue
-            yield item
+            elif isinstance(item, Exception):
+                raise item
+            else:
+                yield item
     finally:
-        # Generator closed (Ctrl-C, break, consumer done) — stop the readers
-        # and reap their subprocesses so we never leak an ssh child.
-        stop.set()
-        for proc in list(procs):
+        # Serialize spawn/registration with shutdown so no late SSH child leaks.
+        with lock:
+            stop.set()
+            active = list(procs)
+        for proc in active:
             _terminate(proc)
+        for thread in threads:
+            thread.join(timeout=1)
+
+
+class LogFollower:
+    """Console-free attachment with explicit completion, error and cancellation.
+
+    EOF says only that logs ended; callers decide independently whether the
+    workload is ready. Stopping reaps reader processes, never the workload.
+    """
+
+    def __init__(self, executor, sources, *, on_line, ssh_kwargs=None, tail=100):
+        self.done = threading.Event()
+        self.error: Exception | None = None
+        self._cancel = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="sparkrun-log-follow", daemon=True)
+        self._executor = executor
+        self._sources = sources
+        self._on_line = on_line
+        self._ssh_kwargs = ssh_kwargs
+        self._tail = tail
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    def _run(self):
+        from contextlib import closing
+
+        try:
+            with closing(
+                read_log_sources(
+                    self._executor,
+                    self._sources,
+                    follow=True,
+                    tail=self._tail,
+                    ssh_kwargs=self._ssh_kwargs,
+                    cancel=self._cancel,
+                    check=True,
+                )
+            ) as lines:
+                for line in lines:
+                    self._on_line(line)
+        except Exception as error:
+            self.error = error
+        finally:
+            self.done.set()
+
+    def stop(self):
+        self._cancel.set()
+        self._thread.join(timeout=12)
 
 
 def print_log_sources(

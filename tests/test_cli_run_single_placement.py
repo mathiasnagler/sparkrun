@@ -267,8 +267,9 @@ def test_named_cluster_survives_explicit_host_subset(runner, cluster_env, busy_c
 
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("diagnostics", [False, True])
+@pytest.mark.parametrize("no_ready_wait", [False, True])
 def test_native_handler_result_needs_no_private_launch_handle(
-    runner, cluster_env, busy_cluster_status, monkeypatch, tmp_path, dry_run, diagnostics
+    runner, cluster_env, busy_cluster_status, monkeypatch, tmp_path, dry_run, diagnostics, no_ready_wait
 ):
     from sparkrun import api
 
@@ -295,12 +296,14 @@ def test_native_handler_result_needs_no_private_launch_handle(
     collector = mock.Mock()
     monkeypatch.setattr("sparkrun.diagnostics.RunDiagnosticsCollector", mock.Mock(return_value=collector))
     args = ["run", _RECIPE_NAME, "--cluster", "wopr", "--port", "9001"]
+    if no_ready_wait:
+        args += ["--no-ready-wait"]
     if dry_run:
         args += ["--dry-run"]
     if diagnostics:
         args += ["--collect-diagnostics", str(tmp_path / "run.ndjson")]
     result = runner.invoke(main, args)
-    assert result.exit_code == 0, result.output + repr(result.exception)
+    assert result.exit_code == (0 if dry_run or no_ready_wait else 1), result.output + repr(result.exception)
     assert "native serve --port 9001" in result.output
     lifecycle.assert_not_called()
     follow.assert_not_called()

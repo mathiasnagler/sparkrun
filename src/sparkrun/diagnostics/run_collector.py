@@ -235,6 +235,31 @@ class RunDiagnosticsCollector:
             },
         )
 
+    def capture_workload_logs(self, launch, tail: int = 200) -> None:
+        """Capture the runtime's head log on its actual executor substrate."""
+        from sparkrun.orchestration.primitives import build_ssh_kwargs, run_command_on_host
+
+        runtime = launch.runtime
+        for source in runtime.log_sources(launch.cluster_id, launch.host_list, is_solo=launch.is_solo):
+            command = runtime.executor.read_logs_cmd(source, follow=False, tail=tail)
+            result = run_command_on_host(
+                source.host,
+                command,
+                ssh_kwargs=build_ssh_kwargs(launch.config),
+                timeout=30,
+                dry_run=self._dry_run,
+                quiet=True,
+            )
+            self._writer.emit(
+                "run_container_logs",
+                {
+                    "host": source.host,
+                    "container": source.container,
+                    "lines": result.stdout.strip().splitlines(),
+                    "tail": tail,
+                },
+            )
+
     def emit_error(self, phase: str, error: str | Exception, tb: str | None = None) -> None:
         """Emit ``run_error`` with phase context and optional traceback."""
         self._success = False

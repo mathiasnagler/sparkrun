@@ -278,6 +278,7 @@ class TestReadOrdering:
             return proc
 
         monkeypatch.setattr("sparkrun.orchestration.logs._spawn", _spawn)
+        monkeypatch.setattr("sparkrun.orchestration.logs._terminate", lambda proc: proc.terminate())
 
         stream = read_log_sources(DockerExecutor(), self.SOURCES, follow=True)
         next(stream)
@@ -428,3 +429,80 @@ class TestApiLogsRecipeForm:
     def test_neither_target_raises(self):
         with pytest.raises(api.SparkrunError):
             api.logs()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "exec sleep 60",
+        "while true; do echo startup; done",
+        "sleep 60 & echo child:$!; wait",
+        "python3 -c 'import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        'print("child:" + str(os.getpid()), flush=True); time.sleep(60)\' & wait',
+    ],
+)
+def test_cancel_reaps_real_quiet_busy_and_child_readers(monkeypatch, command):
+    import threading
+    import time
+    from sparkrun.orchestration import logs
+
+    executor = mock.Mock()
+    executor.read_logs_cmd.return_value = command
+    source = LogSource(host="localhost", container="reader-test", mode=MODE_STDOUT)
+    spawned = []
+    original = logs._spawn
+    started = threading.Event()
+
+    def spawn(cmd):
+        proc = original(cmd)
+        spawned.append(proc)
+        started.set()
+        return proc
+
+    monkeypatch.setattr(logs, "_spawn", spawn)
+    child = []
+    child_seen = threading.Event()
+
+    def on_line(line):
+        if line.text.startswith("child:"):
+            child.append(int(line.text.split(":")[1]))
+            child_seen.set()
+        # Slow consumer exercises cancellation with a full producer queue.
+        time.sleep(0.001)
+
+    follower = logs.LogFollower(executor, [source], on_line=on_line).start()
+    try:
+        assert started.wait(5)
+        if "child:" in command:
+            assert child_seen.wait(5)
+    finally:
+        follower.stop()
+    assert follower.done.is_set()
+    assert follower.error is None
+    assert spawned and all(proc.poll() is not None for proc in spawned)
+    assert not any(t.name == "sparkrun-logs-" + source.label for t in threading.enumerate())
+    from pathlib import Path
+
+    for pid in child:
+        status = Path("/proc/%d/stat" % pid)
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                if status.read_text().split()[2] == "Z":
+                    break
+            except (FileNotFoundError, ProcessLookupError):
+                # Reaping may remove /proc before or during the read.
+                break
+            assert time.monotonic() < deadline, "reader child is still running"
+            time.sleep(0.01)
+
+
+def test_checked_follow_reports_reader_exit_code():
+    import subprocess
+
+    executor = mock.Mock()
+    executor.read_logs_cmd.return_value = "exit 7"
+    source = LogSource(host="localhost", container="reader-test")
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        list(read_log_sources(executor, [source], follow=True, check=True))
+    assert error.value.returncode == 7

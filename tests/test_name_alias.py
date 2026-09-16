@@ -58,7 +58,7 @@ def test_run_with_name_override(monkeypatch):
     # short-circuits the scheduler, so the real plan runs without SSH.
     monkeypatch.setattr("sparkrun.cli._run._display_vram_estimate", lambda *args, **kwargs: None)
 
-    result = runner.invoke(main, ["run", "test-recipe", "--container-name", "custom-cluster-id", "--solo"])
+    result = runner.invoke(main, ["run", "test-recipe", "--container-name", "custom-cluster-id", "--solo", "--no-ready-wait"])
 
     assert result.exit_code == 0
     args, kwargs = mock_launch.call_args

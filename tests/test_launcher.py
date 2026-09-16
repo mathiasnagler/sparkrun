@@ -756,6 +756,9 @@ class _LifecycleRuntime:
     """
 
     def __init__(self, head_suffix="_node_0"):
+        from sparkrun.orchestration.executors.docker import DockerExecutor
+
+        self.executor = DockerExecutor()
         self.stop_calls: list[dict] = []
         self._head_suffix = head_suffix
 

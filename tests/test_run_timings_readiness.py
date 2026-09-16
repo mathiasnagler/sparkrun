@@ -427,11 +427,13 @@ def test_serving_span_is_left_open_if_never_stopped():
     assert spans["serve.serving"]["status"] == "open"
 
 
-def test_watcher_swallows_a_failing_wait():
-    """Observational only: the watch must never break a successful launch."""
+def test_watcher_exposes_a_failing_wait():
+    """Exceptions complete the watch and cannot be mistaken for readiness."""
     with mock.patch("sparkrun.core.launcher.wait_for_serve_ready", side_effect=RuntimeError("ssh exploded")):
         watcher = ReadinessWatcher(mock.Mock()).start()
         assert watcher.stop(timeout=5.0) is None
+        assert watcher.done.is_set()
+        assert str(watcher.error) == "ssh exploded"
 
 
 def test_watcher_swallows_a_failing_callback():
@@ -532,20 +534,31 @@ def _fake_run_result(rc: int = 0):
 def launched(monkeypatch):
     """Stub the launch itself; these tests are about what happens after it."""
     result = _fake_run_result()
-    monkeypatch.setattr("sparkrun.api.run", lambda options, sctx=None, plan=None: result)
+
+    def launch(options, sctx=None, plan=None):
+        from sparkrun.core.bootstrap import get_runtime
+
+        result.launch_result.runtime = get_runtime(options.recipe.runtime, sctx.variables)
+        result.launch_result.recipe = options.recipe
+        result.launch_result.config = sctx.config
+        result.launch_result.timeline = sctx.timing
+        result.launch_result.startup_observation = {}
+        return result
+
+    monkeypatch.setattr("sparkrun.api.run", launch)
     return result
 
 
 @pytest.fixture
 def follow_marker(monkeypatch):
-    """Stand in for the attached log stream, marking where it wrote."""
-    import click
-    from sparkrun.runtimes.base import RuntimePlugin
+    """A quiet log stream that exits only when its owner cancels it."""
+    from sparkrun.core.log_source import LogLine
 
-    def _follow(self, **kwargs):
-        click.echo("<<<LOG STREAM>>>")
+    def read(*args, cancel, **kwargs):
+        yield LogLine(host=_HOST, container="test_solo", text="<<<LOG STREAM>>>")
+        assert cancel.wait(5), "log reader was not cancelled"
 
-    monkeypatch.setattr(RuntimePlugin, "follow_logs", _follow)
+    monkeypatch.setattr("sparkrun.orchestration.logs.read_log_sources", read)
 
 
 def _invoke(runner, *extra):
@@ -634,7 +647,7 @@ def test_the_table_accounts_for_the_whole_total(run_env, launched, follow_marker
 
 
 def test_post_hook_recipes_also_account_for_their_serving_time(run_env, launched, follow_marker, monkeypatch):
-    """That path has no watcher, but the log stream still runs."""
+    """Hook launches use the same watcher and serving span."""
     import sparkrun.core.recipe
 
     hooked = dict(_RECIPE_DATA, post_commands=["echo hi"])
@@ -648,6 +661,7 @@ def test_post_hook_recipes_also_account_for_their_serving_time(run_env, launched
     )
     monkeypatch.setattr("sparkrun.core.launcher.post_launch_lifecycle", lambda *a, **k: None)
 
+    monkeypatch.setattr("sparkrun.core.launcher.wait_for_serve_ready", lambda *a, **k: _ready())
     out = _all_output(_invoke(CliRunner()))
 
     assert "serving" in out
@@ -669,112 +683,57 @@ def test_no_timings_suppresses_the_table_but_keeps_the_readiness_line(run_env, l
 
 
 def test_ready_line_is_injected_while_the_stream_is_live(run_env, launched, monkeypatch):
-    """The announcement lands *during* the follow, not after it."""
-    import click
-    from sparkrun.runtimes.base import RuntimePlugin
+    from sparkrun.core.log_source import LogLine
+    import sparkrun.cli._run as run_mod
 
     announced = threading.Event()
+    streaming = threading.Event()
 
-    def _wait(*args, **kwargs):
+    def wait(*args, **kwargs):
+        assert streaming.wait(5)
         return _ready()
 
-    def _follow(self, **kwargs):
-        # Hold the "stream" open until the watcher has reported.
-        assert announced.wait(10.0), "watcher never announced while following"
-        click.echo("<<<LOG STREAM>>>")
-
-    monkeypatch.setattr("sparkrun.core.launcher.wait_for_serve_ready", _wait)
-    monkeypatch.setattr(RuntimePlugin, "follow_logs", _follow)
-
-    import sparkrun.cli._run as run_mod
+    def read(*args, cancel, **kwargs):
+        streaming.set()
+        assert announced.wait(5), "ready was not announced while following"
+        yield LogLine(host=_HOST, container="test_solo", text="<<<LOG STREAM>>>")
+        cancel.wait(5)
 
     original_echo = run_mod._echo_endpoint_ready
 
-    def _spy(readiness):
+    def echo(readiness):
         original_echo(readiness)
         announced.set()
 
-    monkeypatch.setattr(run_mod, "_echo_endpoint_ready", _spy)
-
+    monkeypatch.setattr("sparkrun.core.launcher.wait_for_serve_ready", wait)
+    monkeypatch.setattr("sparkrun.orchestration.logs.read_log_sources", read)
+    monkeypatch.setattr(run_mod, "_echo_endpoint_ready", echo)
     result = _invoke(CliRunner())
-    out = _all_output(result)
-
-    assert "Endpoint ready at http://10.0.0.1:8000/v1" in out
-    assert "engine init 12.0s" in out
-    assert "model load 30.0s" in out
+    assert result.exit_code == 0, result.output
+    assert "Endpoint ready at http://10.0.0.1:8000/v1" in result.output
+    assert "<<<LOG STREAM>>>" in result.output
 
 
-def test_post_hook_recipe_does_not_start_a_second_watcher(tmp_path, monkeypatch, launched, follow_marker, v):
-    """``post_launch_lifecycle`` already waited; a watcher would double up.
-
-    Duplicating the wait would record ``serve.*`` twice and re-poll an
-    endpoint already known to be serving.
-    """
-    import sparkrun.core.config
-    import sparkrun.core.recipe
-    from sparkrun.core.cluster_manager import ClusterManager
-
-    config_root = tmp_path / "config"
-    config_root.mkdir()
-    monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
-    ClusterManager(config_root).create("wopr", [_HOST])
-
-    hooked = dict(_RECIPE_DATA, post_commands=["echo hi"])
-    recipe_file = tmp_path / ("%s.yaml" % _RECIPE_NAME)
-    recipe_file.write_text(yaml.safe_dump(hooked))
-    original = sparkrun.core.recipe.discover_cwd_recipes
-    monkeypatch.setattr(
-        sparkrun.core.recipe,
-        "discover_cwd_recipes",
-        lambda directory=None: [recipe_file] + original(directory),
-    )
-    idle = lambda hosts, **kwargs: ClusterStatus(  # noqa: E731
-        hosts=tuple(HostOccupancy(host=h, workloads=(), used_slots=0, free_slots=1) for h in hosts),
-        executor="docker",
-    )
-    monkeypatch.setattr("sparkrun.api._status.status", idle)
-    monkeypatch.setattr("sparkrun.api.status", idle)
-
-    monkeypatch.setattr("sparkrun.core.launcher.post_launch_lifecycle", lambda *a, **k: None)
-
-    with mock.patch("sparkrun.core.launcher.ReadinessWatcher") as watcher_cls:
-        result = _invoke(CliRunner())
-
-    # Guards the assertion below against passing vacuously: the run has to
-    # have reached the log-follow block for "no watcher" to mean anything.
-    assert result.exit_code == 0, _all_output(result)
-    assert "<<<LOG STREAM>>>" in _all_output(result)
-    watcher_cls.assert_not_called()
+def test_post_hook_recipe_shares_one_readiness_result(run_env, launched, follow_marker, monkeypatch):
+    recipe_file = run_env.parent / "recipes" / (_RECIPE_NAME + ".yaml")
+    recipe_file.write_text(yaml.safe_dump(dict(_RECIPE_DATA, post_commands=["echo hi"])))
+    ready = _ready()
+    with mock.patch("sparkrun.core.launcher.wait_for_serve_ready", return_value=ready) as wait:
+        with mock.patch("sparkrun.core.launcher.post_launch_lifecycle") as hooks:
+            result = _invoke(CliRunner())
+    assert result.exit_code == 0, result.output
+    wait.assert_called_once()
+    hooks.assert_called_once()
+    assert hooks.call_args.kwargs["readiness"] is ready
+    assert "<<<LOG STREAM>>>" in result.output
 
 
-def test_hookless_recipe_does_start_the_watcher(run_env, launched, follow_marker):
-    """Positive control for the test above."""
-    with mock.patch("sparkrun.core.launcher.ReadinessWatcher") as watcher_cls:
-        result = _invoke(CliRunner())
-
-    assert result.exit_code == 0, _all_output(result)
-    watcher_cls.assert_called_once()
-    # It must be handed the launch's own timeline, or the readiness spans
-    # land nowhere and the tree is back to reporting setup only.
-    assert watcher_cls.call_args.kwargs["timeline"] is not None
-
-
-def test_readiness_failure_warns_without_failing_the_run(run_env, launched, follow_marker, monkeypatch):
-    """The watch is observational — it must not invent a non-zero exit.
-
-    It runs on every launch now, so a model that outlasts the poll budget
-    would otherwise start failing everything scripted around ``sparkrun run``.
-    """
-    monkeypatch.setattr(
-        "sparkrun.core.launcher.wait_for_serve_ready",
-        lambda *a, **k: _ready(ready=False, reason="port"),
-    )
-
+@pytest.mark.parametrize("reason", ["port", "health", "inference"])
+def test_readiness_failure_fails_the_run(run_env, launched, follow_marker, monkeypatch, reason):
+    monkeypatch.setattr("sparkrun.core.launcher.wait_for_serve_ready", lambda *a, **k: _ready(ready=False, reason=reason))
     result = _invoke(CliRunner())
-    out = _all_output(result)
-
-    assert result.exit_code == 0, out
-    assert "did not become ready" in out
+    assert result.exit_code == 1, result.output
+    assert "did not become ready" in result.output
 
 
 def test_no_timings_still_records_the_timeline_for_diagnostics(run_env, launched, follow_marker, monkeypatch, tmp_path):
@@ -794,48 +753,33 @@ def test_no_timings_still_records_the_timeline_for_diagnostics(run_env, launched
     assert len(records) == 1, "the diagnostics timeline went missing with --no-timings"
 
 
-def test_watcher_is_cancelled_when_the_log_stream_raises(run_env, launched, monkeypatch):
-    """The ``finally`` around ``follow_logs`` is what stops the thread.
+def test_failed_log_stream_does_not_cancel_readiness(run_env, launched, monkeypatch):
+    log_ended = threading.Event()
 
-    Without it a stream that ends by exception leaves a thread polling over
-    SSH with nothing left to observe or stop it.
-    """
-    from sparkrun.runtimes.base import RuntimePlugin
+    def wait(*args, **kwargs):
+        assert log_ended.wait(5)
+        return _ready()
 
-    stopped = threading.Event()
-
-    def _wait(result, *, cancel=None, **kwargs):
-        cancel.wait(10.0)
-        stopped.set()
-        return _ready(ready=False, reason="cancelled")
-
-    def _explode(self, **kwargs):
+    def read(*args, **kwargs):
+        log_ended.set()
         raise RuntimeError("stream died")
+        yield  # make a generator
 
-    monkeypatch.setattr("sparkrun.core.launcher.wait_for_serve_ready", _wait)
-    monkeypatch.setattr(RuntimePlugin, "follow_logs", _explode)
+    monkeypatch.setattr("sparkrun.core.launcher.wait_for_serve_ready", wait)
+    monkeypatch.setattr("sparkrun.orchestration.logs.read_log_sources", read)
+    result = _invoke(CliRunner())
+    assert result.exit_code == 0, result.output
+    assert "Endpoint ready" in result.output
 
-    _invoke(CliRunner())
 
-    assert stopped.wait(5.0), "the watcher was never cancelled"
-
-
-def test_no_follow_does_not_start_a_watcher(run_env, launched, monkeypatch):
-    """``--no-follow`` returns fast; nothing else owns the terminal.
-
-    Blocking that path on readiness would turn a ~5s return into a
-    multi-minute one for anything scripted.
-    """
-    monkeypatch.setattr("sparkrun.orchestration.job_metadata.check_job_running", lambda **kw: mock.Mock(running=True))
-    monkeypatch.setattr("time.sleep", lambda s: None)
-
-    with mock.patch("sparkrun.core.launcher.ReadinessWatcher") as watcher_cls:
-        result = _invoke(CliRunner(), "--no-follow")
-
-    assert result.exit_code == 0, _all_output(result)
-    watcher_cls.assert_not_called()
-    # The table still prints — it is just launch-only.
-    assert "Launch timings" in _all_output(result)
+def test_no_follow_waits_without_log_readers(run_env, launched, monkeypatch):
+    with mock.patch("sparkrun.core.launcher.wait_for_serve_ready", return_value=_ready()) as wait:
+        with mock.patch("sparkrun.cli._run_lifecycle.LogFollower") as reader:
+            result = _invoke(CliRunner(), "--no-follow")
+    assert result.exit_code == 0, result.output
+    wait.assert_called_once()
+    reader.assert_not_called()
+    assert "Endpoint ready" in result.output
 
 
 def test_interrupted_watch_is_not_reported_as_a_broken_endpoint(run_env, launched, follow_marker, monkeypatch):
@@ -848,5 +792,228 @@ def test_interrupted_watch_is_not_reported_as_a_broken_endpoint(run_env, launche
     result = _invoke(CliRunner())
     out = _all_output(result)
 
-    assert result.exit_code == 0, out
+    assert result.exit_code == 130, out
     assert "did not become ready" not in out
+
+
+@pytest.mark.parametrize("extra", [[], ["--no-follow"]])
+def test_no_ready_wait_does_not_probe_or_attach(run_env, launched, extra):
+    with mock.patch("sparkrun.core.launcher.wait_for_serve_ready") as wait:
+        with mock.patch("sparkrun.cli._run_lifecycle.LogFollower") as logs:
+            result = _invoke(CliRunner(), "--no-ready-wait", *extra)
+    assert result.exit_code == 0, result.output
+    assert "readiness not checked" in result.output
+    wait.assert_not_called()
+    logs.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--follow", "--no-follow"],
+        ["--follow", "--no-ready-wait"],
+        ["--foreground", "--no-ready-wait"],
+    ],
+)
+def test_incompatible_wait_options_fail_before_launch(run_env, flags):
+    with mock.patch("sparkrun.api.run") as launch:
+        result = _invoke(CliRunner(), *flags)
+    assert result.exit_code == 2, result.output
+    launch.assert_not_called()
+
+
+def test_no_ready_wait_rejects_hooks_before_launch(run_env):
+    recipe = run_env.parent / "recipes" / (_RECIPE_NAME + ".yaml")
+    recipe.write_text(yaml.safe_dump(dict(_RECIPE_DATA, post_commands=["echo hi"])))
+    with mock.patch("sparkrun.api.run") as launch:
+        result = _invoke(CliRunner(), "--no-ready-wait")
+    assert result.exit_code == 2, result.output
+    assert "post-launch hooks" in result.output
+    launch.assert_not_called()
+
+
+def test_readiness_exception_is_a_failure(run_env, launched):
+    with mock.patch("sparkrun.core.launcher.wait_for_serve_ready", side_effect=RuntimeError("probe failed")):
+        result = _invoke(CliRunner(), "--no-follow")
+    assert result.exit_code == 1, result.output
+    assert "readiness could not be confirmed: probe failed" in result.output
+
+
+def test_explicit_follow_survives_readiness_then_ctrl_c_detaches(run_env, launched, monkeypatch):
+    from sparkrun.orchestration.logs import LogFollower
+
+    ready = threading.Event()
+    cancelled = threading.Event()
+    from sparkrun.core.log_source import LogLine
+
+    def read(*a, cancel, **kw):
+        yield LogLine(host=_HOST, container="test_solo", text="startup")
+        cancel.wait(5)
+        cancelled.set()
+
+    # Raise on the main thread only once the ready announcement has happened.
+    class InterruptedEvent:
+        def is_set(self):
+            return False
+
+        def set(self):
+            pass
+
+        def wait(self, timeout):
+            assert ready.is_set(), "explicit following must reach readiness first"
+            raise KeyboardInterrupt
+
+    original_start = LogFollower.start
+
+    def start(self):
+        self.done = InterruptedEvent()
+        return original_start(self)
+
+    monkeypatch.setattr("sparkrun.orchestration.logs.read_log_sources", read)
+    monkeypatch.setattr("sparkrun.core.launcher.wait_for_serve_ready", lambda *a, **kw: _ready())
+    monkeypatch.setattr("sparkrun.cli._run._echo_endpoint_ready", lambda outcome: ready.set())
+    monkeypatch.setattr(LogFollower, "start", start)
+    result = _invoke(CliRunner(), "--follow")
+    assert result.exit_code == 130, result.output
+    assert ready.is_set() and cancelled.is_set()
+    assert "Continuing log following" in result.output
+    assert "left running" in result.output
+
+
+def test_ctrl_c_during_readiness_cancels_both_observers(run_env, launched, monkeypatch):
+    from sparkrun.cli import _run_lifecycle
+    from sparkrun.core.log_source import LogLine
+
+    stopped = threading.Event()
+    log_stopped = threading.Event()
+
+    def wait(*a, cancel, **kw):
+        cancel.wait(5)
+        stopped.set()
+        return _ready(ready=False, reason="cancelled")
+
+    def read(*a, cancel, **kw):
+        yield LogLine(host=_HOST, container="test_solo", text="startup")
+        cancel.wait(5)
+        log_stopped.set()
+
+    original_start = _run_lifecycle.ReadinessWatcher.start
+
+    def start(self):
+        original_start(self)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("sparkrun.core.launcher.wait_for_serve_ready", wait)
+    monkeypatch.setattr("sparkrun.orchestration.logs.read_log_sources", read)
+    monkeypatch.setattr(_run_lifecycle.ReadinessWatcher, "start", start)
+    result = _invoke(CliRunner())
+    assert result.exit_code == 130, result.output
+    assert stopped.is_set() and log_stopped.is_set()
+    assert "did not become ready" not in result.output
+
+
+@pytest.mark.parametrize("stop_after_post", [False, True])
+def test_post_hook_outcome_controls_exit(run_env, launched, monkeypatch, stop_after_post):
+    recipe = run_env.parent / "recipes" / (_RECIPE_NAME + ".yaml")
+    recipe.write_text(yaml.safe_dump(dict(_RECIPE_DATA, post_commands=["echo hi"], stop_after_post=stop_after_post)))
+    monkeypatch.setattr("sparkrun.core.launcher.wait_for_serve_ready", lambda *a, **kw: _ready())
+    with mock.patch("sparkrun.orchestration.hooks.run_post_commands", side_effect=None if stop_after_post else RuntimeError("hook failed")):
+        from sparkrun.runtimes.base import RuntimePlugin
+
+        with mock.patch.object(RuntimePlugin, "stop") as stop:
+            result = _invoke(CliRunner(), "--no-follow")
+    assert result.exit_code == (0 if stop_after_post else 1), result.output
+    assert stop.call_count == int(stop_after_post)
+    assert ("Stopping workload" if stop_after_post else "hook failed") in result.output
+
+
+def test_unsupported_endpoint_rejected_before_launch(run_env, monkeypatch):
+    from sparkrun.orchestration.executors.docker import DockerExecutor
+
+    monkeypatch.setattr(DockerExecutor, "supports_host_endpoint", False)
+    with mock.patch("sparkrun.api.run") as launch:
+        result = _invoke(CliRunner())
+    assert result.exit_code == 2, result.output
+    assert "--no-ready-wait" in result.output
+    launch.assert_not_called()
+
+
+def test_unsupported_endpoint_allows_submission_only(run_env, launched, monkeypatch):
+    from sparkrun.orchestration.executors.docker import DockerExecutor
+
+    monkeypatch.setattr(DockerExecutor, "supports_host_endpoint", False)
+    result = _invoke(CliRunner(), "--no-ready-wait")
+    assert result.exit_code == 0, result.output
+    assert "readiness not checked" in result.output
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_ensure_uses_recorded_head_and_port(run_env, monkeypatch, partial):
+    from sparkrun.api._intent import IntentMatch
+
+    hosts = [_HOST, "10.0.4.31"]
+    match = IntentMatch(
+        intent_id="test", cluster_id="sparkrun_0123456789abcdef_aabbccddeeff", hosts=tuple(hosts[1:] if partial else reversed(hosts))
+    )
+    monkeypatch.setattr("sparkrun.api.find_running_intent", lambda *a, **kw: match)
+    monkeypatch.setattr("sparkrun.orchestration.job_metadata.load_job_metadata", lambda *a, **kw: {"hosts": hosts, "port": 32100})
+
+    def wait(result, **kw):
+        assert result.host_list == hosts
+        assert result.serve_port == 32100
+        assert result.is_solo is False
+        return _ready()
+
+    with mock.patch("sparkrun.core.launcher.wait_for_serve_ready", side_effect=wait) as probe:
+        with mock.patch("sparkrun.api.run") as launch:
+            result = _invoke(CliRunner(), "--ensure", "--no-follow")
+    assert result.exit_code == (1 if partial else 0), result.output
+    assert probe.call_count == int(not partial)
+    launch.assert_not_called()
+
+
+def test_local_port_wait_uses_native_liveness(monkeypatch):
+    from sparkrun.orchestration.executors.local import LocalExecutor
+    from sparkrun.orchestration.ssh import RemoteResult
+
+    executor = LocalExecutor()
+    commands = []
+
+    def run(host, command, **kwargs):
+        commands.append(command)
+        return RemoteResult(host=host, returncode=1 if len(commands) == 2 else 0, stdout="", stderr="")
+
+    monkeypatch.setattr("sparkrun.orchestration.primitives.run_command_on_host", run)
+    assert wait_for_port("localhost", 8000, container_name="test_solo", executor=executor, retry_interval=0)
+    assert len(commands) == 4
+    assert commands[0] == commands[2] == executor.status_cmd("test_solo")
+    assert all("docker" not in command for command in commands)
+
+
+def test_readiness_failure_marks_diagnostics_failed(run_env, launched, monkeypatch, tmp_path):
+    import json
+
+    monkeypatch.setattr("sparkrun.core.launcher.wait_for_serve_ready", lambda *a, **kw: _ready(ready=False, reason="health"))
+    monkeypatch.setattr("sparkrun.diagnostics.RunDiagnosticsCollector.capture_workload_logs", lambda *a: None)
+    output = tmp_path / "failed.ndjson"
+    result = _invoke(CliRunner(), "--no-follow", "--collect-diagnostics", str(output))
+    assert result.exit_code == 1, result.output
+    records = [json.loads(line) for line in output.read_text().splitlines()]
+    summary = next(item for item in records if item["_type"] == "run_summary")
+    assert summary["success"] is False
+    assert any(item["_type"] == "run_error" for item in records)
+
+
+def test_cancel_during_liveness_does_not_start_another_probe(monkeypatch):
+    from sparkrun.orchestration.executors.local import LocalExecutor
+    from sparkrun.orchestration.ssh import RemoteResult
+
+    cancel = threading.Event()
+
+    def status(host, command, **kw):
+        cancel.set()
+        return RemoteResult(host=host, returncode=0, stdout="", stderr="")
+
+    with mock.patch("sparkrun.orchestration.primitives.run_command_on_host", side_effect=status) as commands:
+        assert not wait_for_port("localhost", 8000, executor=LocalExecutor(), container_name="test_solo", cancel=cancel)
+    commands.assert_called_once()
