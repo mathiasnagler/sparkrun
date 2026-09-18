@@ -68,11 +68,9 @@ class LaunchResult:
     backends: dict[str, "BackendBundle"] = field(default_factory=dict)
     """Per-host backend bundles resolved from fingerprint/hardware metadata.
 
-    Populated when at least one host's hardware resolved cleanly through
-    :func:`sparkrun.core.backend_select.select_backends`.  Empty dict
-    when no resolution was performed (e.g. caller bypassed cluster
-    threading) — runtimes then fall back to the legacy NCCL generator
-    in :func:`sparkrun.runtimes._cluster_ops.resolve_comm_env`.
+    Covers all participating hosts. A single-rank target without a collective
+    provider carries an explicit no-provider bundle. Missing maps in direct
+    runtime calls are resolved from selected hardware.
     """
     timeline: Timeline | None = None
     """Launch-stage span timeline.
@@ -85,7 +83,7 @@ class LaunchResult:
 
 
 def resolve_recipe_trust(
-    recipe: Recipe, trust_cli: bool, *, sctx: SparkrunContext | None = None, registry_entry: RegistryEntry | None = None
+    recipe: Recipe, trust_cli: bool, *, registry_entry: RegistryEntry | None = None, sctx: SparkrunContext | None = None
 ) -> bool:
     """Decide whether recipe hooks (pre_exec/post_exec/post_commands) are trusted.
 
@@ -117,10 +115,10 @@ def resolve_recipe_trust(
         recipe: The loaded recipe (used for ``source_registry``
             introspection).
         trust_cli: CLI ``--trust`` flag value.
-        sctx: Optional shared context for local registry inventory. Trust lookup
-            never starts manifest discovery or registry synchronization.
         registry_entry: Already-resolved entry from this operation's inventory,
             used without another lookup. Do not reuse it across operations.
+        sctx: Optional shared context for local registry inventory. Trust lookup
+            never starts manifest discovery or registry synchronization.
 
     Returns:
         True when the hook commands may run without per-launch
@@ -588,28 +586,31 @@ def apply_platform_runtime_flag_defaults(recipe: Recipe, runtime_name: str, host
     Returns the subset of defaults that were actually applied (for logging /
     testing); an empty dict means nothing was added.
     """
-    from sparkrun.platforms import resolve_platform
+    from sparkrun.platforms import accelerator_defaults
 
-    if host_hardware is None or not getattr(host_hardware, "accelerators", None):
+    if host_hardware is None:
         return {}
-
-    platform = resolve_platform(host_hardware)
-    if platform is None:
-        return {}
-
-    accel = host_hardware.accelerators[0]
-    try:
-        flag_defaults = platform.default_runtime_flags(runtime_name, accel) or {}
-    except Exception:
-        logger.debug("Platform %r default_runtime_flags raised", getattr(platform, "platform_name", "?"), exc_info=True)
-        return {}
-
-    applied: dict[str, object] = {}
-    for key, value in flag_defaults.items():
-        if key not in recipe.defaults:
-            recipe.defaults[key] = value
-            applied[key] = value
+    applied = accelerator_defaults(
+        host_hardware,
+        lambda p, a: p.default_runtime_flags(runtime_name, a),
+        overrides=recipe.defaults,
+    )
+    recipe.defaults.update(applied)
     return applied
+
+
+def resolve_platform_runtime_flags(runtime_name, host_hardware, overrides) -> dict[str, object]:
+    """Common command defaults, qualified across every assigned host/device."""
+    from sparkrun.platforms import accelerator_defaults
+
+    result = {}
+    for host, hw in host_hardware.items():
+        defaults = accelerator_defaults(hw, lambda p, a: p.default_runtime_flags(runtime_name, a), overrides=overrides)
+        for key, value in defaults.items():
+            if key in result and result[key] != value:
+                raise ValueError("Conflicting platform runtime flag %r at %s; set it explicitly or change placement" % (key, host))
+            result[key] = value
+    return result
 
 
 #: A ``{placeholder}`` in a recipe ``command:`` template or in another
@@ -746,67 +747,43 @@ def resolve_platform_env_defaults(runtime: RuntimePlugin, host_hardware) -> dict
     so a user can override a platform default with any value, including an
     empty one — a ``setdefault`` into ``recipe.env`` could not express that.
 
-    Never raises: a platform whose hook misbehaves contributes nothing.
+    Policy hook errors and conflicting device defaults are surfaced.
     """
-    from sparkrun.platforms import resolve_platform
+    from sparkrun.platforms import accelerator_defaults
 
-    if host_hardware is None or not getattr(host_hardware, "accelerators", None):
+    if host_hardware is None:
         return {}
-
-    platform = resolve_platform(host_hardware)
-    if platform is None:
-        return {}
-
-    accel = host_hardware.accelerators[0]
-    try:
-        env = platform.default_env(runtime.runtime_name, accel, runtime_family=runtime.get_family()) or {}
-    except Exception:
-        logger.debug("Platform %r default_env raised", getattr(platform, "platform_name", "?"), exc_info=True)
-        return {}
-    return {str(k): str(val) for k, val in env.items()}
+    env = accelerator_defaults(
+        host_hardware, lambda p, a: p.default_env(runtime.runtime_name, a, runtime_family=getattr(runtime, "get_family", lambda: None)())
+    )
+    return {str(k): str(value) for k, value in env.items()}
 
 
 def resolve_per_host_backends(
-    host_list: list[str],
-    cluster=None,
+    host_list, cluster=None, *, host_hardware=None, placement=None, require_collectives=True
 ) -> dict[str, "BackendBundle"]:
-    """Resolve a :class:`BackendBundle` per host via :func:`select_backends`.
+    """Resolve every selected target; required groups never fall back to NCCL."""
+    from sparkrun.core.backend_select import NoMatchingBackendError, BackendBundle, select_backends, validate_collective_backends
+    from sparkrun.core.hardware import resolve_host_hardware
+    from sparkrun.orchestration.collectives.base import NoCollectiveBackend
+    from sparkrun.orchestration.executor import accelerator_vendor_for
 
-    For each host in *host_list*, calls
-    :meth:`ClusterDefinition.hardware_for` (or defaults to DGX Spark
-    when *cluster* is ``None``) and routes the result through
-    :func:`sparkrun.core.backend_select.select_backends`.
-
-    Hosts whose hardware fails to resolve a backend (unknown vendor,
-    multi-vendor host, etc.) are silently skipped: runtimes fall back
-    to the legacy NCCL generator in
-    :func:`sparkrun.runtimes._cluster_ops.resolve_comm_env` for those
-    hosts.  This keeps the cluster-launch surface live for
-    partial-vendor coverage rather than failing-fast on a single bad
-    fingerprint.
-
-    Args:
-        host_list: Resolved cluster hosts.
-        cluster: Optional :class:`ClusterDefinition` carrying per-host
-            hardware metadata.
-
-    Returns:
-        Mapping host -> :class:`BackendBundle`.  Empty dict when no
-        host resolved successfully (e.g. all-Apple or all-CPU cluster).
-    """
-    from sparkrun.core.backend_select import NoMatchingBackendError, select_backends
-    from sparkrun.core.hardware import resolve_fallback_hardware
-
-    backends: dict[str, BackendBundle] = {}
+    hardware = host_hardware if host_hardware is not None else resolve_host_hardware(host_list, cluster, placement)
+    backends = {}
     for host in host_list:
-        if cluster is not None:
-            hw = cluster.hardware_for(host)
-        else:
-            hw = resolve_fallback_hardware()
+        hw = hardware[host]
         try:
-            backends[host] = select_backends(hw)
-        except NoMatchingBackendError as e:
-            logger.debug("No backend resolved for host %s: %s", host, e)
+            bundle = select_backends(hw)
+            if not require_collectives:
+                bundle.collective.env_for_host({}, topology=None)
+        except (NoMatchingBackendError, NotImplementedError):
+            if require_collectives:
+                raise
+            vendor = accelerator_vendor_for(hw) or "none"
+            bundle = BackendBundle(vendor, NoCollectiveBackend(vendor))
+        backends[host] = bundle
+    if require_collectives:
+        validate_collective_backends(backends)
     return backends
 
 
@@ -818,7 +795,6 @@ def launch_inference(
     overrides: dict[str, Any],
     config: SparkrunConfig | None = None,
     v=None,
-    sctx: SparkrunContext | None = None,
     is_solo: bool = False,
     cache_dir: str | None = None,
     local_cache_dir: str | None = None,
@@ -894,6 +870,7 @@ def launch_inference(
     execution_context: "ExecutionContext | None" = None,
     execution_strategy: "RecipeExecutionStrategy | None" = None,
     prepared_execution: "PreparedExecution | None" = None,
+    sctx: SparkrunContext | None = None,
 ) -> LaunchResult:
     """Launch an inference workload.
 
@@ -1127,25 +1104,54 @@ def launch_inference(
     else:
         serve_port = desired_port
 
-    from sparkrun.core.hardware import resolve_fallback_hardware
-
-    _head_hw = cluster.hardware_for(host_list[0]) if cluster is not None else resolve_fallback_hardware()
-    # Resolve one executor for preparation and launch. The head host supplies
-    # the hardware-default tier. Freeze local inputs before replacement so
-    # every worker uses the same policy even if a source file changes later.
+    from sparkrun.core.hardware import resolve_host_hardware
     from sparkrun.orchestration.executor import resolve_executor
+    from sparkrun.core.parallelism import extract_parallelism
 
-    executor = resolve_executor(
-        recipe=recipe,
-        cluster=cluster,
-        runtime=runtime,
-        config=config,
-        cli_overrides=executor_config if isinstance(executor_config, dict) else None,
-        rootless=rootless,
-        auto_user=auto_user,
-        host_hardware=_head_hw,
-        v=v,
+    launch_hardware = resolve_host_hardware(host_list, cluster, placement)
+    parallelism = extract_parallelism(config_chain)
+    backends = resolve_per_host_backends(
+        host_list,
+        host_hardware=launch_hardware,
+        require_collectives=not is_solo or parallelism.world_size() > 1,
     )
+    host_executors = {
+        host: resolve_executor(
+            recipe=recipe,
+            cluster=cluster,
+            runtime=runtime,
+            config=config,
+            cli_overrides=executor_config if isinstance(executor_config, dict) else None,
+            rootless=rootless,
+            auto_user=auto_user,
+            host_hardware=hw,
+            v=v,
+        )
+        for host, hw in launch_hardware.items()
+    }
+    executor = host_executors[host_list[0]]
+    executor.bind_host_executors(host_executors)
+
+    # Global serve flags must agree across assigned devices. Explicit runtime
+    # settings win over the platform tier and resolve conflicting defaults.
+    from sparkrun.platforms import accelerator_defaults, resolve_accelerator_platform
+    from sparkrun.runtimes.compatibility import check_runtime_host_compatibility, IncompatibleHardwareError
+
+    compat_errors = []
+    for host, hw in launch_hardware.items():
+        if getattr(runtime, "requires_capability", ()):
+            compat_errors.extend(check_runtime_host_compatibility(runtime, host, hw))
+        for accel in hw.accelerators:
+            platform = resolve_accelerator_platform(accel, hw)
+            if platform is not None:
+                for warning in platform.validate_host(hw):
+                    logger.warning("Host %s: %s", host, warning)
+        if hw.source == "assumed":
+            logger.warning("Host %s hardware is assumed by application policy; probe it to verify identity and capacity", host)
+    if compat_errors:
+        raise IncompatibleHardwareError(runtime.runtime_name, compat_errors)
+    recipe.defaults.update(resolve_platform_runtime_flags(runtime.runtime_name, launch_hardware, config_chain))
+    report_unmapped_config_keys(recipe, runtime, overrides)
 
     # Per-machine images (``containers:``) are gated *before* any side effect —
     # the guards must fire before the builder runs, the image is pulled, or the
@@ -1220,6 +1226,7 @@ def launch_inference(
         ssh_kwargs=ssh_kwargs,
         run_builder=_run_builder,
         needs_image=executor.needs_image,
+        host_hardware=launch_hardware,
         images_by_node=(asset_policy.images_by_node if asset_policy is not None else None),
         # Already gated above, before the builder could run.
         validate=False,
@@ -1230,63 +1237,6 @@ def launch_inference(
     container_image = prepared_images.head_image or ""
     if recipe.builder and _run_builder and p:
         p.phase_end()
-
-    # Resolve per-host backends from cluster hardware (or DGX Spark default).
-    # Used by NCCL/RCCL/HCCL env emission inside the cluster orchestrator;
-    # empty dict means runtimes fall back to the legacy NCCL generator in
-    # _cluster_ops.resolve_comm_env.
-    backends = resolve_per_host_backends(host_list, cluster=cluster)
-
-    # Pre-placement compatibility gate: verify the runtime can target every
-    # placed host before any side effects (container pull, model sync, etc.).
-    # Skipped when no cluster hardware is available (e.g. --hosts / --hosts-file
-    # bypass, or a host without fingerprint data); a missing hardware entry in
-    # ClusterDefinition.hardware_for() falls back to DGX Spark defaults, so
-    # only runtimes with requires_capability constraints are affected.
-    if cluster is not None and runtime.requires_capability:
-        from sparkrun.runtimes.compatibility import (
-            IncompatibleHardwareError,
-            check_runtime_host_compatibility,
-        )
-
-        compat_errors: list[str] = []
-        for host in host_list:
-            hw = cluster.hardware_for(host)
-            compat_errors.extend(check_runtime_host_compatibility(runtime, host, hw))
-        if compat_errors:
-            raise IncompatibleHardwareError(runtime.runtime_name, compat_errors)
-
-    # Per-host platform validation: emit warnings for vendor-specific concerns
-    # (missing RoCEv2 on DGX Spark, non-NVIDIA on generic platform, etc.).
-    # This runs regardless of whether a cluster was threaded — hosts without
-    # explicit metadata fall back to DGX Spark defaults so the check always
-    # has something sensible to validate against.
-    from sparkrun.platforms import resolve_platform
-
-    for host in host_list:
-        if cluster is not None:
-            _hw = cluster.hardware_for(host)
-        else:
-            from sparkrun.core.hardware import resolve_fallback_hardware
-
-            _hw = resolve_fallback_hardware()
-        _platform = resolve_platform(_hw)
-        if _platform is not None:
-            for _warn in _platform.validate_host(_hw):
-                logger.warning("Host %s: %s", host, _warn)
-
-    # Platform/runtime/accelerator flag defaults (e.g. mmap off for GB10 +
-    # llama.cpp).  Keyed off the head host's accelerator; applied at the
-    # recipe-default tier so explicit recipe/CLI values still win.  The serve
-    # command is built once, so a single representative host is the right scope.
-    _applied_flags = apply_platform_runtime_flag_defaults(recipe, runtime.runtime_name, _head_hw)
-    if _applied_flags:
-        logger.debug("Applied platform runtime-flag defaults: %s", _applied_flags)
-
-    # Report recipe defaults / -o overrides this runtime will silently drop.
-    # Runs after the platform tier so a platform contributing an unmapped flag
-    # is caught too, and before any container starts so --dry-run reports it.
-    report_unmapped_config_keys(recipe, runtime, overrides)
 
     # How this launch reaches its hosts, recorded with every metadata write
     # below so ``stop`` / ``logs`` addressed by cluster_id can connect the same
@@ -1352,20 +1302,21 @@ def launch_inference(
                 return
 
             def _probe(img: str, hs: list[str]) -> None:
-                _verify_image_command_passthrough(
-                    recipe,
-                    img,
-                    hs,
-                    ssh_kwargs,
-                    runtime=runtime,
-                    cluster=cluster,
-                    config=config,
-                    executor_config=executor_config,
-                    rootless=rootless,
-                    auto_user=auto_user,
-                    host_hardware=_head_hw,
-                    v=v,
-                )
+                for probe_host in hs:
+                    _verify_image_command_passthrough(
+                        recipe,
+                        img,
+                        [probe_host],
+                        ssh_kwargs,
+                        runtime=runtime,
+                        cluster=cluster,
+                        config=config,
+                        executor_config=executor_config,
+                        rootless=rootless,
+                        auto_user=auto_user,
+                        host_hardware=launch_hardware[probe_host],
+                        v=v,
+                    )
 
             # One probe per *distinct* image.  The single-image shortcut used to
             # be the whole story — the verdict is a property of the image, and
@@ -1618,7 +1569,8 @@ def launch_inference(
             timeline=timeline,
         )
 
-    executor.prepare_launch(extra_opts=(runtime.get_extra_docker_opts() or []) + (extra_docker_opts or []))
+    for host_executor in host_executors.values():
+        host_executor.prepare_launch(extra_opts=(runtime.get_extra_docker_opts() or []) + (extra_docker_opts or []))
 
     # Build runtime.run() kwargs — include runtime-specific options only
     # when they were explicitly provided.
@@ -1707,7 +1659,8 @@ def launch_inference(
             # materialize a missing -v source as root-owned, and `local` has no
             # daemon to create it at all.
             try:
-                executor.ensure_runtime_cache(runtime_cache_mounts, host_list, ssh_kwargs=ssh_kwargs)
+                for host in host_list:
+                    host_executors[host].ensure_runtime_cache(runtime_cache_mounts, [host], ssh_kwargs=ssh_kwargs)
             except Exception:
                 logger.debug("runtime_cache: host preparation failed; continuing", exc_info=True)
 
@@ -1717,14 +1670,20 @@ def launch_inference(
     #     spark-vllm-docker .env)
     #   < recipe env (which already carries any -e CLI override).
     # Single chokepoint — covers solo and cluster mode, all runtimes and
-    # executors.  Keyed off the head host, like the platform flag defaults.
-    platform_env = resolve_platform_env_defaults(runtime, _head_hw)
-    if platform_env:
-        logger.debug("Applied platform env defaults: %s", sorted(platform_env))
+    # executors. Each host receives its assigned-device platform defaults.
     cluster_env = cluster.resolve_env() if (cluster is not None and getattr(cluster, "env", None)) else {}
-    effective_env = recipe.env
-    if platform_env or cluster_env:
-        effective_env = {**platform_env, **cluster_env, **(recipe.env or {})}
+    effective_env = {**cluster_env, **(recipe.env or {})}
+    runtime.platform_env_by_host = {
+        host: {
+            str(k): str(value)
+            for k, value in accelerator_defaults(
+                hw,
+                lambda p, a: p.default_env(runtime.runtime_name, a, runtime_family=getattr(runtime, "get_family", lambda: None)()),
+                overrides=effective_env,
+            ).items()
+        }
+        for host, hw in launch_hardware.items()
+    }
 
     # Commit only after all preparation and the replacement callback succeed.
     # Persist before submission so an interrupted start remains recoverable.

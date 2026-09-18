@@ -6,9 +6,8 @@ defaults that have been validated for the GB10 RoCEv2 fabric.
 
 from __future__ import annotations
 
-from sparkrun.core.hardware import DGX_SPARK_SCHEDULING_FRACTION
 
-from sparkrun.core.hardware import AcceleratorSpec, HostHardware, DGX_SPARK_MEMORY_GB
+from sparkrun.core.hardware import AcceleratorSpec, HostHardware
 from sparkrun.orchestration.collectives import CollectiveBackend, NcclBackend
 from sparkrun.platforms.base import HardwarePlatformPlugin
 from sparkrun.core.setup_plans import SetupPlan
@@ -16,13 +15,19 @@ from sparkrun.core.setup_plans import SetupPlan
 
 # Per-runtime defaults curated for GB10 / Spark Arena.  ``None`` means
 # "no default image — recipe.container must be set explicitly".
+DGX_SPARK_MEMORY_GB = 121.0
+DGX_SPARK_SCHEDULING_FRACTION = 0.90
+
+
 _DGX_SPARK_DEFAULTS: dict[str, str | None] = {
     "vllm-distributed": "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest",
     "vllm-ray": "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest",
     "sglang": "scitrera/dgx-spark-sglang:latest",
     "llama-cpp": "scitrera/dgx-spark-llama-cpp:latest",
     "trtllm": "nvcr.io/nvidia/tensorrt-llm/release:latest",
+    "modular-max": "modular/max-nvidia-full:latest",
     "atlas": "azeezish/atlas-gb10:latest",
+    "tokenary": "scitrera/tokenary:latest",
 }
 
 
@@ -91,6 +96,22 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
 
     def matches(self, host_hardware: HostHardware) -> bool:
         return any(a.vendor == "nvidia" and a.model == "gb10" for a in host_hardware.accelerators)
+
+    def assumed_hardware(self) -> HostHardware:
+        """Legacy application policy, with no inference about attached fabric."""
+        return HostHardware(
+            accelerators=[
+                AcceleratorSpec(
+                    vendor="nvidia",
+                    model="gb10",
+                    memory_gb=DGX_SPARK_MEMORY_GB,
+                    capabilities=frozenset({"cuda", "unified-memory"}),
+                    memory_capacity_source="assumed platform default",
+                )
+            ],
+            source="assumed",
+            notes="assumed by application policy (no hardware inventory)",
+        )
 
     def accelerator_vendor(self) -> str:
         return "nvidia"

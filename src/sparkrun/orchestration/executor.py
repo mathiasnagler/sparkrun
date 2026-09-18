@@ -380,36 +380,16 @@ def _runtime_exec_config_dict(runtime: "RuntimePlugin | None") -> dict:
     return _coerce_dict(fn())
 
 
-def _platform_exec_dict(host_hardware, executor_name: str) -> dict:
-    """Flatten the resolved platform's executor defaults into a chain layer.
-
-    Resolves the :class:`~sparkrun.platforms.base.HardwarePlatformPlugin` for
-    *host_hardware* and asks it for
-    :meth:`~sparkrun.platforms.base.HardwarePlatformPlugin.default_executor_config`.
-    Sits directly above the executor's own ``default_config()`` so a
-    hardware-conditional default (DGX Spark's ``gpu_access_mode: gpus``) beats
-    the generic one while every user-facing layer still wins.
-
-    Contributes nothing when no hardware was threaded (naming/teardown paths),
-    when no platform claims the host, or when the platform raises — the
-    executor must resolve regardless.
-
-    Note this is the *head* host's platform: the executor is built once per
-    launch, so a mixed-hardware cluster resolves against a representative host
-    exactly like :func:`~sparkrun.core.launcher.apply_platform_runtime_flag_defaults`.
-    """
+def _platform_exec_dict(host_hardware, executor_name: str, *, overrides=None) -> dict:
+    """Qualified defaults for the assigned devices, below explicit settings."""
     if host_hardware is None:
         return {}
-    try:
-        from sparkrun.platforms import resolve_platform
+    from sparkrun.platforms import accelerator_defaults
 
-        platform = resolve_platform(host_hardware)
-        if platform is None:
-            return {}
-        return _coerce_dict(platform.default_executor_config(executor_name))
-    except Exception:
-        logger.debug("Platform executor-config resolution failed for %r", executor_name, exc_info=True)
-        return {}
+    result = accelerator_defaults(host_hardware, lambda p, a: p.default_executor_config(executor_name), overrides=overrides)
+    vendor = accelerator_vendor_for(host_hardware)
+    result.setdefault("accelerator_vendor", vendor or "none")
+    return result
 
 
 def _config_exec_dict(config: "SparkrunConfig | None") -> dict:
@@ -614,8 +594,8 @@ def resolve_executor(
         11. :class:`ExecutorConfig` dataclass field defaults
 
     *host_hardware* is the launching host's :class:`~sparkrun.core.hardware.HostHardware`
-    (the head node's, since one executor is built per launch).  It selects the
-    hardware platform whose defaults form layer 9 — the tier that lets DGX Spark
+    restricted to assigned devices. Each host gets its own executor. Its
+    hardware platform defaults form layer 9 — the tier that lets DGX Spark
     request GPUs with ``--gpus`` while everything else stays on CDI.  Omitting it
     (naming / teardown / log paths) simply drops that layer.
 
@@ -644,10 +624,17 @@ def resolve_executor(
     )
     cls = get_executor(name, v)
 
+    explicit_settings = {
+        **_config_exec_dict(config),
+        **_runtime_exec_config_dict(runtime),
+        **_cluster_exec_dict(cluster),
+        **_recipe_exec_dict(recipe),
+        **(cli_overrides or {}),
+    }
     default_sources = (
         _runtime_exec_config_dict(runtime),
         _config_exec_dict(config),
-        _platform_exec_dict(host_hardware, name),
+        _platform_exec_dict(host_hardware, name, overrides=explicit_settings),
         cls.default_config(),
     )
     defaults = Variables(sources=default_sources, env_placement=EnvPlacement.IGNORED)

@@ -268,9 +268,9 @@ class TestEstimateVram:
 
     def test_gpu_memory_utilization_with_tp_and_pp(self):
         """Budget analysis should work with tensor and pipeline parallel."""
-        from sparkrun.models.vram import DGX_SPARK_VRAM_GB
 
         est = estimate_vram(
+            total_gpu_memory_gb=80.0,
             model_vram=24.0,
             num_layers=32,
             num_kv_heads=32,
@@ -280,7 +280,7 @@ class TestEstimateVram:
             pipeline_parallel=3,
             gpu_memory_utilization=0.9,
         )
-        usable = DGX_SPARK_VRAM_GB * 0.9
+        usable = 80.0 * 0.9
         per_gpu_weights = 24.0 / 6
         assert est.available_kv_gb == pytest.approx(usable - per_gpu_weights, abs=0.01)
 
@@ -440,9 +440,9 @@ class TestEstimateVram:
 
     def test_gpu_memory_utilization_budget(self):
         """gpu_memory_utilization should compute usable memory and available KV."""
-        from sparkrun.models.vram import DGX_SPARK_VRAM_GB
 
         est = estimate_vram(
+            total_gpu_memory_gb=80.0,
             model_vram=10.0,
             num_layers=32,
             num_kv_heads=32,
@@ -452,7 +452,7 @@ class TestEstimateVram:
             gpu_memory_utilization=0.9,
         )
         assert est.gpu_memory_utilization == 0.9
-        assert est.usable_gpu_memory_gb == pytest.approx(DGX_SPARK_VRAM_GB * 0.9, abs=0.1)
+        assert est.usable_gpu_memory_gb == pytest.approx(80.0 * 0.9, abs=0.1)
         assert est.available_kv_gb is not None
         assert est.available_kv_gb == pytest.approx(est.usable_gpu_memory_gb - 10.0, abs=0.01)
         assert est.max_context_tokens is not None
@@ -461,6 +461,7 @@ class TestEstimateVram:
     def test_gpu_memory_utilization_context_multiplier(self):
         """context_multiplier should reflect how many max_model_lens fit."""
         est = estimate_vram(
+            total_gpu_memory_gb=80.0,
             model_vram=10.0,
             num_layers=32,
             num_kv_heads=32,
@@ -489,6 +490,7 @@ class TestEstimateVram:
     def test_gpu_memory_utilization_model_exceeds_budget(self):
         """Model larger than usable memory should warn."""
         est = estimate_vram(
+            total_gpu_memory_gb=80.0,
             model_vram=200.0,
             tensor_parallel=1,
             gpu_memory_utilization=0.5,
@@ -498,9 +500,9 @@ class TestEstimateVram:
 
     def test_gpu_memory_utilization_with_tp(self):
         """Budget analysis should work with tensor parallel."""
-        from sparkrun.models.vram import DGX_SPARK_VRAM_GB
 
         est = estimate_vram(
+            total_gpu_memory_gb=80.0,
             model_vram=20.0,
             num_layers=32,
             num_kv_heads=32,
@@ -509,7 +511,7 @@ class TestEstimateVram:
             tensor_parallel=2,
             gpu_memory_utilization=0.9,
         )
-        usable = DGX_SPARK_VRAM_GB * 0.9
+        usable = 80.0 * 0.9
         per_gpu_weights = 20.0 / 2
         assert est.available_kv_gb == pytest.approx(usable - per_gpu_weights, abs=0.01)
 
@@ -918,12 +920,12 @@ class TestTargetGpuMemory:
         assert e.total_gpu_memory_gb == 48.0
         assert e.usable_gpu_memory_gb == pytest.approx(24.0)  # 48 * 0.5
 
-    def test_default_is_dgx_spark(self):
-        from sparkrun.models.vram import DGX_SPARK_VRAM_GB
-
+    def test_missing_target_remains_unknown(self):
         e = estimate_vram(model_vram=28.75, gpu_memory_utilization=0.5)
-        assert e.total_gpu_memory_gb == DGX_SPARK_VRAM_GB
-        assert e.usable_gpu_memory_gb == pytest.approx(DGX_SPARK_VRAM_GB * 0.5)
+        assert e.total_gpu_memory_gb is None
+        assert e.usable_gpu_memory_gb is None
+        assert e.available_kv_gb is None
+        assert e.total_per_gpu_gb == 28.75
 
     def test_total_set_without_utilization(self):
         # total_gpu_memory_gb is populated even when no gpu_memory_utilization.

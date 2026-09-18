@@ -93,10 +93,10 @@ def test_builder_rejects_differing_sources_before_preparation(monkeypatch):
     builder.prepare.assert_not_called()
 
 
-def test_unknown_hardware_uses_runtime_prefix():
+def test_unknown_hardware_requires_explicit_image():
     runtime = VllmDistributedRuntime()
     unknown = HostHardware()
-    assert runtime.resolve_container(_recipe(), host_hardware=unknown) == runtime.default_image_for()
+    assert runtime.resolve_container(_recipe(), host_hardware=unknown) == ""
 
 
 def test_absent_default_requires_an_explicit_image():
@@ -109,9 +109,9 @@ def test_absent_default_requires_an_explicit_image():
 def test_default_hook_errors_are_visible(monkeypatch):
     platform = Mock()
     platform.default_image.side_effect = RuntimeError("broken platform")
-    monkeypatch.setattr("sparkrun.platforms.resolve_platform", lambda hardware: platform)
+    monkeypatch.setattr("sparkrun.platforms.resolve_platform", lambda hardware, **kwargs: platform)
     with pytest.raises(RuntimeError, match="broken platform"):
-        VllmDistributedRuntime().resolve_container(_recipe(), host_hardware=HostHardware())
+        VllmDistributedRuntime().resolve_container(_recipe(), host_hardware=_cluster().hardware_for("spark"))
 
 
 class _NoDefaultRuntime(VllmDistributedRuntime):

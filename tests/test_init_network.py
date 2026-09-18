@@ -259,6 +259,7 @@ def test_launch_containers_parallel_applies_runtime_finalize_hook():
 
     executor = mock.MagicMock()
     executor.workload_labels_for_cluster.return_value = {}
+    executor.for_host.return_value = executor
 
     captured = {}
 

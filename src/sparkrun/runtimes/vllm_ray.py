@@ -388,7 +388,7 @@ class VllmRayRuntime(VllmRuntimeBase):
             ray_port=ray_port,
             dashboard_port=dashboard_port,
             dashboard=dashboard,
-            env=ctx.all_env,
+            env=ctx.env_for_host(ctx.head_host),
             volumes=ctx.volumes,
             nccl_env=head_nccl_env,
             extra_docker_opts=combined_docker_opts or None,
@@ -483,12 +483,12 @@ class VllmRayRuntime(VllmRuntimeBase):
                         cluster_id=cluster_id, recipe=recipe, runtime=self, placement=ctx.placement, host=_whost
                     )
                     _whost_env = comm_env.get_env(_whost) if comm_env else None
-                    _wscript = executor.generate_ray_worker_script(
+                    _wscript = executor.for_host(_whost).generate_ray_worker_script(
                         image=image,
                         container_name=worker_container,
                         head_ip=head_ip,
                         ray_port=ray_port,
-                        env=ctx.all_env,
+                        env=ctx.env_for_host(_whost),
                         volumes=ctx.volumes,
                         nccl_env=_whost_env,
                         extra_docker_opts=combined_docker_opts or None,
@@ -566,7 +566,7 @@ class VllmRayRuntime(VllmRuntimeBase):
         exec_script = executor.generate_exec_serve_script(
             container_name=head_container,
             serve_command=serve_command,
-            env=ctx.all_env,
+            env=ctx.env_for_host(ctx.head_host),
             detached=detached,
             sparkrun_labels=head_labels or None,
         )

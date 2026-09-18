@@ -3,14 +3,13 @@
 Defines :class:`AcceleratorSpec` (a single accelerator on a host) and
 :class:`HostHardware` (all accelerators + fingerprint on one host).
 
-Hosts without an explicit metadata entry default to DGX Spark via
-:func:`default_dgx_spark_hardware` so existing single-platform clusters
-keep working without recipe / cluster-file changes.
+Missing metadata is resolved only through explicit application policy.
+Assumed hardware carries provenance and is never device detection.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 
@@ -53,6 +52,9 @@ class AcceleratorSpec:
 
     memory_limit_source: str | None = None
     """Ephemeral resolved budget provenance; not persisted in raw inventory."""
+
+    memory_capacity_source: str | None = None
+    """Ephemeral capacity provenance; not persisted as an inventory override."""
 
     def to_dict(self) -> dict[str, Any]:
         """JSON/YAML-serializable form. Omits defaults to keep YAML small."""
@@ -116,6 +118,9 @@ class HostHardware:
     capability-specific live preflight.
     """
 
+    source: str = "inventory"
+    """Hardware provenance: inventory, detected, or assumed by application policy."""
+
     @property
     def total_gpus(self) -> int:
         """Total accelerator count across all ``accelerators`` entries."""
@@ -157,9 +162,23 @@ class HostHardware:
                 mem.append(usable)
         return mem
 
+    def selected(self, indices) -> HostHardware:
+        """Policy view of assigned physical accelerators, preserving host facts.
+
+        The placement retains physical GPU indices; this view is only for
+        platform, compatibility, image, and backend decisions.
+        """
+        slots = [a for a in self.accelerators for _ in range(a.count)]
+        selected = sorted(set(indices))
+        if any(i < 0 or i >= len(slots) for i in selected):
+            raise ValueError("Assigned accelerator index is outside hardware inventory")
+        return replace(self, accelerators=[replace(slots[i], count=1) for i in selected])
+
     def to_dict(self) -> dict[str, Any]:
         """JSON/YAML-serializable form. Omits empty optional fields."""
         d: dict[str, Any] = {"accelerators": [a.to_dict() for a in self.accelerators]}
+        if self.source != "inventory":
+            d["source"] = self.source
         if self.fingerprint:
             d["fingerprint"] = self.fingerprint
         if self.notes:
@@ -176,6 +195,7 @@ class HostHardware:
         accels = [AcceleratorSpec.from_dict(a) for a in raw_accels if isinstance(a, dict)]
         return cls(
             accelerators=accels,
+            source=str(data.get("source") or "inventory"),
             fingerprint=data.get("fingerprint") or None,
             notes=str(data.get("notes", "")),
             driver_versions={str(vendor): str(version) for vendor, version in (data.get("driver_versions") or {}).items()},
@@ -186,46 +206,56 @@ class HostHardware:
 # Defaults
 # ---------------------------------------------------------------------------
 
-# DGX Spark GB10: 1 GPU per host, 121 GB available unified memory.
-# Shared by platform defaults and model estimates so scheduling and display
-# use the same capacity without importing the estimator into hardware code.
-DGX_SPARK_MEMORY_GB = 121.0
-DGX_SPARK_SCHEDULING_FRACTION = 0.90
-
-# Hard fallback for the scheduling/fit usable-memory cap when neither the
-# accelerator, the cluster config, nor the platform tier supplies one.  ``1.0``
-# means "treat the full nominal memory_gb as usable" — byte-identical to the
-# pre-cap behavior.  See :func:`sparkrun.core.limits.resolve_max_gpu_memory_utilization`.
+# Generic scheduling policy when no configured or platform cap applies.
 DEFAULT_MAX_GPU_MEMORY_UTILIZATION = 1.0
 
 
-def default_dgx_spark_hardware() -> HostHardware:
-    """Default ``HostHardware`` for hosts without explicit metadata.
+def resolve_hardware(hardware: HostHardware | None = None) -> HostHardware:
+    """Resolve missing inventory through the application's explicit policy.
 
-    Treats every host as a DGX Spark (1× GB10, 121 GB unified memory,
-    CUDA + RoCEv2 RDMA) so clusters that don't ship per-host hardware
-    blocks keep working unchanged.
+    Platform assumptions are qualified and marked at this boundary. Consumers
+    must not substitute a device identity, capacity, or network capability.
     """
-    return HostHardware(
-        accelerators=[
-            AcceleratorSpec(
-                vendor="nvidia",
-                model="gb10",
-                count=1,
-                memory_gb=DGX_SPARK_MEMORY_GB,
-                capabilities=frozenset({"cuda", "unified-memory", "rdma:roce-v2"}),
-            )
-        ],
-        notes="default (no explicit hardware metadata)",
-    )
+    if hardware is not None:
+        return hardware
+    from sparkrun.core.application_profile import get_application_profile
+    from sparkrun.platforms import get_platform_by_name
+
+    profile = get_application_profile()
+    platform = get_platform_by_name(profile.hardware_fallback)
+    if profile.hardware_fallback != "require-metadata" and platform is not None:
+        assumed = platform.assumed_hardware()
+        if assumed is not None:
+            return replace(assumed, source="assumed", fingerprint=None)
+    raise ValueError("Target hardware metadata is required by %s; probe the target hosts before launching" % profile.id)
+
+
+def resolve_host_hardware(hosts, cluster=None, placement=None) -> dict[str, HostHardware]:
+    """One hardware-policy view per target, restricted to assigned devices."""
+    result = {}
+    for host in hosts:
+        hw = cluster.hardware_for(host) if cluster is not None else resolve_hardware()
+        if placement is not None:
+            hw = hw.selected(placement.local_gpu_for_rank(r) for r in placement.ranks_on_host(host))
+        result[host] = hw
+    return result
 
 
 def resolve_fallback_hardware() -> HostHardware:
-    """Legacy fallback is an explicit distribution policy, never device detection."""
-    from sparkrun.core.application_profile import get_application_profile
+    """Compatibility spelling for the centralized hardware resolver."""
+    return resolve_hardware()
 
-    if get_application_profile().hardware_fallback != "dgx-spark":
-        raise ValueError(
-            "Target hardware metadata is required by %s; probe the target hosts before launching" % get_application_profile().id
-        )
-    return default_dgx_spark_hardware()
+
+def default_dgx_spark_hardware() -> HostHardware:
+    """Legacy explicit Spark assumption; prefer inventory or resolve_hardware."""
+    from sparkrun.platforms.dgx_spark import DgxSparkPlatform
+
+    return DgxSparkPlatform().assumed_hardware()
+
+
+def __getattr__(name: str):
+    if name in {"DGX_SPARK_MEMORY_GB", "DGX_SPARK_SCHEDULING_FRACTION"}:
+        from sparkrun.core._platform_compat import legacy_capacity
+
+        return legacy_capacity(name)
+    raise AttributeError(name)

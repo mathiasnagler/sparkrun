@@ -57,3 +57,18 @@ class CollectiveBackend(ABC):
     def ring_overrides(self, ib_info: dict[str, str]) -> dict[str, str]:
         """Backend-specific overrides for 3-node ring/mesh topologies."""
         ...
+
+
+class NoCollectiveBackend(CollectiveBackend):
+    """No communication provider is needed for this single-rank execution."""
+
+    name = "none"
+
+    def __init__(self, vendor: str):
+        self.vendor = vendor
+
+    def env_for_host(self, ib_info: dict[str, str], *, topology: str | None = None) -> dict[str, str]:
+        return {}
+
+    def ring_overrides(self, ib_info: dict[str, str]) -> dict[str, str]:
+        return {}

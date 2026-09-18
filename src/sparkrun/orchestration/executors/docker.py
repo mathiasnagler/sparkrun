@@ -730,7 +730,7 @@ class DockerExecutor(Executor):
         callers can detect this via ``status.for_host(h) is None``.
         """
         from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, with_gpu_allocations
-        from sparkrun.core.hardware import resolve_fallback_hardware
+        from sparkrun.core.hardware import resolve_hardware
         from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
         if not hosts:
@@ -768,7 +768,7 @@ class DockerExecutor(Executor):
                 errors[host] = (getattr(r, "stderr", "") or "").strip() or "unreachable"
                 continue
 
-            hw = (host_hardware or {}).get(host) or resolve_fallback_hardware()
+            hw = (host_hardware or {}).get(host) or resolve_hardware()
             capacity = hw.total_gpus
 
             workloads, used = _parse_docker_ps_output(r.stdout, host)

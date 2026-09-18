@@ -118,22 +118,18 @@ def _cli_test_recipes(tmp_path_factory, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _localhost_test_hardware(monkeypatch):
-    """Localhost is an eight-GPU test node; remote fixtures remain single GB10s.
-
-    CLI option tests exercise solo TP overrides without bypassing admission.
-    """
-    from sparkrun.core.limits import resolved_hardware_for_scheduling
+    """Use one consistent eight-H100 inventory for solo TP option tests."""
+    from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.hardware import HostHardware, AcceleratorSpec
 
-    def hardware(cluster, hosts):
-        result = resolved_hardware_for_scheduling(cluster, hosts)
-        if "localhost" in result:
-            result["localhost"] = HostHardware(
-                accelerators=[AcceleratorSpec("nvidia", "gb10", count=8, memory_gb=121, max_gpu_memory_utilization=0.9)]
-            )
-        return result
+    original = ClusterDefinition.hardware_for
 
-    monkeypatch.setattr("sparkrun.core.limits.resolved_hardware_for_scheduling", hardware)
+    def hardware(cluster, host):
+        if host == "localhost" and host not in cluster.hosts_hardware:
+            return HostHardware(accelerators=[AcceleratorSpec("nvidia", "h100", count=8, memory_gb=80, capabilities=frozenset({"cuda"}))])
+        return original(cluster, host)
+
+    monkeypatch.setattr(ClusterDefinition, "hardware_for", hardware)
 
 
 @pytest.fixture(autouse=True)
@@ -874,7 +870,7 @@ class TestVramCommand:
         assert "VRAM Estimation" in result.output
         assert "Model weights:" in result.output
         assert "Per-GPU total:" in result.output
-        assert "DGX Spark memory fit:" in result.output
+        assert "target capacity unknown" in result.output
 
     def test_vram_with_gpu_mem(self, runner):
         """Test sparkrun recipe vram with --gpu-mem shows budget analysis."""
@@ -890,9 +886,8 @@ class TestVramCommand:
             ],
         )
         assert result.exit_code == 0
-        assert "GPU Memory Budget" in result.output
-        assert "gpu_memory_utilization" in result.output
-        assert "Available for KV" in result.output
+        assert "target capacity unknown" in result.output
+        assert "Available for KV" not in result.output
 
     def test_vram_with_tp(self, runner):
         """Test sparkrun recipe vram with --tp override."""
@@ -921,7 +916,8 @@ class TestVramCommand:
         assert _TEST_RECIPE_NAME in data["recipe"]
         assert "model_weights_gb" in data
         assert "total_per_gpu_gb" in data
-        assert "fits_dgx_spark" in data
+        assert "fits_dgx_spark" not in data
+        assert data["total_gpu_memory_gb"] is None
 
     def test_vram_nonexistent_recipe(self, runner):
         """Test sparkrun recipe vram on nonexistent recipe exits with error."""

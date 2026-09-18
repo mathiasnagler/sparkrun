@@ -98,6 +98,8 @@ class RuntimePlugin(Plugin, ABC):
 
     # --- Subclass must define ---
     runtime_name: str = ""
+    # Legacy image metadata. Default selection requires platform qualification;
+    # runtime-owned images may override default_image_for with hardware checks.
     default_image_prefix: str = ""
 
     # Protocol capabilities, ordered by preference for inference_style: auto.
@@ -144,6 +146,8 @@ class RuntimePlugin(Plugin, ABC):
     # fallback property — selection always flows through
     # :func:`sparkrun.orchestration.executor.resolve_executor`.
     executor: Executor | None = None
+
+    platform_env_by_host: dict[str, dict[str, str]] | None = None
 
     def _resolve_executor(self) -> Executor:
         """Return the active executor, resolving via the unified chain if unset.
@@ -230,22 +234,26 @@ class RuntimePlugin(Plugin, ABC):
         return recipe.container or self.default_image_for(host_hardware) or ""
 
     def default_image_for(self, host_hardware: HostHardware | None = None) -> str | None:
-        """Default-image hook: matching platform, then the runtime image prefix.
+        """Qualified image for all selected accelerators, or no default.
 
-        ``None`` means no default is available. Platform lookup is performed
-        only when hardware is supplied; callers with no cluster metadata use
-        the runtime prefix. Explicit recipe images bypass this hook.
+        Missing inventory uses the explicit application policy at one boundary.
+        Explicit recipe images always take precedence in resolve_container.
         """
-        if host_hardware is not None:
-            from sparkrun.platforms import resolve_platform
+        if host_hardware is None:
+            from sparkrun.core.hardware import resolve_hardware
 
-            platform = resolve_platform(host_hardware)
-            if platform is not None:
-                image = platform.default_image(self.runtime_name)
-                if image is not None:
-                    return image
-        if self.default_image_prefix:
-            return "%s:latest" % self.default_image_prefix
+            host_hardware = resolve_hardware()
+        if host_hardware is not None:
+            from sparkrun.platforms import resolve_accelerator_platform
+
+            images = set()
+            for accel in host_hardware.accelerators:
+                platform = resolve_accelerator_platform(accel, host_hardware)
+                image = platform.default_image(self.runtime_name) if platform is not None else None
+                if not image:
+                    return None
+                images.add(image)
+            return images.pop() if len(images) == 1 else None
         return None
 
     # noinspection PyMethodMayBeStatic
@@ -1301,11 +1309,8 @@ class RuntimePlugin(Plugin, ABC):
             backends: Optional per-host :class:`BackendBundle` map (one
                 entry per host in *hosts*).  When provided, the cluster
                 orchestrator uses ``backends[host].collective.env_for_host``
-                to emit NCCL/RCCL/HCCL env vars; ``None`` keeps the
-                legacy NCCL generator path in
-                :func:`sparkrun.runtimes._cluster_ops.resolve_comm_env`
-                for back-compat with callers that haven't threaded
-                backends through yet.
+                to emit provider-specific env vars. An omitted map is resolved
+                from selected hardware; required providers must be implemented.
             trust: When True, suppress the interactive confirmation
                 prompt for recipe-defined ``pre_exec`` hooks.  Resolved
                 upstream by :func:`sparkrun.core.launcher.resolve_recipe_trust`
@@ -1329,8 +1334,17 @@ class RuntimePlugin(Plugin, ABC):
             # still runs IB detection, so a bad interface name reaches
             # GLOO_SOCKET_IFNAME and kills the launch (issue #275).
             solo_cluster = kwargs.pop("cluster", None)
+            solo_placement = kwargs.pop("placement", None)
+            if backends is None:
+                from sparkrun.core.launcher import resolve_per_host_backends
+                from sparkrun.core.parallelism import extract_parallelism
+
+                parallelism = extract_parallelism(recipe.build_config_chain(overrides))
+                backends = resolve_per_host_backends(
+                    hosts or ["localhost"], solo_cluster, placement=solo_placement, require_collectives=parallelism.world_size() > 1
+                )
             return self._run_solo(
-                placement=kwargs.pop("placement", None),
+                placement=solo_placement,
                 mgmt_interface=solo_cluster.mgmt_interface if solo_cluster is not None else None,
                 host=hosts[0] if hosts else "localhost",
                 image=image,
@@ -1468,13 +1482,9 @@ class RuntimePlugin(Plugin, ABC):
         2. Launch container with ``sleep infinity``.
         3. Execute the serve command inside the container.
 
-        The optional *backends* mapping is accepted for API symmetry
-        with :meth:`_run_cluster` but isn't consumed: solo IB detection
-        already routes the head host's NCCL env through
-        :func:`detect_infiniband` (NCCL output) which is byte-identical
-        to ``backends[host].collective.env_for_host`` for NVIDIA hosts.
-        Non-NVIDIA solo launches would need to convert *backends* into
-        an explicit env block — out of scope for this back-compat shim.
+        A supplied backend map also governs solo transport environment generation.
+        Single-rank platforms without collectives use an explicit no-provider
+        bundle; they do not receive NVIDIA communication settings.
         """
         import time
         from sparkrun.orchestration.primitives import (
@@ -1508,11 +1518,19 @@ class RuntimePlugin(Plugin, ABC):
             runtime_cache.env if runtime_cache else {},
             self.get_common_env(),  # base env
             self.get_solo_env(),  # solo-specific
+            (self.platform_env_by_host or {}).get(host, {}),
             env,  # recipe
             self.get_extra_env(),  # tuning/other overrides
         )
 
         combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
+
+        if backends is not None and comm_env is None:
+            from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+
+            comm_env = detect_ib_for_hosts(
+                [host], ssh_kwargs=ssh_kwargs, dry_run=dry_run, mgmt_interface=mgmt_interface, backends=backends
+            ).comm_env
 
         # Step 1: InfiniBand detection (skip if pre-detected comm_env provided)
         if progress:
@@ -1550,7 +1568,7 @@ class RuntimePlugin(Plugin, ABC):
                 host,
                 image,
             )
-        executor = self._resolve_executor()
+        executor = self._resolve_executor().for_host(host)
         sparkrun_labels = executor.workload_labels_for_cluster(
             cluster_id=cluster_id,
             recipe=recipe,

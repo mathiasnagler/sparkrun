@@ -13,7 +13,7 @@ from sparkrun.core.launcher import (
     resolve_platform_env_defaults,
 )
 from sparkrun.core.recipe import Recipe, DistributionConfig
-from sparkrun.orchestration.collectives import NcclBackend, RcclBackend
+from sparkrun.orchestration.collectives import NcclBackend
 from sparkrun.orchestration.executors._base import ExecutorTarget
 
 
@@ -145,15 +145,16 @@ def test_platform_env_defaults_no_hardware_noop():
     assert resolve_platform_env_defaults(_StubRuntimeForEnv("vllm-ray", "vllm"), HostHardware()) == {}
 
 
-def test_platform_env_defaults_platform_error_is_swallowed(monkeypatch):
-    """A misbehaving platform hook contributes nothing rather than failing the launch."""
+def test_platform_env_defaults_platform_error_is_visible(monkeypatch):
+    """A broken policy must not silently drop platform requirements."""
     from sparkrun.platforms.dgx_spark import DgxSparkPlatform
 
     def _raise(self, runtime_name, accelerator, *, runtime_family=None):
         raise ValueError("boom")
 
     monkeypatch.setattr(DgxSparkPlatform, "default_env", _raise)
-    assert resolve_platform_env_defaults(_StubRuntimeForEnv("vllm-ray", "vllm"), _nvidia_hw()) == {}
+    with pytest.raises(ValueError, match="boom"):
+        resolve_platform_env_defaults(_StubRuntimeForEnv("vllm-ray", "vllm"), _nvidia_hw())
 
 
 def test_platform_env_defaults_returns_a_copy():
@@ -198,11 +199,13 @@ def test_resolve_per_host_backends_uses_cluster_hardware():
             "amd-host": _amd_hw(),
         },
     )
-    backends = resolve_per_host_backends(cluster.hosts, cluster=cluster)
+    with pytest.raises(ValueError, match="incompatible collective"):
+        resolve_per_host_backends(cluster.hosts, cluster=cluster)
+    backends = resolve_per_host_backends(cluster.hosts, cluster=cluster, require_collectives=False)
     assert backends["nvidia-host"].accelerator_vendor == "nvidia"
     assert isinstance(backends["nvidia-host"].collective, NcclBackend)
     assert backends["amd-host"].accelerator_vendor == "amd"
-    assert isinstance(backends["amd-host"].collective, RcclBackend)
+    assert backends["amd-host"].collective.name == "none"
 
 
 def test_resolve_per_host_backends_missing_entry_falls_back_to_dgx():
@@ -212,14 +215,14 @@ def test_resolve_per_host_backends_missing_entry_falls_back_to_dgx():
         hosts=["explicit-amd", "implicit-host"],
         hosts_hardware={"explicit-amd": _amd_hw()},
     )
-    backends = resolve_per_host_backends(cluster.hosts, cluster=cluster)
+    backends = resolve_per_host_backends(cluster.hosts, cluster=cluster, require_collectives=False)
     assert backends["explicit-amd"].accelerator_vendor == "amd"
     # Implicit host -> DGX Spark fallback -> NVIDIA / NCCL
     assert backends["implicit-host"].accelerator_vendor == "nvidia"
 
 
-def test_resolve_per_host_backends_unknown_vendor_skipped_silently():
-    """A host with an unsupported vendor is omitted (runtime falls back to legacy IB path)."""
+def test_resolve_per_host_backends_unknown_vendor_is_rejected():
+    """Required collective groups cannot silently omit an unsupported target."""
     cluster = ClusterDefinition(
         name="apple-mix",
         hosts=["nvidia-host", "apple-host"],
@@ -228,9 +231,10 @@ def test_resolve_per_host_backends_unknown_vendor_skipped_silently():
             "apple-host": _apple_hw(),
         },
     )
-    backends = resolve_per_host_backends(cluster.hosts, cluster=cluster)
-    assert "nvidia-host" in backends
-    assert "apple-host" not in backends
+    from sparkrun.core.backend_select import NoMatchingBackendError
+
+    with pytest.raises(NoMatchingBackendError, match="apple/m5"):
+        resolve_per_host_backends(cluster.hosts, cluster=cluster)
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +317,12 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path)
         lambda **kw: type(
             "Ex",
             (),
-            {"needs_image": True, "prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")},
+            {
+                "needs_image": True,
+                "prepare_launch": lambda self, **kw: None,
+                "bind_host_executors": lambda self, hosts: None,
+                "resolve_target": lambda self, **kw: ExecutorTarget("docker"),
+            },
         )(),
     )
 
@@ -639,7 +648,12 @@ def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tm
         lambda **kw: type(
             "Ex",
             (),
-            {"needs_image": True, "prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")},
+            {
+                "needs_image": True,
+                "prepare_launch": lambda self, **kw: None,
+                "bind_host_executors": lambda self, hosts: None,
+                "resolve_target": lambda self, **kw: ExecutorTarget("docker"),
+            },
         )(),
     )
 
@@ -974,7 +988,12 @@ def test_launch_inference_metadata_failure_aborts_before_submission(monkeypatch,
         lambda **kw: type(
             "Ex",
             (),
-            {"needs_image": True, "prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")},
+            {
+                "needs_image": True,
+                "prepare_launch": lambda self, **kw: None,
+                "bind_host_executors": lambda self, hosts: None,
+                "resolve_target": lambda self, **kw: ExecutorTarget("docker"),
+            },
         )(),
     )
     # Tuning sync/distribute are best-effort too; stub them to no-ops.
@@ -1084,7 +1103,12 @@ def test_launch_inference_records_cluster_and_ssh_user(monkeypatch, tmp_path):
         lambda **kw: type(
             "Ex",
             (),
-            {"needs_image": True, "prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")},
+            {
+                "needs_image": True,
+                "prepare_launch": lambda self, **kw: None,
+                "bind_host_executors": lambda self, hosts: None,
+                "resolve_target": lambda self, **kw: ExecutorTarget("docker"),
+            },
         )(),
     )
     monkeypatch.setattr("sparkrun.tuning.sync.sync_registry_tuning", lambda *a, **kw: 0)

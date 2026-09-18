@@ -31,11 +31,18 @@ class HostHardware:
   NVIDIA) and is serialized when present. It is software compatibility
   metadata and therefore is not part of the stable hardware fingerprint.
 
-The convenience default is `default_dgx_spark_hardware()` — 1 × GB10, 121 GB,
-capabilities `{cuda, unified-memory, rdma:roce-v2}`. Operational callers use
-`resolve_fallback_hardware()`: built-in Sparkrun keeps this compatibility default,
-while alternate application profiles require explicit metadata by default. See
-[application hardware policy](#application-profiles-and-hardware-integrations).
+Missing inventory is resolved centrally by `resolve_hardware()` through the
+application's `hardware_fallback` policy. Built-in Sparkrun retains the explicit
+`dgx-spark` compatibility policy; alternate applications default to
+`require-metadata`. A platform may provide `assumed_hardware()` for a qualified
+legacy assumption. Such hardware has `source: assumed`, no fingerprint, and must
+not advertise unobserved fabric capabilities. The Spark assumption is one GB10
+with CUDA and unified memory; it does not claim RoCE availability. Detected
+inventory has `source: detected`; older/configured inventory defaults to
+`source: inventory`. See [application hardware policy](#application-profiles-and-hardware-integrations).
+
+`default_dgx_spark_hardware()` and `resolve_fallback_hardware()` remain compatibility
+entry points. Generic operational code uses the central resolver.
 
 ### Memory capacity and fit
 
@@ -51,6 +58,24 @@ remain unknown unless their platform provides a qualified capacity. Resolution
 also applies to previously saved probe records; it does not rewrite raw
 inventory or its fingerprint. Scheduler inputs receive temporary resolved copies,
 and fit uses the same resolver and utilization-cap precedence.
+
+Model requirements are independent of target capacity. `estimate_vram()` leaves
+capacity, available automatic KV memory, and maximum context unknown unless the
+caller supplies a target. An explicit `kv_cache_memory_bytes` remains a per-GPU
+budget and can be evaluated without target hardware. Standalone `recipe vram`
+reports target capacity unknown; placement-aware reporting uses assigned GPUs.
+
+Capacity provenance and scheduling-cap provenance travel with resolved inputs.
+`check_fit()` and its JSON output expose `status: fits | exceeds | unknown`, with
+per-host details. Unknown or assumed hardware and incomplete model estimates
+cannot establish a verified fit. The legacy `ok` boolean remains permissive for
+unknown memory; consumers requiring verification should use `status`. Fit is a
+memory estimate, separate from the allocation admission rules below.
+
+Spark's capacity and 0.90 policy constants live in its platform plugin. Generic
+estimator JSON no longer contains `fits_dgx_spark` or `dgx_spark_fit_budget_gb`.
+The old Python `fits_dgx_spark` property and capacity constant imports remain
+through deprecated compatibility adapters; internal code must not use them.
 
 ### GPU allocation admission
 
@@ -166,20 +191,15 @@ class BackendBundle:
     collective: CollectiveBackend
 ```
 
-`select_backends(host_hardware)`:
+`select_backends(host_hardware)` resolves providers for the selected accelerators.
+It uses the matched platform's `collective_backend()`, otherwise the vendor's
+registered provider, and verifies a common vendor and communication protocol.
+An unresolved provider raises `NoMatchingBackendError` with detected hardware.
 
-1. `accelerator_vendor_for(host_hardware)` — single shared vendor across the
-   host's accelerators, else `None`.
-2. If the vendor is unknown or `None`, raise `NoMatchingBackendError` with both
-   detected and known vendor lists.
-3. Otherwise call `collectives.get_backend(vendor)` and wrap the result.
-
-`launcher.py:resolve_per_host_backends(host_list, cluster=...)` runs this per
-host, silently dropping failures so partial-vendor coverage still launches.
-Per-host env then flows through
-`_cluster_ops.resolve_comm_env(ctx, comm_env, backends)`, which falls back to
-the legacy NCCL generator for any host missing from the map — byte-identical
-output for NVIDIA. (The `resolve_ib_env` wrapper itself has been removed.)
+`launcher.py:resolve_per_host_backends(...)` resolves all participating hosts.
+Required groups reject missing, incompatible, or unimplemented providers before
+preparation. `_cluster_ops.resolve_comm_env()` resolves an omitted map through
+the same platform mechanism; an incomplete explicit map cannot fall back to NCCL.
 
 The bundle is threaded all the way through to `runtime.run(..., backends=...)`
 and persisted in `orchestration/job_metadata.py` so post-launch commands can
@@ -214,6 +234,25 @@ choices and image defaults. The hook surface:
 
 Registration order in `platforms/__init__.py` is most-specific first;
 `DgxSparkPlatform` always wins on GB10 hosts.
+
+Device-specific policy uses `resolve_accelerator_platform()` with the selected
+accelerator and preserved host facts. Unassigned devices cannot select an image,
+capacity cap, runtime setting, or collective provider for the workload.
+
+Images must be qualified by the matched platform or declared explicitly in the
+recipe. A platform returning `None` does not fall through to a Spark runtime
+image prefix. Assigned devices sharing a container must agree on its default
+image. Executor settings and environment defaults resolve per host; common serve
+flags must agree across the group unless an explicit recipe/CLI setting resolves
+the conflict. Platform defaults remain below explicit user settings. Policy hook
+errors are surfaced instead of silently substituting another platform's defaults.
+
+Collectives use the platform's `collective_backend()` hook, with the explicit
+vendor provider as fallback when no platform matches. Required groups must have
+complete, compatible, implemented providers. Unknown providers cannot silently
+receive NCCL settings. Single-rank execution may use an explicit no-collective
+provider. RCCL/HCCL remain scaffolds; this policy does not enable their runtime
+implementations.
 
 ### Adding a new platform
 
@@ -305,7 +344,7 @@ ordinary Sparkrun must provide the same target-host behavior it provides under
 an alternate launcher. Application profile defaults only supply site policy beneath
 explicit recipe, cluster and invocation choices.
 
-Operational missing-hardware paths use `resolve_fallback_hardware()`. Built-in
+Operational missing-hardware paths use `resolve_hardware()`. Built-in
 Sparkrun retains its legacy DGX Spark fallback; alternate application profiles default
 to requiring metadata. The scheduler, resource limits, cluster hardware access,
 runtime fallback and executor status paths must not invent GB10 capabilities

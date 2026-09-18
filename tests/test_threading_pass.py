@@ -465,8 +465,8 @@ def test_display_vram_estimate_skips_per_host_fit_without_cluster(capsys):
     display_vram_estimate(recipe, auto_detect=False)
     out = capsys.readouterr().out
     assert "Per-host fit" not in out
-    # Legacy DGX line is still present for back-compat.
-    assert "DGX Spark memory fit" in out
+    assert "target capacity unknown" in out
+    assert "DGX Spark memory fit" not in out
 
 
 def test_default_image_for_consults_platform_registry():
@@ -481,8 +481,8 @@ def test_default_image_for_consults_platform_registry():
     assert rt.default_image_for(default_dgx_spark_hardware()) == "azeezish/atlas-gb10:latest"
 
 
-def test_default_image_for_falls_back_when_no_platform_match():
-    """An AMD host with no matching platform falls back to legacy default_image_prefix."""
+def test_default_image_for_requires_explicit_image_when_no_platform_match():
+    """A runtime prefix does not qualify an image for an unmatched platform."""
     from sparkrun.runtimes.base import RuntimePlugin
 
     class _R(RuntimePlugin):
@@ -493,8 +493,7 @@ def test_default_image_for_falls_back_when_no_platform_match():
             return ""
 
     amd_hw = HostHardware(accelerators=[AcceleratorSpec(vendor="amd", model="mi300x")])
-    # No platform claims AMD -> fall back to legacy prefix.
-    assert _R().default_image_for(amd_hw) == "fallback/img:latest"
+    assert _R().default_image_for(amd_hw) is None
 
 
 def test_refuse_unsupported_collectives_passes_for_nvidia():

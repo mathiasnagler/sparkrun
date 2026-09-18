@@ -225,6 +225,7 @@ class TestAddingAnArchitecture:
         """The budget inversion is the strategy's, so it can refuse to be linear."""
         register_kv_strategy(_SlidingWindowStrategy())
         est = estimate_vram(
+            total_gpu_memory_gb=61.3,
             model_vram=10.0,
             num_layers=26,
             num_kv_heads=4,

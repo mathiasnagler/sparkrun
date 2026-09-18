@@ -26,8 +26,8 @@ def materialize(
     *,
     plan: RunPlan | None = None,
     comm_env=None,
-    sctx=None,
     images_by_node: Sequence[str] | None = None,
+    sctx=None,
 ) -> ResolvedLaunchSpec:
     """Resolve the launch data an integration needs without starting it.
 
@@ -96,7 +96,14 @@ def materialize(
 
     from sparkrun.core.images import resolve_runtime_image_plan
 
-    image_plan = resolve_runtime_image_plan(recipe, runtime, hosts, cluster=plan.cluster, images_by_node=images_by_node)
+    from sparkrun.core.hardware import resolve_host_hardware
+
+    selected_hardware = resolve_host_hardware(hosts, plan.cluster, placement)
+    if placement is None and implicit_slots:
+        selected_hardware = {host: hw.selected(gpu for h, gpu in implicit_slots if h == host) for host, hw in selected_hardware.items()}
+    image_plan = resolve_runtime_image_plan(
+        recipe, runtime, hosts, cluster=plan.cluster, host_hardware=selected_hardware, images_by_node=images_by_node
+    )
 
     cache_dir = options.cache_dir or getattr(plan.cluster, "cache_dir", None) or str(sctx.config.hf_cache_dir)
     from sparkrun.orchestration.primitives import build_volumes, resolved_model_volume
@@ -119,17 +126,27 @@ def materialize(
         )
         for source, target in volumes.items()
     }
-    for mount in _resolved_executor_mounts(options, plan=plan, runtime=runtime, sctx=sctx):
-        mounts_by_target[mount.target] = mount
-    mounts = tuple(mounts_by_target[target] for target in sorted(mounts_by_target))
+    mounts_by_host = {}
+    for host in hosts:
+        host_mounts = dict(mounts_by_target)
+        for mount in _resolved_executor_mounts(options, plan=plan, runtime=runtime, host_hardware=selected_hardware[host], sctx=sctx):
+            host_mounts[mount.target] = mount
+        mounts_by_host[host] = tuple(host_mounts[target] for target in sorted(host_mounts))
 
-    from sparkrun.core.launcher import resolve_platform_env_defaults
+    from sparkrun.core.launcher import resolve_platform_runtime_flags
+    from sparkrun.platforms import accelerator_defaults
     from sparkrun.utils import merge_env
 
-    head_hardware = plan.cluster.hardware_for(hosts[0])
-    platform_env = resolve_platform_env_defaults(runtime, head_hardware)
+    platform_flags = resolve_platform_runtime_flags(runtime.runtime_name, selected_hardware, config_chain)
+    overrides = {**platform_flags, **overrides}
     cluster_env = plan.cluster.resolve_env() if getattr(plan.cluster, "env", None) else {}
-    declared_env = {**platform_env, **cluster_env, **(recipe.env or {})}
+    declared_env = {**cluster_env, **(recipe.env or {})}
+    platform_env_by_host = {
+        host: accelerator_defaults(
+            hw, lambda p, a: p.default_env(runtime.runtime_name, a, runtime_family=runtime.get_family()), overrides=declared_env
+        )
+        for host, hw in selected_hardware.items()
+    }
     runtime_env = runtime.get_solo_env() if plan.is_solo else runtime.get_cluster_env(head_ip=hosts[0], num_nodes=len(hosts))
     environment = merge_env(
         runtime.get_common_env(),
@@ -230,7 +247,7 @@ def materialize(
                 )
         if not isinstance(command_text, str) or not command_text.strip():
             raise ValueError("%s must produce a nonempty command for launch unit %s" % (runtime.runtime_name, unit_id))
-        unit_environment = dict(environment)
+        unit_environment = merge_env(environment, platform_env_by_host[host], declared_env, runtime.get_extra_env())
         if comm_env:
             host_environment = comm_env.get_env(host)
             host_environment = runtime.finalize_host_comm_env(host_environment)
@@ -248,7 +265,7 @@ def materialize(
                 # expansion, and compound commands across the adapter boundary.
                 command=("bash", "--noprofile", "--norc", "-c", command_text),
                 environment=unit_environment,
-                mounts=mounts,
+                mounts=mounts_by_host[host],
             )
         )
         for process_slot, (worker_rank, _gpu) in enumerate(unit_workers):
@@ -317,7 +334,7 @@ def materialize(
     )
 
 
-def _resolved_executor_mounts(options: RunOptions, *, plan: RunPlan, runtime, sctx) -> tuple[ResolvedMount, ...]:
+def _resolved_executor_mounts(options: RunOptions, *, plan: RunPlan, runtime, host_hardware, sctx) -> tuple[ResolvedMount, ...]:
     """Return recipe/CLI executor mounts for execution-strategy consumers.
 
     Normal launches hand ``ExecutorConfig.volumes`` directly to the selected
@@ -330,7 +347,6 @@ def _resolved_executor_mounts(options: RunOptions, *, plan: RunPlan, runtime, sc
     from sparkrun.orchestration.executor import resolve_executor
     from sparkrun.utils.shell import assert_safe_mount_source
 
-    hosts = list(plan.host_list)
     executor = resolve_executor(
         recipe=plan.recipe,
         cluster=plan.cluster,
@@ -339,7 +355,7 @@ def _resolved_executor_mounts(options: RunOptions, *, plan: RunPlan, runtime, sc
         cli_overrides={**options.executor_overrides(), **(plan.executor_target.overrides if plan.executor_target else {})},
         rootless=False,
         auto_user=False,
-        host_hardware=plan.cluster.hardware_for(hosts[0]),
+        host_hardware=host_hardware,
         v=getattr(sctx, "variables", None),
     )
     mounts: list[ResolvedMount] = []

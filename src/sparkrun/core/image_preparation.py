@@ -134,6 +134,7 @@ def prepare_images(
     config: SparkrunConfig | None = None,
     v: Variables | None = None,
     cluster: ClusterDefinition | None = None,
+    host_hardware=None,
     dry_run: bool = False,
     transfer_mode: str = "local",
     ssh_kwargs: dict | None = None,
@@ -161,7 +162,11 @@ def prepare_images(
 
     try:
         image_plan = (
-            resolve_runtime_image_plan(recipe, runtime, host_list, cluster=cluster, images_by_node=images_by_node) if needs_image else None
+            resolve_runtime_image_plan(
+                recipe, runtime, host_list, cluster=cluster, host_hardware=host_hardware, images_by_node=images_by_node
+            )
+            if needs_image
+            else None
         )
     except ImagePlanError as error:
         raise RecipeError(str(error)) from error

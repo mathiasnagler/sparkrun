@@ -153,7 +153,7 @@ class ApplicationProfile:
         if unsupported:
             raise ValueError("Feature defaults refer to unsupported application channels: %s" % ", ".join(sorted(unsupported)))
         object.__setattr__(self, "update_sources", MappingProxyType(sources))
-        if self.hardware_fallback not in {"dgx-spark", "require-metadata"}:
+        if not isinstance(self.hardware_fallback, str) or not self.hardware_fallback.strip():
             raise ValueError("Invalid hardware fallback policy")
         if self.registries is None and self.id != "sparkrun":
             raise ValueError("Alternate application profiles must declare their registry policy explicitly")

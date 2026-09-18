@@ -70,18 +70,39 @@ def select_backends(host_hardware: HostHardware) -> BackendBundle:
             mixes vendors (ambiguous), or uses a vendor sparkrun has no
             backend for (e.g. ``"apple"``, ``"cpu"``).
     """
+    from sparkrun.platforms import resolve_accelerator_platform
+
     vendor = accelerator_vendor_for(host_hardware)
-    if vendor is None or vendor not in _KNOWN_VENDORS:
-        raise NoMatchingBackendError(host_hardware, list(_KNOWN_VENDORS))
-
-    try:
-        collective = get_backend(vendor)
-    except UnsupportedCollectiveError as e:
-        raise NoMatchingBackendError(host_hardware, list(_KNOWN_VENDORS)) from e
-
-    return BackendBundle(accelerator_vendor=vendor, collective=collective)
+    if vendor is None:
+        raise NoMatchingBackendError(host_hardware, known_vendors())
+    providers = []
+    for accel in host_hardware.accelerators:
+        platform = resolve_accelerator_platform(accel, host_hardware)
+        try:
+            collective = platform.collective_backend() if platform is not None else get_backend(vendor)
+        except UnsupportedCollectiveError as e:
+            raise NoMatchingBackendError(host_hardware, known_vendors()) from e
+        if collective is None or collective.vendor != vendor:
+            raise NoMatchingBackendError(host_hardware, known_vendors())
+        providers.append(collective)
+    if not providers or len({(p.vendor, p.name) for p in providers}) != 1:
+        raise NoMatchingBackendError(host_hardware, known_vendors())
+    return BackendBundle(accelerator_vendor=vendor, collective=providers[0])
 
 
 def known_vendors() -> list[str]:
     """List of vendors with at least a backend scaffold (testable inspection point)."""
     return list(_KNOWN_VENDORS)
+
+
+def validate_collective_backends(backends: dict[str, BackendBundle]) -> None:
+    """Required distributed groups must use one implemented provider."""
+    if len({(b.collective.name, b.accelerator_vendor) for b in backends.values()}) > 1:
+        raise ValueError("Heterogeneous-vendor or incompatible collective backends; split the placement into compatible groups")
+    for host, bundle in backends.items():
+        if bundle.collective.name == "none":
+            raise ValueError("A collective backend is required for host %s" % host)
+        try:
+            bundle.collective.env_for_host({}, topology=None)
+        except NotImplementedError as error:
+            raise RuntimeError("%s backend not yet implemented for %s (%s)" % (bundle.collective.name.upper(), host, error)) from error

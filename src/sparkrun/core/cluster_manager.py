@@ -11,7 +11,7 @@ from typing import Any, TYPE_CHECKING
 
 import yaml
 
-from sparkrun.core.hardware import HostHardware, resolve_fallback_hardware
+from sparkrun.core.hardware import HostHardware, resolve_hardware
 from sparkrun.core.status_observation import ExecutorCoverage
 
 if TYPE_CHECKING:
@@ -255,7 +255,7 @@ class ClusterDefinition:
     """Optional per-host hardware metadata, keyed by host name/address.
 
     Hosts absent from this dict are assumed to be DGX Sparks (see
-    :func:`sparkrun.core.hardware.resolve_fallback_hardware`).  Reading
+    :func:`sparkrun.core.hardware.resolve_hardware`).  Reading
     code should go through :meth:`hardware_for` rather than indexing
     this dict directly so the default fallback is preserved.
     """
@@ -386,16 +386,8 @@ class ClusterDefinition:
         return resolved
 
     def hardware_for(self, host: str) -> HostHardware:
-        """Return hardware metadata for *host*, defaulting to DGX Spark.
-
-        When a host has no explicit entry, behave as if it were a DGX
-        Spark (1× GB10, 121 GB unified memory).  Keeps homogeneous DGX
-        clusters working without per-host metadata blocks.
-        """
-        hw = self.hosts_hardware.get(host)
-        if hw is None:
-            return resolve_fallback_hardware()
-        return hw
+        """Resolve inventory or an explicitly marked application-policy assumption."""
+        return resolve_hardware(self.hosts_hardware.get(host))
 
     def plugin_settings(self, name: str) -> dict[str, Any]:
         """Return an isolated, validated cluster-local plugin mapping."""

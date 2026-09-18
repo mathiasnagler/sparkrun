@@ -135,3 +135,35 @@ __all__ = [
     "register_platform",
     "resolve_platform",
 ]
+
+
+def resolve_accelerator_platform(accelerator, host_hardware: HostHardware) -> HardwarePlatformPlugin | None:
+    """Resolve device policy without unrelated devices claiming the host first."""
+    from dataclasses import replace
+
+    return resolve_platform(replace(host_hardware, accelerators=[replace(accelerator, count=1)]), strict=True)
+
+
+def accelerator_defaults(host_hardware: HostHardware, getter, *, overrides=None) -> dict:
+    """Merge defaults for devices sharing one command/config; reject conflicts.
+
+    An explicitly supplied setting resolves a conflict. Absence of a default
+    is neutral; a platform can require a value by returning it explicitly.
+    """
+    result = {}
+    owners = {}
+    for accel in host_hardware.accelerators:
+        platform = resolve_accelerator_platform(accel, host_hardware)
+        if platform is None:
+            continue
+        for key, value in getter(platform, accel).items():
+            if overrides is not None and key in overrides:
+                continue
+            if key in result and result[key] != value:
+                raise ValueError(
+                    "Conflicting platform default %r for %s and %s; set it explicitly or change placement"
+                    % (key, owners[key], platform.platform_name)
+                )
+            result[key] = value
+            owners[key] = platform.platform_name
+    return result

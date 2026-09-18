@@ -149,7 +149,7 @@ def _mib_to_gb(mib: str | None) -> float | None:
         return None
     try:
         # Convert MiB → GiB (binary), then to GB-ish for HostHardware which expects GB.
-        # We keep "GB" colloquial — same convention as DEFAULT_VRAM_GB (121 ≈ 128 GiB).
+        # Inventory memory_gb uses GiB, matching the MiB probe conversion above.
         return round(int(mib) / 1024.0, 1)
     except ValueError:
         return None
@@ -297,7 +297,7 @@ def build_host_hardware(parsed: dict[str, str]) -> HostHardware:
     driver_versions = {"nvidia": nvidia_driver} if nvidia_driver else {}
     hardware = enrich_host_hardware(
         parsed,
-        HostHardware(accelerators=accelerators, notes=_detection_note(parsed), driver_versions=driver_versions),
+        HostHardware(accelerators=accelerators, source="detected", notes=_detection_note(parsed), driver_versions=driver_versions),
     )
     hardware.fingerprint = compute_fingerprint_hash(hardware.accelerators)
     return hardware

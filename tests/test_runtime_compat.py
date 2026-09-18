@@ -71,7 +71,7 @@ def test_eugr_runtime_requires_gb10():
 # --------------------------------------------------------------------------
 
 
-def test_default_image_for_returns_legacy_prefix():
+def test_unqualified_runtime_prefix_is_not_a_platform_default():
     class _R(RuntimePlugin):
         runtime_name = "x"
         default_image_prefix = "ghcr.io/example/img"
@@ -79,7 +79,7 @@ def test_default_image_for_returns_legacy_prefix():
         def generate_command(self, *a, **k):
             return ""
 
-    assert _R().default_image_for() == "ghcr.io/example/img:latest"
+    assert _R().default_image_for() is None
 
 
 def test_default_image_for_returns_none_when_no_prefix():
@@ -247,7 +247,12 @@ def _make_launch_monkeypatches(monkeypatch, tmp_path):
         lambda **kw: type(
             "Ex",
             (),
-            {"needs_image": True, "prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")},
+            {
+                "needs_image": True,
+                "prepare_launch": lambda self, **kw: None,
+                "bind_host_executors": lambda self, hosts: None,
+                "resolve_target": lambda self, **kw: ExecutorTarget("docker"),
+            },
         )(),
     )
 

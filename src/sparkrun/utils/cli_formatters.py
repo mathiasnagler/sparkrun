@@ -267,27 +267,23 @@ def display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overri
 
 
 def _resolve_target_accelerator(cluster, placement):
-    """Return ``(memory_gb, model)`` for the representative target accelerator.
-
-    Uses the first assigned GPU, or the first candidate GPU without a placement.
-    Capacity resolution shares the inventory/platform fallback used by fit.
-    With no cluster, standalone reporting uses the DGX Spark default.
-    """
+    """Smallest assigned capacity; unknown if any selected device is unsized."""
     if cluster is None:
         return None, None
     from sparkrun.core.limits import resolve_accelerator_memory_gb
 
-    hosts = placement.hosts_used if placement is not None and placement.hosts_used else cluster.hosts
-    if not hosts:
-        return None, None
-    host = hosts[0]
-    hw = cluster.hardware_for(host)
-    slots = [a for a in hw.accelerators for _ in range(a.count)]
-    index = placement.by_rank[placement.ranks_on_host(host)[0]].local_gpu if placement is not None and placement.hosts_used else 0
-    if not 0 <= index < len(slots):
-        return None, None
-    accel = slots[index]
-    return resolve_accelerator_memory_gb(accel, hw), accel.model
+    candidates = []
+    hosts = placement.hosts_used if placement is not None else cluster.hosts
+    for host in hosts:
+        hw = cluster.hardware_for(host)
+        if placement is not None:
+            hw = hw.selected(placement.local_gpu_for_rank(r) for r in placement.ranks_on_host(host))
+        for accel in hw.accelerators:
+            capacity = resolve_accelerator_memory_gb(accel, hw)
+            if capacity is None:
+                return None, None
+            candidates.append((capacity, accel.model))
+    return min(candidates) if candidates else (None, None)
 
 
 def display_vram_estimate(
@@ -304,13 +300,11 @@ def display_vram_estimate(
     :func:`sparkrun.models.fit.check_fit`.  When *placement* is also
     provided, the per-host walk follows the placed rank set rather than
     every cluster host. The summary and per-host rows use the same fit result;
-    standalone recipe output uses the default DGX Spark budget.
+    standalone recipe output leaves target capacity unknown.
     """
-    from sparkrun.models.vram import DEFAULT_VRAM_GB
-
     # Resolve the target accelerator's memory so the budget/fit reflect the real
     # GPU (e.g. 48 GB A6000) rather than the hardcoded DGX Spark figure.
-    target_mem, target_model = _resolve_target_accelerator(cluster, placement)
+    target_mem, _target_model = _resolve_target_accelerator(cluster, placement)
 
     try:
         est = recipe.estimate_vram(
@@ -321,7 +315,7 @@ def display_vram_estimate(
         return
 
     fit = None
-    if cluster is not None and placement is not None and placement.hosts_used:
+    if cluster is not None:
         from sparkrun.models.fit import check_fit
 
         fit = check_fit(est, cluster, placement)
@@ -348,37 +342,19 @@ def display_vram_estimate(
     if est.pipeline_parallel > 1:
         click.echo(f"  Pipeline parallel: {est.pipeline_parallel}")
     click.echo(f"  Per-GPU total:    {est.total_per_gpu_gb:.2f} GiB")
-    total_gb = est.total_gpu_memory_gb or DEFAULT_VRAM_GB
+    total_gb = est.total_gpu_memory_gb
     if fit is not None:
-        verified = all(d.accelerator_memory_gb is not None and d.memory_estimate_complete for d in fit.per_host.values())
-        fit_str = ("YES (estimate)" if verified else "UNVERIFIED (partial estimate)") if fit.ok else "EXCEEDS (see per-host budgets)"
-        click.echo(f"  Placement memory fit: {fit_str}")
+        fit_str = {
+            "fits": "YES (estimate)",
+            "unknown": "UNVERIFIED (partial estimate or assumed hardware)",
+            "exceeds": "EXCEEDS (see per-host budgets)",
+        }[fit.status]
+        scope = "Placement" if placement is not None else "Candidate"
+        click.echo(f"  {scope} memory fit: {fit_str}")
         modes = sorted({d.allocation_mode for d in fit.per_host.values()})
         click.echo(f"  Allocation:       {', '.join(modes)}; runtime verifies actual memory fit")
     else:
-        from sparkrun.core.hardware import DGX_SPARK_SCHEDULING_FRACTION
-        from sparkrun.core.limits import resolve_memory_limit
-
-        fraction = DGX_SPARK_SCHEDULING_FRACTION if not target_model or target_model == "gb10" else 1.0
-        source = "platform default" if fraction < 1.0 else "default capacity"
-        if cluster is not None and cluster.hosts:
-            hw = cluster.hardware_for(cluster.hosts[0])
-            if hw.accelerators:
-                fraction, source = resolve_memory_limit(hw.accelerators[0], hw, cluster)
-        budget_gb = est.fit_budget_gb(total_gb, fraction)
-        if budget_gb < total_gb * fraction:
-            source = "runtime gpu_memory_utilization"
-        fits = est.total_per_gpu_gb <= budget_gb
-        fit_str = (
-            ("YES (estimate)" if est.memory_estimate_complete else "UNVERIFIED (partial estimate)")
-            if fits
-            else "EXCEEDS %.2f GiB budget" % budget_gb
-        )
-        if target_model and target_model != "gb10":
-            click.echo(f"  Fit ({target_model.upper()}, {total_gb:.0f} GiB): {fit_str}")
-        else:
-            click.echo(f"  DGX Spark memory fit: {fit_str}")
-        click.echo(f"  Estimate budget:  {budget_gb:.2f} GiB; nominal capacity {total_gb:.2f} GiB; source={source}")
+        click.echo("  Memory fit:       UNKNOWN (target capacity unknown)")
         click.echo("  Allocation:       exclusive GPU by default; runtime verifies actual memory fit")
 
     # GPU memory budget analysis
@@ -388,8 +364,8 @@ def display_vram_estimate(
             click.echo(f"  Context estimate: {est.max_context_tokens:,} tokens within the explicit KV budget")
         else:
             click.echo("  Context capacity: unverified; runtime must size the cache")
-    elif est.gpu_memory_utilization is not None and (cluster is None or target_mem is not None):
-        click.echo("\n  GPU Memory Budget:")
+    elif est.usable_gpu_memory_gb is not None:
+        click.echo("\n  Runtime GPU Memory Budget (smallest selected capacity):")
         click.echo(f"    gpu_memory_utilization: {est.gpu_memory_utilization:.0%}")
         click.echo(f"    Usable GPU memory:     {est.usable_gpu_memory_gb:.1f} GiB ({total_gb:.0f} GiB x {est.gpu_memory_utilization:.0%})")
         click.echo(f"    Available for KV:      {est.available_kv_gb:.1f} GiB")
@@ -409,7 +385,7 @@ def display_vram_estimate(
             if detail.accelerator_memory_gb is None:
                 click.echo(f"    {host}: ranks={detail.ranks_assigned}, accelerator memory unknown")
             else:
-                marker = ("OK (estimate)" if detail.memory_estimate_complete else "UNVERIFIED") if detail.ok else "EXCEEDS"
+                marker = {"fits": "OK (estimate)", "unknown": "UNVERIFIED", "exceeds": "EXCEEDS"}[detail.status]
                 cap = detail.max_gpu_memory_utilization
                 if cap is not None and cap < 1.0 and detail.nominal_memory_gb is not None:
                     accel_str = (
@@ -422,7 +398,7 @@ def display_vram_estimate(
                     f"per-rank={detail.vram_per_rank_gb:.1f} GiB, "
                     f"{accel_str}, "
                     f"headroom={detail.headroom_gb:.1f} GiB [{marker}]; allocation={detail.allocation_mode}; "
-                    f"budget source={detail.memory_limit_source}"
+                    f"budget source={detail.memory_limit_source}; capacity source={detail.memory_capacity_source}; hardware={detail.hardware_source}"
                 )
         for w in fit.warnings:
             click.echo(f"  Warning: {w}")

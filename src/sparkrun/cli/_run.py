@@ -171,7 +171,7 @@ def _summarize_platforms(
     """Build a platform summary string for the ``sparkrun run`` output block.
 
     For each host, resolves hardware (from *cluster* if available, else
-    :func:`~sparkrun.core.hardware.resolve_fallback_hardware`), picks the
+    :func:`~sparkrun.core.hardware.resolve_hardware`), picks the
     matching :class:`~sparkrun.platforms.base.HardwarePlatformPlugin`, and
     selects a :class:`~sparkrun.core.backend_select.BackendBundle`.  The
     display line for each host is built as::
@@ -197,12 +197,12 @@ def _summarize_platforms(
         ``(host, line)`` tuples when heterogeneous, ``None`` when homogeneous.
     """
     from sparkrun.core.backend_select import NoMatchingBackendError, select_backends
-    from sparkrun.core.hardware import resolve_fallback_hardware
+    from sparkrun.core.hardware import resolve_hardware
     from sparkrun import platforms as _platforms
 
     def _host_line(host: str) -> str:
         try:
-            hw = cluster.hardware_for(host) if cluster is not None else resolve_fallback_hardware()
+            hw = cluster.hardware_for(host) if cluster is not None else resolve_hardware()
             platform = _platforms.resolve_platform(hw)
             pname = platform.display_name if platform is not None else "Unknown"
             if hw.accelerators:

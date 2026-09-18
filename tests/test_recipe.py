@@ -1685,7 +1685,7 @@ class TestRecipeMetadata:
                 },
             }
         )
-        est = recipe.estimate_vram(auto_detect=False)
+        est = recipe.estimate_vram(auto_detect=False, total_gpu_memory_gb=61.3)
         assert est.gpu_memory_utilization == 0.9
         assert est.usable_gpu_memory_gb is not None
         assert est.available_kv_gb is not None

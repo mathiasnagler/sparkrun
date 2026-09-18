@@ -727,7 +727,12 @@ def _launch(monkeypatch, tmp_path, **launch_kw):
         lambda **kw: type(
             "Ex",
             (),
-            {"needs_image": True, "prepare_launch": lambda self, **kw: None, "resolve_target": lambda self, **kw: ExecutorTarget("docker")},
+            {
+                "needs_image": True,
+                "prepare_launch": lambda self, **kw: None,
+                "bind_host_executors": lambda self, hosts: None,
+                "resolve_target": lambda self, **kw: ExecutorTarget("docker"),
+            },
         )(),
     )
 

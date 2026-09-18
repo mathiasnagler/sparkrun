@@ -1,4 +1,4 @@
-"""VRAM estimation for inference workloads on DGX Spark systems.
+"""Platform-independent memory requirements and optional target budget estimates.
 
 Model weights, the GPU memory budget, and the arithmetic that combines them with
 a KV cache estimate.  The KV estimate itself is architecture-specific and comes
@@ -9,11 +9,11 @@ architecture.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from sparkrun.core.hardware import DGX_SPARK_MEMORY_GB, DGX_SPARK_SCHEDULING_FRACTION
 from sparkrun.models.dtypes import bytes_per_element, kv_bytes_per_element, normalize_dtype
 from sparkrun.models.hub import hub_metadata_call
 from sparkrun.models.kv import ArchInfo, KVSizing, arch_marker_names, extract_arch_fields, resolve_kv_strategy
@@ -24,8 +24,6 @@ logger = logging.getLogger(__name__)
 # working; the tables themselves live in the dtypes leaf so a KV strategy can
 # ask for an element width without importing the estimator that calls it.
 __all__ = [
-    "DEFAULT_VRAM_GB",
-    "DGX_SPARK_VRAM_GB",
     "MODEL_VISIBILITY_PRIVATE",
     "MODEL_VISIBILITY_PUBLIC",
     "MODEL_VISIBILITY_UNKNOWN",
@@ -50,18 +48,13 @@ _PARAM_SUFFIXES = {
     "K": 1_000,
 }
 
-# DGX Spark: unified memory shared between CPU and GPU.
-# Total system memory is ~128 GB (127601452 KiB ≈ 121.7 GiB).
-# Usable GPU memory depends on gpu_memory_utilization and OS overhead.
-# We use 121 GiB as an "available for inference" figure.
-#
-# Used as the default per-host VRAM budget by the single-platform fit
-# path (:attr:`VRAMEstimate.fits_dgx_spark`).  Heterogeneous-cluster
-# fits should call :func:`sparkrun.models.fit.check_fit` instead, which
-# reads ``memory_gb`` from each host's
-# :class:`~sparkrun.core.hardware.HostHardware`.
-DEFAULT_VRAM_GB = DGX_SPARK_MEMORY_GB
-DGX_SPARK_VRAM_GB = DEFAULT_VRAM_GB  # alias retained for callers that pre-date DEFAULT_VRAM_GB
+
+def __getattr__(name: str):
+    if name in {"DEFAULT_VRAM_GB", "DGX_SPARK_VRAM_GB"}:
+        from sparkrun.core._platform_compat import legacy_capacity
+
+        return legacy_capacity(name)
+    raise AttributeError(name)
 
 
 @dataclass
@@ -124,17 +117,10 @@ class VRAMEstimate:
 
     @property
     def fits_dgx_spark(self) -> bool:
-        """Whether estimated per-GPU VRAM fits the active DGX Spark budget.
+        """Deprecated explicit Spark-only comparison; never used for target fit."""
+        from sparkrun.core._platform_compat import legacy_spark_fit
 
-        Uses the 90% scheduling cap and, for automatic KV sizing, the smaller
-        runtime memory budget. This estimate does not decide GPU ownership.
-
-        Legacy single-platform helper.  For heterogeneous-cluster fit checks
-        use :func:`sparkrun.models.fit.check_fit`, which inspects each
-        host's actual accelerator memory from
-        :class:`~sparkrun.core.hardware.HostHardware`.
-        """
-        return self.total_per_gpu_gb <= self.fit_budget_gb(DGX_SPARK_VRAM_GB, DGX_SPARK_SCHEDULING_FRACTION)
+        return legacy_spark_fit(self)
 
     def fit_budget_gb(self, nominal_gb: float, scheduling_fraction: float) -> float:
         """Memory-fit reporting uses the active runtime budget and scheduling cap."""
@@ -154,9 +140,7 @@ class VRAMEstimate:
         from dataclasses import asdict
 
         result = asdict(self)
-        result["fits_dgx_spark"] = self.fits_dgx_spark
         result["memory_estimate_complete"] = self.memory_estimate_complete
-        result["dgx_spark_fit_budget_gb"] = self.fit_budget_gb(DGX_SPARK_VRAM_GB, DGX_SPARK_SCHEDULING_FRACTION)
         return result
 
 
@@ -680,8 +664,8 @@ def estimate_vram(
             for KV budgeting. Estimated context demand remains separate.
         gpu_memory_utilization: Fraction of GPU memory the runtime is allowed to use (e.g. 0.9).
         total_gpu_memory_gb: Per-GPU memory of the *target* accelerator (e.g. 48 for an
-            RTX A6000). Defaults to the DGX Spark figure when unset, preserving the
-            legacy single-platform estimate.
+            RTX A6000). Unset means unknown; model requirements and explicit KV
+            budgets can still be estimated without a target.
         model_type: HuggingFace ``model_type``. A strong prior for which KV architecture
             a model uses, and what selects a family-specific slot layout.
         arch: Architecture-specific parameters, keyed by
@@ -695,6 +679,10 @@ def estimate_vram(
     """
     if kv_cache_memory_bytes is not None and (type(kv_cache_memory_bytes) is not int or kv_cache_memory_bytes <= 0):
         raise ValueError("kv_cache_memory_bytes must be a positive integer")
+    if total_gpu_memory_gb is not None and (
+        isinstance(total_gpu_memory_gb, bool) or not math.isfinite(total_gpu_memory_gb) or total_gpu_memory_gb <= 0
+    ):
+        raise ValueError("total_gpu_memory_gb must be finite and positive")
     warnings: list[str] = []
     # Apply the bfloat16 fallback only at computation sites, not on the value
     # returned in VRAMEstimate.kv_dtype.  Keeping the original (possibly None)
@@ -785,16 +773,14 @@ def estimate_vram(
     max_context_tokens: int | None = None
     context_multiplier: float | None = None
 
-    # Target accelerator memory: caller-supplied (e.g. 48 GB A6000) or the
-    # DGX Spark default. Keeps the budget honest on non-DGX clusters.
-    _total_gpu_gb = total_gpu_memory_gb if (total_gpu_memory_gb and total_gpu_memory_gb > 0) else DGX_SPARK_VRAM_GB
+    _total_gpu_gb = total_gpu_memory_gb
 
     if kv_cache_memory_bytes is not None:
         available_kv_gb = per_gpu_kv_gb
         max_context_tokens = strategy.tokens_for_budget(arch_info, sizing, kv_cache_memory_bytes * kv_shard_factor)
         if max_context_tokens is not None and max_model_len and max_model_len > 0:
             context_multiplier = max_context_tokens / max_model_len
-    elif gpu_memory_utilization is not None and gpu_memory_utilization > 0:
+    elif _total_gpu_gb is not None and gpu_memory_utilization is not None and gpu_memory_utilization > 0:
         usable_gpu_memory_gb = _total_gpu_gb * gpu_memory_utilization
         available_kv_gb = usable_gpu_memory_gb - per_gpu_weights_gb
 

@@ -6,9 +6,7 @@ from "does it fit on this cluster" (a property of the placement against
 per-host accelerator memory resolved from inventory and platform defaults in
 :class:`~sparkrun.core.hardware.HostHardware`).
 
-:attr:`VRAMEstimate.fits_dgx_spark` is retained for the single-platform
-CLI output path; heterogeneous clusters must use :func:`check_fit`
-since per-host budgets vary.
+All target fit reporting uses this result, including unknown-capacity states.
 """
 
 from __future__ import annotations
@@ -61,9 +59,19 @@ class HostFitDetail:
     max_gpu_memory_utilization: float | None = None
     """Usable-memory cap applied to the limiting accelerator (``1.0`` = no cap), or ``None``."""
 
+    memory_capacity_source: str | None = None
+    hardware_source: str = "inventory"
     memory_limit_source: str | None = None
     memory_estimate_complete: bool = True
     allocation_mode: str = "exclusive"
+
+    @property
+    def status(self) -> str:
+        if not self.ok:
+            return "exceeds"
+        if self.accelerator_memory_gb is None or not self.memory_estimate_complete or self.hardware_source == "assumed":
+            return "unknown"
+        return "fits"
 
 
 @dataclass
@@ -80,6 +88,15 @@ class FitResult:
     """Soft issues: unknown accelerator memory, missing host metadata, etc."""
 
     @property
+    def status(self) -> str:
+        """Memory evidence, separate from permissive legacy/admission ``ok``."""
+        if not self.ok:
+            return "exceeds"
+        if not self.per_host or any(d.status == "unknown" for d in self.per_host.values()):
+            return "unknown"
+        return "fits"
+
+    @property
     def hosts_used(self) -> tuple[str, ...]:
         """Hosts receiving at least one rank, in placement order."""
         return tuple(self.per_host.keys())
@@ -87,6 +104,7 @@ class FitResult:
     def to_dict(self) -> dict:
         return {
             "ok": self.ok,
+            "status": self.status,
             "per_host": {h: _detail_to_dict(d) for h, d in self.per_host.items()},
             "warnings": list(self.warnings),
         }
@@ -101,6 +119,9 @@ def _detail_to_dict(d: HostFitDetail) -> dict:
         "nominal_memory_gb": d.nominal_memory_gb,
         "max_gpu_memory_utilization": d.max_gpu_memory_utilization,
         "memory_limit_source": d.memory_limit_source,
+        "memory_capacity_source": d.memory_capacity_source,
+        "hardware_source": d.hardware_source,
+        "status": d.status,
         "memory_estimate_complete": d.memory_estimate_complete,
         "allocation_mode": d.allocation_mode,
         "headroom_gb": d.headroom_gb,
@@ -109,7 +130,7 @@ def _detail_to_dict(d: HostFitDetail) -> dict:
     }
 
 
-def _limiting_accelerator(hw, cluster, indices=None, estimate=None) -> tuple[float, float, float, str] | None:
+def _limiting_accelerator(hw, cluster, indices=None, estimate=None) -> tuple[float, float, float, str, str] | None:
     """Find the accelerator with the smallest *usable* memory on *hw*.
 
     Returns ``(usable_gb, nominal_gb, cap, source)`` for the limiting assigned
@@ -117,16 +138,16 @@ def _limiting_accelerator(hw, cluster, indices=None, estimate=None) -> tuple[flo
     applies the scheduling/fit cap resolved by
     :func:`sparkrun.core.limits.resolve_max_gpu_memory_utilization`.
     """
-    from sparkrun.core.limits import resolve_memory_limit, resolve_accelerator_memory_gb
+    from sparkrun.core.limits import resolve_memory_limit, resolve_accelerator_memory
 
-    best: tuple[float, float, float, str] | None = None
+    best: tuple[float, float, float, str, str] | None = None
     slots = [a for a in hw.accelerators for _ in range(a.count)]
     selected = range(len(slots)) if indices is None else indices
     if any(index < 0 or index >= len(slots) for index in selected):
         return None
     for index in selected:
         accel = slots[index]
-        capacity = resolve_accelerator_memory_gb(accel, hw)
+        capacity, capacity_source = resolve_accelerator_memory(accel, hw)
         if capacity is None:
             return None
         cap, source = resolve_memory_limit(accel, hw, cluster)
@@ -135,14 +156,14 @@ def _limiting_accelerator(hw, cluster, indices=None, estimate=None) -> tuple[flo
             source = "runtime gpu_memory_utilization"
             cap = usable / capacity if capacity else 0.0
         if best is None or usable < best[0]:
-            best = (usable, capacity, cap, source)
+            best = (usable, capacity, cap, source, capacity_source)
     return best
 
 
 def check_fit(
     estimate: VRAMEstimate,
     cluster: ClusterDefinition,
-    placement: RankAssignment,
+    placement: RankAssignment | None = None,
 ) -> FitResult:
     """Check whether *estimate*'s per-rank VRAM requirement fits each placed host.
 
@@ -163,6 +184,7 @@ def check_fit(
         cluster: Cluster definition (provides per-host hardware metadata).
         placement: Rank-to-host assignment from
             ``sparkrun.api.schedule`` / :func:`sparkrun.schedulers.greedy.pack`.
+            None reports candidate devices with zero assigned ranks.
 
     Returns:
         :class:`FitResult` with per-host details and aggregate ``ok``.
@@ -172,11 +194,16 @@ def check_fit(
     warnings: list[str] = []
     overall_ok = True
 
-    for host in placement.hosts_used:
-        ranks = placement.ranks_on_host(host)
+    for host in placement.hosts_used if placement is not None else cluster.hosts:
+        ranks = placement.ranks_on_host(host) if placement is not None else ()
         hw = cluster.hardware_for(host)
-        limiting = _limiting_accelerator(hw, cluster, {placement.local_gpu_for_rank(rank) for rank in ranks}, estimate)
-        mode = "exclusive" if all(placement.by_rank[r].util_fraction >= EXCLUSIVE_GPU_THRESHOLD for r in ranks) else "shared"
+        indices = {placement.local_gpu_for_rank(rank) for rank in ranks} if placement is not None else None
+        limiting = _limiting_accelerator(hw, cluster, indices, estimate)
+        mode = (
+            "exclusive"
+            if (placement is None or all(placement.by_rank[r].util_fraction >= EXCLUSIVE_GPU_THRESHOLD for r in ranks))
+            else "shared"
+        )
 
         if limiting is None:
             note = "accelerator memory capacity unavailable from inventory or platform; fit not verified"
@@ -190,10 +217,12 @@ def check_fit(
                 ok=True,
                 note=note,
                 memory_estimate_complete=False,
+                memory_capacity_source="unknown",
                 allocation_mode=mode,
+                hardware_source=hw.source,
             )
         else:
-            usable_mem, nominal_mem, cap, source = limiting
+            usable_mem, nominal_mem, cap, source, capacity_source = limiting
             headroom = usable_mem - vram_per_rank
             host_ok = vram_per_rank <= usable_mem
             if not host_ok:
@@ -208,9 +237,13 @@ def check_fit(
                 nominal_memory_gb=nominal_mem,
                 max_gpu_memory_utilization=cap,
                 memory_limit_source=source,
+                memory_capacity_source=capacity_source,
                 memory_estimate_complete=estimate.memory_estimate_complete,
                 allocation_mode=mode,
+                hardware_source=hw.source,
             )
+        if hw.source == "assumed":
+            warnings.append("%s: hardware assumed by application policy; probe the target to verify fit" % host)
         per_host[host] = detail
 
     return FitResult(ok=overall_ok, per_host=per_host, warnings=warnings)

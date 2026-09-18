@@ -24,6 +24,7 @@ _NVIDIA_GENERIC_DEFAULTS: dict[str, str | None] = {
     "sglang": "lmsysorg/sglang:latest",
     "llama-cpp": "ghcr.io/ggerganov/llama.cpp:server-cuda",
     "trtllm": "nvcr.io/nvidia/tensorrt-llm/release:latest",
+    "modular-max": "modular/max-nvidia-full:latest",
 }
 
 

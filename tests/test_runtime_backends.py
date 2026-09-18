@@ -55,22 +55,12 @@ def test_detect_ib_for_hosts_backends_path_matches_legacy_for_nvidia():
     assert via_backend.comm_env.per_host == legacy.comm_env.per_host
 
 
-def test_detect_ib_for_hosts_missing_host_in_backends_uses_legacy():
-    """Hosts absent from the backends map still get the legacy NCCL env."""
+def test_detect_ib_for_hosts_missing_host_in_backends_is_rejected():
     hosts = ["h1", "h2"]
-
-    with mock.patch(
-        "sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-        return_value=[_fake_result("h1"), _fake_result("h2")],
-    ):
-        # Only h1 has a backend; h2 falls through to generate_nccl_env.
+    with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=[_fake_result("h1"), _fake_result("h2")]):
         backends = {"h1": BackendBundle(accelerator_vendor="nvidia", collective=NcclBackend())}
-        result = detect_ib_for_hosts(hosts, dry_run=False, backends=backends)
-
-    # Both hosts produce non-empty env; they should be identical and thus shared.
-    assert result.comm_env.shared  # populated
-    # No host-specific divergence (both NCCL paths produce same dict for same input)
-    assert result.comm_env.per_host == {}
+        with pytest.raises(ValueError, match="Missing collective backend for host h2"):
+            detect_ib_for_hosts(hosts, dry_run=False, backends=backends)
 
 
 # ---------------------------------------------------------------------------

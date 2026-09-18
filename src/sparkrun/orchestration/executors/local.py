@@ -197,7 +197,7 @@ class LocalExecutor(Executor):
             lines.append(". %s || exit $?" % _shell_path(env_file))
             lines.append("set +a")
 
-        gpus_export = self._cuda_visible_devices_export()
+        gpus_export = self._visible_devices_export()
         if gpus_export:
             lines.append(gpus_export + " || exit $?")
 
@@ -209,19 +209,27 @@ class LocalExecutor(Executor):
             return ""
         return "\n".join(lines) + "\n"
 
-    def _cuda_visible_devices_export(self) -> str | None:
+    def _visible_devices_variable(self) -> str | None:
+        return {"nvidia": "CUDA_VISIBLE_DEVICES", "amd": "ROCR_VISIBLE_DEVICES", "intel": "HABANA_VISIBLE_MODULES"}.get(
+            self.config.accelerator_vendor or "nvidia"
+        )
+
+    def _visible_devices_export(self) -> str | None:
         """Translate ``--gpus`` into a ``CUDA_VISIBLE_DEVICES`` export.
 
         - ``"all"`` / empty / ``None`` → no export (use whatever's visible).
         - ``"device=0,2"`` → ``export CUDA_VISIBLE_DEVICES=0,2``.
         - Anything else (``count=2``, capability filters) → warn + skip.
         """
+        variable = self._visible_devices_variable()
+        if variable is None:
+            return ""
         gpus = (self.config.gpus or "").strip()
         if not gpus or gpus.lower() == "all":
             return None
         m = _GPUS_DEVICE_RE.match(gpus)
         if m:
-            return "export CUDA_VISIBLE_DEVICES=%s" % quote(m.group(1))
+            return "export %s=%s" % (variable, quote(m.group(1)))
         logger.warning(
             "LocalExecutor: gpus=%r is not translatable to CUDA_VISIBLE_DEVICES; leaving GPU visibility to the workload itself.",
             gpus,
@@ -288,10 +296,8 @@ class LocalExecutor(Executor):
         # Control paths are fixed before setup changes the directory or HOME.
         prelude = self._env_prelude(_hostify_env(env, volumes))
         allocations = decode_allocations(allocation_record)
-        if allocations:
-            variable = {"amd": "ROCR_VISIBLE_DEVICES", "intel": "HABANA_VISIBLE_MODULES"}.get(
-                self.config.accelerator_vendor or "", "CUDA_VISIBLE_DEVICES"
-            )
+        variable = self._visible_devices_variable()
+        if allocations and variable is not None:
             prelude += "export %s=%s || exit $?\n" % (
                 variable,
                 quote(",".join(str(i) for i in dict.fromkeys(a.gpu_index for a in allocations))),
@@ -666,7 +672,7 @@ class LocalExecutor(Executor):
         are reported as errors without claiming complete coverage for that host.
         """
         from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, with_gpu_allocations
-        from sparkrun.core.hardware import resolve_fallback_hardware
+        from sparkrun.core.hardware import resolve_hardware
         from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
         self._require_managed_paths()
@@ -717,7 +723,7 @@ class LocalExecutor(Executor):
                 errors[host] = (getattr(r, "stderr", "") or "").strip() or "unreachable"
                 continue
 
-            hw = (host_hardware or {}).get(host) or resolve_fallback_hardware()
+            hw = (host_hardware or {}).get(host) or resolve_hardware()
             capacity = hw.total_gpus
 
             workloads, used = _parse_local_pidfile_output(r.stdout)

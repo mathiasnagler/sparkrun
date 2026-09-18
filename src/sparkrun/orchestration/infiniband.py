@@ -480,9 +480,8 @@ def detect_ib_for_hosts(
         backends: Optional per-host :class:`BackendBundle`.  When
             provided, each host's env block is produced by
             ``backends[host].collective.env_for_host(ib_info, topology=...)``.
-            Hosts missing from *backends* fall back to the legacy
-            :func:`generate_nccl_env` (NCCL) path.  When *backends* is
-            ``None`` every host uses the legacy path.
+            Explicit maps must cover every host. ``None`` retains the legacy
+            NVIDIA-only transport-probe API; runtime paths resolve a full map.
         mgmt_interface: Optional management interface to pin on every host,
             overriding detection (see
             :attr:`~sparkrun.core.cluster_manager.ClusterDefinition.mgmt_interface`).
@@ -536,7 +535,9 @@ def detect_ib_for_hosts(
         # NCCL/RCCL/HCCL hosts emit the right env block.  Hosts missing
         # from *backends* (or all hosts when *backends* is None) use the
         # legacy NCCL generator — byte-identical to NcclBackend on NVIDIA.
-        if backends is not None and result.host in backends:
+        if backends is not None:
+            if result.host not in backends:
+                raise ValueError("Missing collective backend for host %s" % result.host)
             host_env = backends[result.host].collective.env_for_host(ib_info, topology=topology)
         else:
             host_env = generate_nccl_env(ib_info, topology=topology)

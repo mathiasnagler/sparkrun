@@ -153,7 +153,8 @@ def test_cluster_override_and_cli_fit_use_the_same_budget(capsys):
     assert "Context capacity: unverified" in output
     assert "budget source=cluster override" in output
     assert est.to_dict()["memory_estimate_complete"] is True
-    assert est.to_dict()["dgx_spark_fit_budget_gb"] == pytest.approx(108.9)
+    assert "dgx_spark_fit_budget_gb" not in est.to_dict()
+    assert fit.status == "exceeds"
 
 
 def test_fit_reports_assigned_gpu_only():

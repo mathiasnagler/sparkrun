@@ -28,7 +28,15 @@ def _fixture():
             "env": {"RECIPE_FLAG": "yes"},
         }
     )
-    cluster = ClusterDefinition(name="c", hosts=["h1", "h2"], cache_dir="/cache/hf")
+    cluster = ClusterDefinition(
+        name="c",
+        hosts=["h1", "h2"],
+        cache_dir="/cache/hf",
+        hosts_hardware={
+            host: HostHardware([AcceleratorSpec("nvidia", "h100", count=2, memory_gb=80, capabilities=frozenset({"cuda"}))])
+            for host in ("h1", "h2")
+        },
+    )
     placement = RankAssignment(
         by_rank=(RankSlot("h1", 0), RankSlot("h2", 0)),
         hosts_used=("h1", "h2"),

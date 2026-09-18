@@ -99,6 +99,15 @@ class HardwarePlatformPlugin(Plugin):
         """Collective backend (NCCL/RCCL/HCCL) appropriate for this platform."""
         ...
 
+    def assumed_hardware(self) -> HostHardware | None:
+        """Optional legacy inventory assumption, used only by application policy.
+
+        A platform name does not generally identify capacity or device count.
+        Leave this unset unless the platform can qualify an explicit assumption;
+        do not advertise unobserved network capabilities.
+        """
+        return None
+
     def default_image(self, runtime_name: str) -> str | None:
         """Default container image for *runtime_name* on this platform.
 
@@ -196,7 +205,7 @@ class HardwarePlatformPlugin(Plugin):
 
         Base implementation returns ``None`` (no platform default → the hard
         ``1.0`` fallback applies).  Subclasses override to publish a default
-        for their accelerators — e.g. DGX Spark returns ``0.85`` for GB10
+        for their accelerators — e.g. DGX Spark returns ``0.90`` for GB10
         because its unified memory is shared with the CPU/OS.
         """
         return None

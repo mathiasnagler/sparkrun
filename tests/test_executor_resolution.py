@@ -694,15 +694,15 @@ class TestPlatformLayer:
         )
         assert ex.config.gpu_access_mode == "cdi"
 
-    def test_platform_error_is_swallowed(self, monkeypatch):
+    def test_platform_error_is_visible(self, monkeypatch):
         import sparkrun.platforms as platforms
 
-        def _raise(hw):
+        def _raise(hw, **kwargs):
             raise ValueError("boom")
 
         monkeypatch.setattr(platforms, "resolve_platform", _raise)
-        ex = resolve_executor(host_hardware=self._gb10(), rootless=False, auto_user=False)
-        assert ex.config.gpu_access_mode == "cdi"
+        with pytest.raises(ValueError, match="boom"):
+            resolve_executor(host_hardware=self._gb10(), rootless=False, auto_user=False)
 
     def test_unclaimed_hardware_contributes_nothing(self):
         """A host no platform claims (AMD today) falls through to the executor default."""

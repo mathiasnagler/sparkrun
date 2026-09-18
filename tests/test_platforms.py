@@ -343,9 +343,11 @@ def test_dgx_spark_validate_host_wrong_model():
     assert "h100" in warnings[0]
 
 
-def test_dgx_spark_validate_host_default_hardware_is_clean():
-    """default_dgx_spark_hardware() should validate cleanly — it has RoCEv2."""
-    assert DgxSparkPlatform().validate_host(default_dgx_spark_hardware()) == []
+def test_assumed_hardware_does_not_claim_attached_fabric():
+    hw = default_dgx_spark_hardware()
+    assert hw.source == "assumed"
+    assert not hw.has_capability("rdma:roce-v2")
+    assert DgxSparkPlatform().validate_host(hw)
 
 
 # --------------------------------------------------------------------------

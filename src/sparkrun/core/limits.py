@@ -30,7 +30,7 @@ from sparkrun.core.hardware import (
     DEFAULT_MAX_GPU_MEMORY_UTILIZATION,
     AcceleratorSpec,
     HostHardware,
-    resolve_fallback_hardware,
+    resolve_hardware,
 )
 
 if TYPE_CHECKING:
@@ -96,37 +96,40 @@ def _resolve_platform_default(accel: AcceleratorSpec, host_hw: HostHardware) -> 
     """Platform-tier default for *accel*, or ``None`` when no platform claims the host."""
     # Lazy import to avoid a core -> platforms import cycle (platforms imports
     # core.hardware at module load).
-    from sparkrun.platforms import resolve_platform
+    from sparkrun.platforms import resolve_accelerator_platform
 
-    platform = resolve_platform(host_hw)
+    platform = resolve_accelerator_platform(accel, host_hw)
     if platform is None:
         return None
-    try:
-        return _valid_fraction(platform.default_max_gpu_memory_utilization(accel))
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning("Platform %r default_max_gpu_memory_utilization raised: %s", getattr(platform, "platform_name", "?"), e)
+    value = platform.default_max_gpu_memory_utilization(accel)
+    if value is None:
         return None
+    fraction = _valid_fraction(value)
+    if isinstance(value, bool) or fraction is None:
+        raise ValueError("Platform %r supplied an invalid scheduling memory fraction" % platform.platform_name)
+    return fraction
+
+
+def resolve_accelerator_memory(accel: AcceleratorSpec, host_hw: HostHardware) -> tuple[float | None, str]:
+    """Resolve capacity and its provenance without modifying inventory."""
+    capacity = accel.memory_gb
+    source = accel.memory_capacity_source or host_hw.source
+    if capacity is None:
+        from sparkrun.platforms import resolve_accelerator_platform
+
+        platform = resolve_accelerator_platform(accel, host_hw)
+        capacity = platform.default_accelerator_memory_gb(accel) if platform is not None else None
+        source = "platform default" if host_hw.source != "assumed" else "assumed platform default"
+    if capacity is None:
+        return None, "unknown"
+    if isinstance(capacity, bool) or not isinstance(capacity, (int, float)) or not math.isfinite(capacity) or capacity <= 0:
+        raise ValueError("invalid accelerator memory capacity from %s" % source)
+    return float(capacity), source
 
 
 def resolve_accelerator_memory_gb(accel: AcceleratorSpec, host_hw: HostHardware) -> float | None:
-    """Inventory capacity, then a qualified platform default; otherwise unknown.
-
-    Resolution does not modify raw inventory or its fingerprint. This also
-    covers saved probe records whose device identity is known but memory is not.
-    """
-    if accel.memory_gb is not None:
-        return accel.memory_gb
-    from sparkrun.platforms import resolve_platform
-
-    platform = resolve_platform(host_hw)
-    if platform is None:
-        return None
-    capacity = platform.default_accelerator_memory_gb(accel)
-    if capacity is None:
-        return None
-    if isinstance(capacity, bool) or not isinstance(capacity, (int, float)) or not math.isfinite(capacity) or capacity <= 0:
-        raise ValueError("Platform %r supplied an invalid accelerator memory capacity" % platform.platform_name)
-    return float(capacity)
+    """Inventory capacity, then a qualified platform default; otherwise unknown."""
+    return resolve_accelerator_memory(accel, host_hw)[0]
 
 
 def usable_memory_gb(
@@ -160,23 +163,20 @@ def resolved_hardware_for_scheduling(
     """
     resolved: dict[str, HostHardware] = {}
     for host in hosts:
-        hw = cluster.hardware_for(host) if cluster is not None else resolve_fallback_hardware()
+        hw = cluster.hardware_for(host) if cluster is not None else resolve_hardware()
         new_accels = []
         for accel in hw.accelerators:
             cap, source = resolve_memory_limit(accel, hw, cluster)
+            capacity, capacity_source = resolve_accelerator_memory(accel, hw)
             new_accels.append(
                 dataclasses.replace(
                     accel,
-                    memory_gb=resolve_accelerator_memory_gb(accel, hw),
+                    memory_gb=capacity,
+                    memory_capacity_source=capacity_source,
                     max_gpu_memory_utilization=cap,
                     memory_limit_source=source,
                 )
             )
-        resolved[host] = HostHardware(
-            accelerators=new_accels,
-            fingerprint=hw.fingerprint,
-            notes=hw.notes,
-            ib_info=hw.ib_info,
-            driver_versions=dict(hw.driver_versions),
-        )
+        resolved[host] = dataclasses.replace(hw, accelerators=new_accels)
+
     return resolved

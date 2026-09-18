@@ -374,6 +374,13 @@ class Executor(Plugin):
         """
         return None
 
+    def bind_host_executors(self, executors: dict[str, Executor]) -> None:
+        """Attach launch-local resolved configurations without mutating defaults."""
+        self._host_executors = dict(executors)
+
+    def for_host(self, host: str) -> Executor:
+        return getattr(self, "_host_executors", {}).get(host, self)
+
     # --- Optional channel-aware gating ---
     # When set to a registered feature-flag name (e.g. ``"executor.k8s"``),
     # this executor hides itself from the SAF extension registry (via

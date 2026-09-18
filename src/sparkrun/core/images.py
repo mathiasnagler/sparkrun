@@ -244,6 +244,7 @@ def resolve_runtime_image_plan(
     hosts: list[str],
     *,
     cluster: ClusterDefinition | None = None,
+    host_hardware=None,
     images_by_node: Sequence[str] | None = None,
 ) -> ImagePlan:
     """Resolve explicit images and each selected host's runtime/platform default.
@@ -258,13 +259,17 @@ def resolve_runtime_image_plan(
             raise ImagePlanError("prepared images must be a sequence of image references")
         plan = ImagePlan(default_image="", images_by_node=tuple(images_by_node))
         return validate_runtime_image_plan(plan, runtime, hosts)
+    from sparkrun.core.hardware import resolve_host_hardware
+
     declared_hosts = {entry["host"] for entry in (getattr(recipe, "containers", None) or [])}
     fallbacks = {}
     for host in hosts:
         if recipe.container or host in declared_hosts:
             fallbacks[host] = recipe.container
         else:
-            fallbacks[host] = runtime.resolve_container(recipe, host_hardware=cluster.hardware_for(host) if cluster is not None else None)
+            fallbacks[host] = runtime.resolve_container(
+                recipe, host_hardware=(host_hardware[host] if host_hardware is not None else resolve_host_hardware([host], cluster)[host])
+            )
     plan = resolve_image_plan(
         recipe,
         next(iter(fallbacks.values()), "") if len(set(fallbacks.values())) == 1 else "",
