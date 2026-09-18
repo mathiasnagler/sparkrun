@@ -3,3 +3,9 @@ include vendor/sparkroute.lock
 include scripts/vendor-sparkroute.py
 include docs/SPARKROUTE.md
 recursive-include tests/vendor/sparkroute *.py
+
+include scripts/vendor-coldsnap.py
+include docs/COLDSNAP.md
+include vendor/coldsnap.lock
+recursive-include tests/vendor/coldsnap *.py
+include tests/vendor/conftest.py

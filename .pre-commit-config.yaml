@@ -17,3 +17,9 @@ repos:
         language: python
         pass_filenames: false
         always_run: true
+      - id: verify-coldsnap-vendor
+        name: Verify optional ColdSnap vendor snapshot
+        entry: python scripts/vendor-coldsnap.py verify --allow-absent
+        language: python
+        pass_filenames: false
+        always_run: true

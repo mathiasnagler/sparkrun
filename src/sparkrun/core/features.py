@@ -373,6 +373,17 @@ FEATURE_CLI_SETUP_FEATURES = register_feature(
 )
 
 
+# The binding is ready for an optional vendored snapshot. Inclusion and channel
+# defaults are separate release decisions; source is not fetched by this flag.
+FEATURE_PLUGIN_COLDSNAP = register_feature(
+    FeatureFlag(
+        name="plugins.coldsnap",
+        description="ColdSnap capture, restore, and materialization (requires the optional bundled plugin)",
+        default=False,
+    )
+)
+
+
 FEATURE_GATEWAY_SPARKROUTE = register_feature(
     FeatureFlag(
         name="gateway.sparkroute",
