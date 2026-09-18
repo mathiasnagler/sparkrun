@@ -51,6 +51,9 @@ class AcceleratorSpec:
     :func:`sparkrun.core.limits.resolve_max_gpu_memory_utilization`), falling
     back to :data:`DEFAULT_MAX_GPU_MEMORY_UTILIZATION`."""
 
+    memory_limit_source: str | None = None
+    """Ephemeral resolved budget provenance; not persisted in raw inventory."""
+
     def to_dict(self) -> dict[str, Any]:
         """JSON/YAML-serializable form. Omits defaults to keep YAML small."""
         d: dict[str, Any] = {"vendor": self.vendor, "model": self.model}
@@ -187,6 +190,7 @@ class HostHardware:
 # Shared by platform defaults and model estimates so scheduling and display
 # use the same capacity without importing the estimator into hardware code.
 DGX_SPARK_MEMORY_GB = 121.0
+DGX_SPARK_SCHEDULING_FRACTION = 0.90
 
 # Hard fallback for the scheduling/fit usable-memory cap when neither the
 # accelerator, the cluster config, nor the platform tier supplies one.  ``1.0``

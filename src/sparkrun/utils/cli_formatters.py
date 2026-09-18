@@ -269,36 +269,25 @@ def display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overri
 def _resolve_target_accelerator(cluster, placement):
     """Return ``(memory_gb, model)`` for the representative target accelerator.
 
-    Prefers the placed / solo host(s), falling back to the cluster's first host
-    with recorded hardware. Returns ``(None, None)`` when no per-host hardware is
-    known (e.g. the DGX Spark default fallback), so callers keep the legacy
-    121 GB / "DGX Spark" behavior. A recorded DGX Spark host reports
-    ``memory_gb == 121`` here, so DGX output is byte-identical either way.
+    Uses the first assigned GPU, or the first candidate GPU without a placement.
+    Capacity resolution shares the inventory/platform fallback used by fit.
+    With no cluster, standalone reporting uses the DGX Spark default.
     """
     if cluster is None:
         return None, None
     from sparkrun.core.limits import resolve_accelerator_memory_gb
 
-    hw_map = getattr(cluster, "hosts_hardware", None) or {}
-    if not hw_map:
+    hosts = placement.hosts_used if placement is not None and placement.hosts_used else cluster.hosts
+    if not hosts:
         return None, None
-    ordered = []
-    if placement is not None and getattr(placement, "hosts_used", None):
-        ordered.extend(placement.hosts_used)
-    ordered.extend(getattr(cluster, "hosts", None) or [])
-    ordered.extend(hw_map.keys())
-    seen = set()
-    for host in ordered:
-        if host in seen:
-            continue
-        seen.add(host)
-        hw = hw_map.get(host)
-        accels = getattr(hw, "accelerators", None) if hw else None
-        if hw is not None and accels:
-            capacity = resolve_accelerator_memory_gb(accels[0], hw)
-            if capacity is not None:
-                return capacity, accels[0].model
-    return None, None
+    host = hosts[0]
+    hw = cluster.hardware_for(host)
+    slots = [a for a in hw.accelerators for _ in range(a.count)]
+    index = placement.by_rank[placement.ranks_on_host(host)[0]].local_gpu if placement is not None and placement.hosts_used else 0
+    if not 0 <= index < len(slots):
+        return None, None
+    accel = slots[index]
+    return resolve_accelerator_memory_gb(accel, hw), accel.model
 
 
 def display_vram_estimate(
@@ -314,8 +303,8 @@ def display_vram_estimate(
     When *cluster* is provided, also render a per-host fit table using
     :func:`sparkrun.models.fit.check_fit`.  When *placement* is also
     provided, the per-host walk follows the placed rank set rather than
-    every cluster host.  Legacy DGX-Spark single-line fit remains in
-    the output for back-compat.
+    every cluster host. The summary and per-host rows use the same fit result;
+    standalone recipe output uses the default DGX Spark budget.
     """
     from sparkrun.models.vram import DEFAULT_VRAM_GB
 
@@ -331,6 +320,12 @@ def display_vram_estimate(
         click.echo(f"\nVRAM estimation failed: {e}", err=True)
         return
 
+    fit = None
+    if cluster is not None and placement is not None and placement.hosts_used:
+        from sparkrun.models.fit import check_fit
+
+        fit = check_fit(est, cluster, placement)
+
     click.echo("\nVRAM Estimation:")
     if est.model_dtype:
         click.echo(f"  Model dtype:      {est.model_dtype}")
@@ -341,32 +336,63 @@ def display_vram_estimate(
         click.echo(f"  Architecture:     {est.kv_arch_label}")
     elif all([est.num_layers, est.num_kv_heads, est.head_dim]):
         click.echo(f"  Architecture:     {est.num_layers} layers, {est.num_kv_heads} KV heads, {est.head_dim} head_dim")
-    click.echo(f"  Model weights:    {est.model_weights_gb:.2f} GB")
+    click.echo(f"  Model weights:    {est.model_weights_gb:.2f} GiB")
+    if est.kv_cache_memory_bytes is not None:
+        click.echo(f"  KV allocation:    {est.kv_cache_memory_bytes / 1024**3:.2f} GiB per GPU (explicit)")
     if est.kv_cache_total_gb is not None:
         # MLA's latent cache has no head dimension to shard, so it is duplicated
         # on every TP rank — worth saying, since raising --tp won't shrink it.
         replicated = " — replicated per rank" if est.kv_cache_replicated and est.tensor_parallel > 1 else ""
-        click.echo(f"  KV cache:         {est.kv_cache_total_gb:.2f} GB (max_model_len={est.max_model_len:,}){replicated}")
+        click.echo(f"  KV demand estimate: {est.kv_cache_total_gb:.2f} GiB (max_model_len={est.max_model_len:,}){replicated}")
     click.echo(f"  Tensor parallel:  {est.tensor_parallel}")
     if est.pipeline_parallel > 1:
         click.echo(f"  Pipeline parallel: {est.pipeline_parallel}")
-    click.echo(f"  Per-GPU total:    {est.total_per_gpu_gb:.2f} GB")
-    # Fit against the resolved target memory (DGX Spark when the target is a
-    # gb10 or unknown, preserving the legacy line).
+    click.echo(f"  Per-GPU total:    {est.total_per_gpu_gb:.2f} GiB")
     total_gb = est.total_gpu_memory_gb or DEFAULT_VRAM_GB
-    fits = est.total_per_gpu_gb <= total_gb
-    fit_str = "YES" if fits else "EXCEEDS %.0f GB" % total_gb
-    if target_model and target_model != "gb10":
-        click.echo(f"  Fit ({target_model.upper()}, {total_gb:.0f} GB): {fit_str}")
+    if fit is not None:
+        verified = all(d.accelerator_memory_gb is not None and d.memory_estimate_complete for d in fit.per_host.values())
+        fit_str = ("YES (estimate)" if verified else "UNVERIFIED (partial estimate)") if fit.ok else "EXCEEDS (see per-host budgets)"
+        click.echo(f"  Placement memory fit: {fit_str}")
+        modes = sorted({d.allocation_mode for d in fit.per_host.values()})
+        click.echo(f"  Allocation:       {', '.join(modes)}; runtime verifies actual memory fit")
     else:
-        click.echo(f"  DGX Spark fit:    {fit_str}")
+        from sparkrun.core.hardware import DGX_SPARK_SCHEDULING_FRACTION
+        from sparkrun.core.limits import resolve_memory_limit
+
+        fraction = DGX_SPARK_SCHEDULING_FRACTION if not target_model or target_model == "gb10" else 1.0
+        source = "platform default" if fraction < 1.0 else "default capacity"
+        if cluster is not None and cluster.hosts:
+            hw = cluster.hardware_for(cluster.hosts[0])
+            if hw.accelerators:
+                fraction, source = resolve_memory_limit(hw.accelerators[0], hw, cluster)
+        budget_gb = est.fit_budget_gb(total_gb, fraction)
+        if budget_gb < total_gb * fraction:
+            source = "runtime gpu_memory_utilization"
+        fits = est.total_per_gpu_gb <= budget_gb
+        fit_str = (
+            ("YES (estimate)" if est.memory_estimate_complete else "UNVERIFIED (partial estimate)")
+            if fits
+            else "EXCEEDS %.2f GiB budget" % budget_gb
+        )
+        if target_model and target_model != "gb10":
+            click.echo(f"  Fit ({target_model.upper()}, {total_gb:.0f} GiB): {fit_str}")
+        else:
+            click.echo(f"  DGX Spark memory fit: {fit_str}")
+        click.echo(f"  Estimate budget:  {budget_gb:.2f} GiB; nominal capacity {total_gb:.2f} GiB; source={source}")
+        click.echo("  Allocation:       exclusive GPU by default; runtime verifies actual memory fit")
 
     # GPU memory budget analysis
-    if est.gpu_memory_utilization is not None:
+    if est.kv_cache_memory_bytes is not None:
+        click.echo("  KV budget source: explicit bytes; gpu_memory_utilization does not size KV")
+        if est.max_context_tokens is not None:
+            click.echo(f"  Context estimate: {est.max_context_tokens:,} tokens within the explicit KV budget")
+        else:
+            click.echo("  Context capacity: unverified; runtime must size the cache")
+    elif est.gpu_memory_utilization is not None and (cluster is None or target_mem is not None):
         click.echo("\n  GPU Memory Budget:")
         click.echo(f"    gpu_memory_utilization: {est.gpu_memory_utilization:.0%}")
-        click.echo(f"    Usable GPU memory:     {est.usable_gpu_memory_gb:.1f} GB ({total_gb:.0f} GB x {est.gpu_memory_utilization:.0%})")
-        click.echo(f"    Available for KV:      {est.available_kv_gb:.1f} GB")
+        click.echo(f"    Usable GPU memory:     {est.usable_gpu_memory_gb:.1f} GiB ({total_gb:.0f} GiB x {est.gpu_memory_utilization:.0%})")
+        click.echo(f"    Available for KV:      {est.available_kv_gb:.1f} GiB")
         if est.max_context_tokens is not None:
             click.echo(f"    Max context tokens:    {est.max_context_tokens:,}")
             if est.context_multiplier is not None and est.max_model_len:
@@ -377,34 +403,26 @@ def display_vram_estimate(
     for w in est.warnings:
         click.echo(f"  Warning: {w}")
 
-    # Per-host cluster fit (Phase X.1) — only when caller threaded
-    # a cluster and a placement through.  Skipped on the legacy
-    # "loose host list" path so the existing DGX output stays intact.
-    if cluster is not None and placement is not None and placement.hosts_used:
-        from sparkrun.models.fit import check_fit
-
-        try:
-            fit = check_fit(est, cluster, placement)
-        except Exception as e:
-            click.echo(f"  Per-host fit check skipped: {e}")
-            return
-
+    if fit is not None:
         click.echo("\n  Per-host fit:")
         for host, detail in fit.per_host.items():
             if detail.accelerator_memory_gb is None:
                 click.echo(f"    {host}: ranks={detail.ranks_assigned}, accelerator memory unknown")
             else:
-                marker = "OK" if detail.ok else "EXCEEDS"
+                marker = ("OK (estimate)" if detail.memory_estimate_complete else "UNVERIFIED") if detail.ok else "EXCEEDS"
                 cap = detail.max_gpu_memory_utilization
                 if cap is not None and cap < 1.0 and detail.nominal_memory_gb is not None:
-                    accel_str = f"accelerator={detail.nominal_memory_gb:.1f} GB @{cap:.0%} -> usable={detail.accelerator_memory_gb:.1f} GB"
+                    accel_str = (
+                        f"accelerator={detail.nominal_memory_gb:.1f} GiB @{cap:.0%} -> usable={detail.accelerator_memory_gb:.1f} GiB"
+                    )
                 else:
-                    accel_str = f"accelerator={detail.accelerator_memory_gb:.1f} GB"
+                    accel_str = f"accelerator={detail.accelerator_memory_gb:.1f} GiB"
                 click.echo(
                     f"    {host}: ranks={detail.ranks_assigned}, "
-                    f"per-rank={detail.vram_per_rank_gb:.1f} GB, "
+                    f"per-rank={detail.vram_per_rank_gb:.1f} GiB, "
                     f"{accel_str}, "
-                    f"headroom={detail.headroom_gb:.1f} GB [{marker}]"
+                    f"headroom={detail.headroom_gb:.1f} GiB [{marker}]; allocation={detail.allocation_mode}; "
+                    f"budget source={detail.memory_limit_source}"
                 )
         for w in fit.warnings:
             click.echo(f"  Warning: {w}")

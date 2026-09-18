@@ -1,18 +1,7 @@
-"""Regression tests for whole-GPU memory-fit in the scheduler fallback path.
+"""Memory claims remain hard limits for shared allocations.
 
-These tests pin three correctness fixes around the usable-memory cap:
-
-BUG 1 (HIGH) — the whole-GPU memory fit guard must NOT vanish when the
-cluster status query is unavailable (``status=None``).  Before the fix, a
-whole-GPU claim exceeding the host's capped usable memory was routed to the
-memory-blind greedy fallback and silently ACCEPTED whenever status probing
-failed.  The greedy fallback now enforces the per-rank whole-GPU memory
-budget so the same launch is rejected regardless of status availability.
-
-BUG 2 (LOW) — a baked cap of ``0.0`` must not be coalesced to ``1.0``.
-
-The memory-aware fallback must also remain byte-identical to today's
-behavior when memory IS satisfiable or when the spec declares no memory.
+Exclusive allocations leave estimated memory fit to the runtime. The low-level
+pack helper still honors an explicit per-rank memory constraint when requested.
 """
 
 from __future__ import annotations
@@ -55,13 +44,13 @@ _SCHEDULER_FACTORIES = (SparsePackScheduler, DensePackScheduler)
 
 
 # --------------------------------------------------------------------------
-# BUG 1 — whole-GPU memory rejected even when status is None
+# Shared memory claims are checked even without occupancy
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("factory", _SCHEDULER_FACTORIES)
-def test_whole_gpu_over_capped_memory_rejected_without_status(factory):
-    """A whole-GPU claim exceeding the host's CAPPED usable memory is rejected
+def test_shared_gpu_over_capped_memory_rejected_without_status(factory):
+    """A shared GPU claim exceeding the host's CAPPED usable memory is rejected
     even though cluster status is unavailable (status=None → fallback path).
 
     Usable = 80 × 0.85 = 68 GB; the model needs 75 GB → no GPU fits → infeasible.
@@ -73,14 +62,14 @@ def test_whole_gpu_over_capped_memory_rejected_without_status(factory):
         hosts=("h1",),
         host_hardware=hw,
         status=None,  # status query failed / unavailable
-        resources=ResourceRequest(memory_gb=75.0, util_fraction=1.0),
+        resources=ResourceRequest(memory_gb=75.0, util_fraction=0.5),
     )
     with pytest.raises(InfeasibleScheduleError):
         sched.schedule(req)
 
 
 @pytest.mark.parametrize("factory", _SCHEDULER_FACTORIES)
-def test_whole_gpu_over_capped_memory_rejected_multi_host_without_status(factory):
+def test_shared_gpu_over_capped_memory_rejected_multi_host_without_status(factory):
     """Multi-host, multi-rank: no host's capped GPU can hold the model →
     infeasible even without status."""
     sched = factory()
@@ -90,7 +79,7 @@ def test_whole_gpu_over_capped_memory_rejected_multi_host_without_status(factory
         hosts=("h1", "h2"),
         host_hardware=hw,
         status=None,
-        resources=ResourceRequest(memory_gb=70.0, util_fraction=1.0),
+        resources=ResourceRequest(memory_gb=70.0, util_fraction=0.5),
     )
     with pytest.raises(InfeasibleScheduleError):
         sched.schedule(req)
@@ -155,8 +144,7 @@ def test_fallback_matches_greedy_when_memory_fits():
     """When memory fits, the occupancy fallback assignment equals greedy's."""
     hw = {h: _capped_hw(80.0, 0.85) for h in ("h1", "h2", "h3")}
     parallelism = ParallelismConfig(tensor_parallel=2)
-    # GreedyScheduler ignores memory; the fallback now applies it but a fitting
-    # claim must produce the identical assignment.
+    # Exclusive allocation has the same physical placement with either scheduler.
     greedy = GreedyScheduler().schedule(SchedulingRequest(parallelism=parallelism, hosts=("h1", "h2", "h3"), host_hardware=hw))
     sparse = SparsePackScheduler().schedule(
         SchedulingRequest(
@@ -225,7 +213,7 @@ def test_zero_cap_yields_zero_usable_memory():
 
 
 def test_zero_cap_rejects_any_positive_memory_claim_without_status():
-    """With cap=0.0, usable=0 → any positive whole-GPU memory claim is infeasible.
+    """With cap=0.0, usable=0 → any positive shared GPU memory claim is infeasible.
 
     Before the fix the falsy-coalesce turned 0.0 into 1.0 (full memory),
     silently accepting the claim — the opposite of intent.
@@ -237,7 +225,7 @@ def test_zero_cap_rejects_any_positive_memory_claim_without_status():
         hosts=("h1",),
         host_hardware=hw,
         status=None,
-        resources=ResourceRequest(memory_gb=1.0, util_fraction=1.0),
+        resources=ResourceRequest(memory_gb=1.0, util_fraction=0.5),
     )
     with pytest.raises(InfeasibleScheduleError):
         sched.schedule(req)

@@ -41,9 +41,9 @@ while alternate application profiles require explicit metadata by default. See
 
 Scheduling and per-host fit resolve capacity from `AcceleratorSpec.memory_gb`
 first, then the matched platform's `default_accelerator_memory_gb(accelerator)`.
-DGX Spark supplies the existing 121 GB planning capacity for identified NVIDIA
-GB10 devices when the probe reports memory as unavailable. The default 85%
-scheduling/fit cap therefore gives 102.85 GB usable capacity. These are planning
+DGX Spark supplies the existing 121 GiB planning capacity for identified NVIDIA
+GB10 devices when the probe reports memory as unavailable. The default 90%
+scheduling/fit cap therefore gives 108.9 GiB usable capacity. These are planning
 defaults, not a fresh measurement of available memory.
 
 Explicit inventory capacity takes precedence. Generic or unidentified devices
@@ -51,6 +51,44 @@ remain unknown unless their platform provides a qualified capacity. Resolution
 also applies to previously saved probe records; it does not rewrite raw
 inventory or its fingerprint. Scheduler inputs receive temporary resolved copies,
 and fit uses the same resolver and utilization-cap precedence.
+
+### GPU allocation admission
+
+The occupancy schedulers (`occupancy-sparse` and `occupancy-dense`) treat normal
+recipe launches as exclusive GPU allocations. A `ResourceRequest` with
+`util_fraction >= 0.8` also reserves the whole GPU. An exclusive allocation needs
+an unoccupied GPU; the model/KV estimate does not veto it. Runtime startup and
+readiness determine whether the recipe actually fits in memory.
+
+Explicit shared requests (`util_fraction < 0.8`) must fit both the remaining
+compute fraction and the capped memory budget. `memory_gb` is a per-rank GiB
+reservation; when omitted it is derived from utilization times nominal capacity.
+Unknown memory capacity cannot establish a shared fit. Shared jobs cannot enter
+an exclusively owned GPU, and an exclusive job cannot displace shared jobs.
+The same checks apply to solo requests and explicit layouts in the occupancy
+schedulers.
+
+The legacy `greedy` scheduler ignores existing occupancy and reservations. It
+packs ranks into the first available hardware slots in host order, treating busy
+GPUs as available, so separate runs can be placed on the same GPU. It does not
+enforce the shared-allocation admission limits above. Separately, its API rejects
+an explicit fractional `ResourceRequest` (`util_fraction < 0.8`); this is a request
+type restriction, not an occupancy check. Ordinary recipe runs are not rejected
+because another job already occupies their chosen GPU.
+
+Reservations are recovered from worker records, not current GPU activity. An
+idle serving job still owns its allocation. Missing legacy allocation records
+are treated conservatively; a partially occupied multi-GPU host needs known GPU
+indices before further placement. Failed status queries do not establish idle
+capacity. Rejections include host/GPU identifiers and reasons such as exclusive
+ownership, exhausted compute, insufficient memory, or incomplete observations.
+
+Fit reports are separate from admission. They use the assigned accelerators,
+resolved scheduling cap, and runtime memory budget. Explicit
+`kv_cache_memory_bytes` supplies a per-GPU KV allocation and supersedes
+`gpu_memory_utilization` for KV sizing. Automatic KV fit uses the smaller of the
+runtime and scheduling budgets. Partial architecture estimates are marked
+unverified. Inventory and cluster cap overrides retain their precedence.
 
 ### `Capability` tags
 

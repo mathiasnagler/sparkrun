@@ -381,9 +381,9 @@ def test_nvidia_generic_validate_host_no_accelerators():
 
 
 def test_dgx_default_max_gpu_memory_utilization_for_gb10():
-    """DGX Spark caps GB10 usable memory at 0.85 (unified memory headroom)."""
+    """DGX Spark caps GB10 usable memory at 0.90 (unified memory headroom)."""
     accel = AcceleratorSpec(vendor="nvidia", model="gb10", memory_gb=121.0)
-    assert DgxSparkPlatform().default_max_gpu_memory_utilization(accel) == 0.85
+    assert DgxSparkPlatform().default_max_gpu_memory_utilization(accel) == 0.90
 
 
 def test_dgx_default_max_gpu_memory_utilization_other_model_is_none():

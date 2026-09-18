@@ -6,6 +6,8 @@ defaults that have been validated for the GB10 RoCEv2 fabric.
 
 from __future__ import annotations
 
+from sparkrun.core.hardware import DGX_SPARK_SCHEDULING_FRACTION
+
 from sparkrun.core.hardware import AcceleratorSpec, HostHardware, DGX_SPARK_MEMORY_GB
 from sparkrun.orchestration.collectives import CollectiveBackend, NcclBackend
 from sparkrun.platforms.base import HardwarePlatformPlugin
@@ -26,9 +28,9 @@ _DGX_SPARK_DEFAULTS: dict[str, str | None] = {
 
 # GB10 is a unified-memory system: the 121 GB "available for inference" figure
 # is shared with the CPU/OS and runtime overhead, so scheduling/fit should not
-# assume the full amount is usable.  0.85 leaves headroom; users can override
+# assume the full amount is usable.  0.90 leaves headroom; users can override
 # per-cluster.  See sparkrun.core.limits.
-_DGX_SPARK_MAX_GPU_MEMORY_UTILIZATION = 0.85
+_DGX_SPARK_MAX_GPU_MEMORY_UTILIZATION = DGX_SPARK_SCHEDULING_FRACTION
 
 
 # Per-runtime recipe-flag defaults for GB10.  Applied at the recipe-default
@@ -134,7 +136,7 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
         return None
 
     def default_max_gpu_memory_utilization(self, accelerator: AcceleratorSpec) -> float | None:
-        """GB10 unified memory → cap usable memory at 0.85 for scheduling/fit."""
+        """GB10 unified memory → cap usable memory at 0.90 for scheduling/fit."""
         if accelerator.vendor == "nvidia" and accelerator.model == "gb10":
             return _DGX_SPARK_MAX_GPU_MEMORY_UTILIZATION
         return None

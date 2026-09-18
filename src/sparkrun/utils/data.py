@@ -66,3 +66,23 @@ def integer_setting(value: object, *, key: str) -> int:
 def float_setting(value: object, *, key: str) -> float:
     """Convert a numeric scalar; the consumer owns finite/range policy."""
     return _numeric_setting(value, key, float)
+
+
+def byte_size_setting(value: object, *, key: str) -> int:
+    """Positive byte count with vLLM's decimal/binary suffix convention."""
+    import re
+    from decimal import Decimal
+
+    if type(value) is int and value > 0:
+        return value
+    if isinstance(value, str):
+        match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([kKmMgGtT]?)", value.strip())
+        if match:
+            number, suffix = match.groups()
+            # Fractional values are supported only with decimal multipliers.
+            if "." not in number or (suffix and suffix.islower()):
+                power = "kmgt".index(suffix.lower()) + 1 if suffix else 0
+                result = Decimal(number) * (1024 if suffix.isupper() else 1000) ** power
+                if result > 0 and result == int(result):
+                    return int(result)
+    raise ValueError("Configuration %r must be a positive byte count (for example 8589934592 or '8G')" % key)

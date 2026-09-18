@@ -31,7 +31,7 @@ def test_hard_fallback_is_one_for_unknown_accelerator():
 
 def test_platform_default_applies_for_gb10():
     accel, hw = _gb10_host()
-    assert resolve_max_gpu_memory_utilization(accel, hw, None) == 0.85
+    assert resolve_max_gpu_memory_utilization(accel, hw, None) == 0.90
 
 
 def test_cluster_wide_overrides_platform():
@@ -66,7 +66,7 @@ def test_per_type_only_matches_its_model():
     accel, hw = _gb10_host()
     cluster = ClusterDefinition(name="c", hosts=["h"], accelerator_memory_limits={"h200": 0.95})
     # No gb10 entry → falls through to the platform default.
-    assert resolve_max_gpu_memory_utilization(accel, hw, cluster) == 0.85
+    assert resolve_max_gpu_memory_utilization(accel, hw, cluster) == 0.90
 
 
 # --------------------------------------------------------------------------
@@ -77,13 +77,13 @@ def test_per_type_only_matches_its_model():
 @pytest.mark.parametrize("bad", [0.0, -0.1, 1.5, 2.0])
 def test_out_of_range_per_accel_falls_through_to_platform(bad):
     accel, hw = _gb10_host(max_util=bad)
-    assert resolve_max_gpu_memory_utilization(accel, hw, None) == 0.85
+    assert resolve_max_gpu_memory_utilization(accel, hw, None) == 0.90
 
 
 def test_out_of_range_cluster_wide_falls_through():
     accel, hw = _gb10_host()
     cluster = ClusterDefinition(name="c", hosts=["h"], max_gpu_memory_utilization=1.5)
-    assert resolve_max_gpu_memory_utilization(accel, hw, cluster) == 0.85
+    assert resolve_max_gpu_memory_utilization(accel, hw, cluster) == 0.90
 
 
 def test_boundary_value_one_is_accepted():
@@ -98,7 +98,7 @@ def test_boundary_value_one_is_accepted():
 
 def test_usable_memory_applies_cap():
     accel, hw = _gb10_host()
-    assert usable_memory_gb(accel, hw, None) == pytest.approx(102.85)
+    assert usable_memory_gb(accel, hw, None) == pytest.approx(108.9)
 
 
 def test_usable_memory_none_when_capacity_unknown():
@@ -118,7 +118,7 @@ def test_resolved_hardware_folds_cap_into_field():
     for hw in resolved.values():
         accel = hw.accelerators[0]
         # Platform default folded in; nominal memory untouched.
-        assert accel.max_gpu_memory_utilization == 0.85
+        assert accel.max_gpu_memory_utilization == 0.90
         assert accel.memory_gb == 121.0
 
 
@@ -133,7 +133,7 @@ def test_resolved_hardware_uses_dgx_default_for_unlisted_hosts():
     resolved = resolved_hardware_for_scheduling(cluster, ["h1"])
     accel = resolved["h1"].accelerators[0]
     assert accel.model == default_dgx_spark_hardware().accelerators[0].model
-    assert accel.max_gpu_memory_utilization == 0.85
+    assert accel.max_gpu_memory_utilization == 0.90
 
 
 @pytest.mark.parametrize("capacity", [0, -1, float("nan"), float("inf"), True, "121"])

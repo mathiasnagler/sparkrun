@@ -49,11 +49,13 @@ class InsufficientCapacity(SparkrunError):
         status=None,
         host_list: list[str] | None = None,
         required: int | None = None,
+        rejections: tuple = (),
     ) -> None:
         super().__init__(message)
         self.status = status
         self.host_list: tuple[str, ...] = tuple(host_list or ())
         self.required = required
+        self.rejections = rejections
 
 
 class LayoutRequired(SparkrunError):

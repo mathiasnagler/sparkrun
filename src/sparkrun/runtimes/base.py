@@ -1330,6 +1330,7 @@ class RuntimePlugin(Plugin, ABC):
             # GLOO_SOCKET_IFNAME and kills the launch (issue #275).
             solo_cluster = kwargs.pop("cluster", None)
             return self._run_solo(
+                placement=kwargs.pop("placement", None),
                 mgmt_interface=solo_cluster.mgmt_interface if solo_cluster is not None else None,
                 host=hosts[0] if hosts else "localhost",
                 image=image,
@@ -1458,6 +1459,7 @@ class RuntimePlugin(Plugin, ABC):
         trust: bool = False,
         runtime_cache: "RuntimeCacheMounts | None" = None,
         mgmt_interface: str | None = None,
+        placement=None,
     ) -> int:
         """Launch a single-node inference workload.
 
@@ -1553,6 +1555,8 @@ class RuntimePlugin(Plugin, ABC):
             cluster_id=cluster_id,
             recipe=recipe,
             runtime=self,
+            placement=placement,
+            host=host,
         )
         launch_script = executor.generate_launch_script(
             image=image,

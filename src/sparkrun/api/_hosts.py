@@ -129,7 +129,7 @@ def resolve_effective_hosts(
         verbatim (e.g. ``"Note: 2 nodes required, using 2 of 4 hosts"``)
         and *placement* is the scheduler's :class:`RankAssignment` (or
         ``None`` when scheduling was bypassed / later invalidated by a
-        ``max_nodes`` trim or solo short-circuit).
+        ``max_nodes`` trim). Solo retains its GPU assignment.
 
     Raises:
         InsufficientCapacity: Scheduler can't fit the workload (carries
@@ -146,6 +146,12 @@ def resolve_effective_hosts(
     placement = None
 
     config_chain = recipe.build_config_chain(overrides)
+    resolver = getattr(recipe, "resolve_kv_cache_memory_bytes", None)
+    if resolver is not None:
+        try:
+            resolver(overrides)
+        except ValueError as error:
+            raise SparkrunError(str(error)) from error
     # All five parallelism dimensions gate the multi-node scheduling block:
     # a runtime whose world_size derives from expert/context parallelism (e.g.
     # Atlas's tp*ep MoE mesh) must still be scheduled across hosts even when
@@ -190,7 +196,9 @@ def resolve_effective_hosts(
             else:
                 detail = str(e) or "no free accelerator slots across %d host(s)" % len(host_list)
                 msg = "cluster has insufficient free capacity for %d node(s): %s" % (required, detail)
-            raise InsufficientCapacity(msg, status=cluster_status, host_list=list(host_list), required=required) from e
+            raise InsufficientCapacity(
+                msg, status=cluster_status, host_list=list(host_list), required=required, rejections=e.rejections
+            ) from e
 
         placement = result.assignment
         scheduled_hosts = list(result.assignment.hosts_used)
@@ -209,22 +217,9 @@ def resolve_effective_hosts(
     # Enforce recipe.max_nodes as an orthogonal cap on the paths where the
     # multi-node scheduling block above did NOT run (solo, single host, or no
     # parallelism configured).
-    elif recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
-        # A contradiction between explicit parallelism and max_nodes is a hard
-        # error regardless of solo (a tp=4 recipe cannot honour max_nodes=2).
-        if parallelism_configured:
-            parallelism = extract_parallelism(config_chain)
-            if runtime is not None:
-                parallelism = dataclasses.replace(
-                    parallelism, total_ranks=runtime.world_size(parallelism, recipe=recipe, cluster=cluster_def)
-                )
-            required = parallelism.world_size()
-            if required > recipe.max_nodes:
-                raise SparkrunError(
-                    "runtime requires %d nodes (from parallelism settings), "
-                    "but recipe '%s' specifies max_nodes=%d" % (required, recipe.qualified_name, recipe.max_nodes)
-                )
-
+    elif not requested_solo and recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
+        # Solo already guarantees one host, regardless of how many ranks fit
+        # there. Keep all its candidate hosts for the single-host scheduler.
         orig_count = len(host_list)
         # Occupancy-aware trim when a cluster is known (live load can be
         # consulted): run a one-rank-per-host pass capped at max_nodes so the
@@ -234,23 +229,19 @@ def resolve_effective_hosts(
         # equivalent and avoids a pointless scheduler round-trip.
         if cluster_def is not None and not requested_solo:
             implied = dataclasses.replace(extract_parallelism(config_chain), total_ranks=recipe.max_nodes)
-            try:
-                result, _status = _schedule_hosts(
-                    host_list,
-                    recipe,
-                    overrides,
-                    implied,
-                    cluster_def=cluster_def,
-                    sctx=sctx,
-                    scheduler=scheduler,
-                    exclude_intent_id=exclude_intent_id,
-                    layout=None,
-                )
-                placement = result.assignment
-                host_list = list(result.assignment.hosts_used)
-            except (InsufficientCapacity, SparkrunError):
-                placement = None
-                host_list = host_list[: recipe.max_nodes]
+            result, _status = _schedule_hosts(
+                host_list,
+                recipe,
+                overrides,
+                implied,
+                cluster_def=cluster_def,
+                sctx=sctx,
+                scheduler=scheduler,
+                exclude_intent_id=exclude_intent_id,
+                layout=None,
+            )
+            placement = result.assignment
+            host_list = list(result.assignment.hosts_used)
         else:
             host_list = host_list[: recipe.max_nodes]
             placement = None
@@ -258,20 +249,21 @@ def resolve_effective_hosts(
 
     # Determine final solo mode after scheduling / max_nodes.
     is_solo = requested_solo or len(host_list) <= 1
-    if is_solo and len(host_list) > 1:
-        # Occupancy-aware single-host pick: even a one-host (solo / single-rank)
-        # workload should land on a host that has room.  A 1-rank scheduling
-        # request lets the configured scheduler choose the least-loaded host
-        # with capacity; when no occupancy snapshot is available it greedy-packs
-        # and returns the first host with capacity (today's behavior).  When
-        # *every* host is full it raises InsufficientCapacity rather than
-        # stacking onto an occupied host.
-        chosen = _pick_single_host(
-            host_list, recipe, overrides, cluster_def=cluster_def, sctx=sctx, scheduler=scheduler, exclude_intent_id=exclude_intent_id
+    if is_solo and placement is None:
+        original_count = len(host_list)
+        placement = _pick_single_host(
+            host_list,
+            recipe,
+            overrides,
+            cluster_def=cluster_def,
+            sctx=sctx,
+            scheduler=scheduler,
+            exclude_intent_id=exclude_intent_id,
+            runtime=runtime,
         )
-        notes.append("Note: solo mode enabled, using 1 of %d hosts" % len(host_list))
-        host_list = [chosen]
-        placement = None
+        host_list = list(placement.hosts_used)
+        if original_count > 1:
+            notes.append("Note: solo mode enabled, using 1 of %d hosts" % original_count)
 
     return host_list, is_solo, notes, placement
 
@@ -287,6 +279,7 @@ def _schedule_hosts(
     scheduler,
     exclude_intent_id,
     layout,
+    single_host=False,
 ):
     """Build a :class:`SchedulingRequest` and run it through ``api.schedule``.
 
@@ -311,6 +304,7 @@ def _schedule_hosts(
         layout=layout,
         status=cluster_status,
         resources=resources,
+        single_host=single_host,
     )
     try:
         result = api.schedule(request, scheduler=scheduler, sctx=sctx)
@@ -355,7 +349,10 @@ def _gather_scheduling_inputs(host_list, recipe, overrides, *, cluster_def, sctx
     if cluster_status is not None and exclude_intent_id:
         cluster_status = _status_excluding_intent(cluster_status, exclude_intent_id)
 
-    effective_hw = resolved_hardware_for_scheduling(cluster_def, list(host_list))
+    try:
+        effective_hw = resolved_hardware_for_scheduling(cluster_def, list(host_list))
+    except ValueError as error:
+        raise SparkrunError(str(error)) from error
 
     # Defensive: every scheduled host must carry baked hardware.  A host missing
     # from the map would fall back to default_dgx_spark_hardware() inside the
@@ -371,6 +368,9 @@ def _gather_scheduling_inputs(host_list, recipe, overrides, *, cluster_def, sctx
             missing_hw,
         )
 
+    resolver = getattr(recipe, "resolve_kv_cache_memory_bytes", None)
+    if resolver is not None:
+        resolver(overrides)
     resources = None
     try:
         est = recipe.estimate_vram(cli_overrides=overrides)
@@ -383,27 +383,19 @@ def _gather_scheduling_inputs(host_list, recipe, overrides, *, cluster_def, sctx
     return cluster_status, effective_hw, resources
 
 
-def _pick_single_host(host_list, recipe, overrides, *, cluster_def, sctx, scheduler, exclude_intent_id=None):
-    """Choose the single least-loaded host with room for a solo (1-rank) run.
+def _pick_single_host(host_list, recipe, overrides, *, cluster_def, sctx, scheduler, exclude_intent_id=None, runtime=None):
+    """Schedule every rank on a single host and retain its GPU assignment.
 
-    Runs a ``world_size == 1`` scheduling request over *host_list* so the
-    configured scheduler picks an occupancy-appropriate host.  ``layout`` is
-    intentionally dropped — a solo run ignores recipe parallelism/layout and
-    only needs one host.
-
-    Returns the chosen host name.  Raises
-    :class:`~sparkrun.api.InsufficientCapacity` when no host can fit the
-    workload (every accelerator occupied / too little usable VRAM); when no
-    occupancy snapshot is available the scheduler greedy-packs and returns the
-    first host with capacity, so the no-status path is byte-identical to the
-    pre-occupancy ``host_list[0]`` behavior.
+    Solo uses the same ownership and capacity rules as multi-host launches.
     """
     import dataclasses
 
     from sparkrun.core.parallelism import extract_parallelism
 
     config_chain = recipe.build_config_chain(overrides)
-    parallelism = dataclasses.replace(extract_parallelism(config_chain), total_ranks=1)
+    parallelism = extract_parallelism(config_chain)
+    if runtime is not None:
+        parallelism = dataclasses.replace(parallelism, total_ranks=runtime.world_size(parallelism, recipe=recipe, cluster=cluster_def))
 
     try:
         result, cluster_status = _schedule_hosts(
@@ -415,7 +407,8 @@ def _pick_single_host(host_list, recipe, overrides, *, cluster_def, sctx, schedu
             sctx=sctx,
             scheduler=scheduler,
             exclude_intent_id=exclude_intent_id,
-            layout=None,
+            layout=recipe.layout,
+            single_host=True,
         )
     except InsufficientCapacity as e:
         detail = str(e) or "all %d host(s) occupied" % len(host_list)
@@ -424,10 +417,10 @@ def _pick_single_host(host_list, recipe, overrides, *, cluster_def, sctx, schedu
             status=getattr(e, "status", None),
             host_list=list(host_list),
             required=1,
+            rejections=e.rejections,
         ) from e
 
-    hosts_used = list(result.assignment.hosts_used)
-    return hosts_used[0] if hosts_used else host_list[0]
+    return result.assignment
 
 
 def _status_excluding_intent(status, intent_id: str):
@@ -464,12 +457,17 @@ def _status_excluding_intent(status, intent_id: str):
             g_kept = tuple(w for w in g.workloads if not _matches(w))
             if len(g_kept) == len(g.workloads):
                 new_gpus.append(g)
+            elif g_kept and all(c.allocations for w in g.workloads for c in w.containers) and all(w.containers for w in g.workloads):
+                from sparkrun.core.cluster_status import with_gpu_allocations, HostOccupancy
+
+                remaining = with_gpu_allocations(HostOccupancy(host=occ.host, workloads=g_kept), max(g.gpu_index + 1, occ.total_slots))
+                new_gpus.append(next(item for item in remaining.gpus if item.gpu_index == g.gpu_index))
             elif g_kept:
                 # Other workloads remain on this GPU; can't attribute residual
                 # util/mem, so keep the observed values (conservative).
                 new_gpus.append(dataclasses.replace(g, workloads=g_kept))
             else:
-                new_gpus.append(dataclasses.replace(g, workloads=(), used_memory_gb=0.0, used_util_fraction=0.0))
+                new_gpus.append(dataclasses.replace(g, workloads=(), used_memory_gb=0.0, used_util_fraction=0.0, exclusive=False))
         new_hosts.append(dataclasses.replace(occ, workloads=kept, used_slots=new_used, free_slots=new_free, gpus=tuple(new_gpus)))
 
     if not changed:

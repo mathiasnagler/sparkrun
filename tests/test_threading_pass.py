@@ -283,12 +283,12 @@ def test_resolve_effective_hosts_for_recipe_threads_cluster(monkeypatch):
         solo=False,
     )
     # Hardware coming from the cluster is materialized per-host with the
-    # usable-memory cap folded in (DGX defaults → GB10 platform cap 0.85).
+    # usable-memory cap folded in (DGX defaults → GB10 platform cap 0.90).
     hw = captured["host_hardware"]
     assert set(hw) == {"a", "b", "c"}
     for host_hw in hw.values():
         assert host_hw.accelerators[0].model == "gb10"
-        assert host_hw.accelerators[0].max_gpu_memory_utilization == 0.85
+        assert host_hw.accelerators[0].max_gpu_memory_utilization == 0.90
     assert len(host_list) == 2
     assert is_solo is False
 
@@ -466,7 +466,7 @@ def test_display_vram_estimate_skips_per_host_fit_without_cluster(capsys):
     out = capsys.readouterr().out
     assert "Per-host fit" not in out
     # Legacy DGX line is still present for back-compat.
-    assert "DGX Spark fit" in out
+    assert "DGX Spark memory fit" in out
 
 
 def test_default_image_for_consults_platform_registry():

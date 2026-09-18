@@ -366,7 +366,7 @@ class DockerExecutor(Executor):
 
     # --- Internal command-string builders ---
 
-    def _accelerator_opts(self) -> list[str]:
+    def _accelerator_opts(self, gpus: str | None = None) -> list[str]:
         """Emit accelerator device flags based on ``config.accelerator_vendor``.
 
         - ``None`` (default) or ``"nvidia"`` → the GPU request spelled per
@@ -382,7 +382,7 @@ class DockerExecutor(Executor):
         vendor = (cfg.accelerator_vendor or "").lower()
 
         if not vendor or vendor == "nvidia":
-            return _nvidia_gpu_args(cfg.gpus, cfg.gpu_access_mode)
+            return _nvidia_gpu_args(gpus if gpus is not None else cfg.gpus, cfg.gpu_access_mode)
         if vendor == "amd":
             return [
                 "--device",
@@ -402,7 +402,7 @@ class DockerExecutor(Executor):
         )
         return []
 
-    def _build_default_opts(self, *, security_opt: list[str]) -> list[str]:
+    def _build_default_opts(self, *, security_opt: list[str], gpus: str | None = None) -> list[str]:
         """Build the default ``docker run`` option list from config."""
         cfg = self.config
         opts: list[str] = []
@@ -411,7 +411,7 @@ class DockerExecutor(Executor):
             opts.extend(["--entrypoint", quote(cfg.entrypoint)])
         if cfg.privileged:
             opts.append("--privileged")
-        opts.extend(self._accelerator_opts())
+        opts.extend(self._accelerator_opts(gpus))
         if cfg.ipc:
             if cfg.ipc.strip().lower() == DOCKER_IPC_HOST and not _is_root_container_user(cfg.user):
                 _warn_host_ipc_reaper(cfg.user)
@@ -485,14 +485,23 @@ class DockerExecutor(Executor):
         ``cfg.labels`` is still emitted in :meth:`_build_default_opts`;
         both sets coexist on the resulting container.
         """
+        from sparkrun.core.allocations import ALLOCATION_LABEL, decode_allocations
+
         cfg = self.config
+        allocations = decode_allocations((sparkrun_labels or {}).get(ALLOCATION_LABEL))
+        indices = list(dict.fromkeys(a.gpu_index for a in allocations))
+        assigned_gpus = "device=" + ",".join(map(str, indices)) if indices else None
+        if len(indices) > 1:
+            # Docker parses --gpus as CSV after shell parsing: keep the device
+            # list in one CSV field. CDI strips these enclosing quotes.
+            assigned_gpus = '"%s"' % assigned_gpus
         parts = ["docker", "run"]
 
         if detach:
             parts.append("-d")
 
         security, extra_tokens, policy = split_options(cfg.security_opt, extra_opts)
-        parts.extend(self._build_default_opts(security_opt=security))
+        parts.extend(self._build_default_opts(security_opt=security, gpus=assigned_gpus))
         parts.extend(["--security-opt", profile_option(policy, self._seccomp_snapshots)])
 
         if cfg.auto_remove:
@@ -510,6 +519,9 @@ class DockerExecutor(Executor):
             for key, value in sorted(sparkrun_labels.items()):
                 parts.extend(["--label", quote("%s=%s" % (key, value))])
 
+        if allocations and cfg.accelerator_vendor in ("amd", "intel"):
+            variable = "ROCR_VISIBLE_DEVICES" if cfg.accelerator_vendor == "amd" else "HABANA_VISIBLE_MODULES"
+            env = {**(env or {}), variable: ",".join(map(str, indices))}
         if env:
             for key, value in sorted(env.items()):
                 parts.extend(["-e", quote("%s=%s" % (key, value))])
@@ -519,6 +531,8 @@ class DockerExecutor(Executor):
             for host_path, container_path in sorted(volumes.items()):
                 parts.extend(["-v", quote("%s:%s" % (host_path, container_path))])
 
+        if assigned_gpus and any(token == "--gpus" or token.startswith("--gpus=") for token in extra_tokens):
+            raise ValueError("extra_docker_opts --gpus conflicts with scheduler-assigned GPUs")
         parts.extend(quote(token) for token in extra_tokens)
 
         parts.append(quote(image))
@@ -715,7 +729,7 @@ class DockerExecutor(Executor):
         Unreachable hosts are omitted from :attr:`ClusterStatus.hosts`;
         callers can detect this via ``status.for_host(h) is None``.
         """
-        from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy
+        from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, with_gpu_allocations
         from sparkrun.core.hardware import resolve_fallback_hardware
         from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
@@ -759,11 +773,14 @@ class DockerExecutor(Executor):
 
             workloads, used = _parse_docker_ps_output(r.stdout, host)
             host_entries.append(
-                HostOccupancy(
-                    host=host,
-                    workloads=tuple(workloads),
-                    used_slots=used,
-                    free_slots=max(capacity - used, 0),
+                with_gpu_allocations(
+                    HostOccupancy(
+                        host=host,
+                        workloads=tuple(workloads),
+                        used_slots=used,
+                        free_slots=max(capacity - used, 0),
+                    ),
+                    capacity,
                 )
             )
 
@@ -1082,6 +1099,7 @@ def _parse_docker_ps_output(stdout: str, host: str) -> tuple[list, int]:
     :class:`RunningWorkload` with ``ranks_on_host`` reflecting the count.
     """
     from sparkrun.core.cluster_status import ContainerDetail, RunningWorkload
+    from sparkrun.core.allocations import ALLOCATION_LABEL, decode_allocations
 
     # Group sightings by cluster_id so we can aggregate ranks_on_host.
     by_cluster: dict[str, dict] = {}
@@ -1144,6 +1162,7 @@ def _parse_docker_ps_output(stdout: str, host: str) -> tuple[list, int]:
                 role=role,
                 status=entry.get("Status") or "",
                 image=entry.get("Image") or "",
+                allocations=decode_allocations(labels.get(ALLOCATION_LABEL)),
             )
         )
         if recipe_name and bucket["recipe_name"] is None:
@@ -1165,7 +1184,10 @@ def _parse_docker_ps_output(stdout: str, host: str) -> tuple[list, int]:
                 bucket["runtime_name"] = bucket["runtime_name"] or meta.get("runtime")
                 bucket["intent_id"] = bucket["intent_id"] or meta.get("intent_id")
 
-        ranks_on_host = len(bucket["ranks"])
+        allocated_ranks = {a.rank for c in bucket["containers"] for a in c.allocations}
+        ranks_on_host = (
+            len(allocated_ranks) if allocated_ranks and all(c.allocations for c in bucket["containers"]) else len(bucket["ranks"])
+        )
         total_ranks_on_host += ranks_on_host
         workloads.append(
             RunningWorkload(

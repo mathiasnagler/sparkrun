@@ -65,7 +65,7 @@ def schedule(
     try:
         return plugin.schedule(request)
     except InfeasibleScheduleError as e:
-        raise InsufficientCapacity(str(e)) from e
+        raise InsufficientCapacity(str(e), rejections=e.rejections) from e
     except LayoutConflictError as e:
         raise LayoutRequired(str(e)) from e
     except SchedulingError as e:

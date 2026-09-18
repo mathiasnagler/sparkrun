@@ -263,14 +263,15 @@ class LocalExecutor(Executor):
         ``HF_HOME=/home/ubuntu/.cache/huggingface``), so a natively-run
         serve command finds host-side resources the Docker path would
         have bind-mounted.  *extra_opts* are docker-only and are silently
-        dropped.  *sparkrun_labels* is accepted for API symmetry but
-        ignored — there is no container to tag.  Workload identity for
+        dropped.  *sparkrun_labels* carries GPU assignments persisted beside the PID record.  Workload identity for
         the LocalExecutor flows through the pidfile name + job metadata
         cache instead (see :func:`_parse_local_pidfile_output`).
         """
         self._require_detached(detach)
         self._require_managed_paths()
-        del sparkrun_labels  # accepted but unused — no container to tag
+        from sparkrun.core.allocations import ALLOCATION_LABEL, decode_allocations
+
+        allocation_record = (sparkrun_labels or {}).get(ALLOCATION_LABEL)
         if not container_name:
             raise ValueError("LocalExecutor.run_cmd requires container_name")
         if not command:
@@ -286,6 +287,15 @@ class LocalExecutor(Executor):
         # process group. Status and teardown track its surviving members.
         # Control paths are fixed before setup changes the directory or HOME.
         prelude = self._env_prelude(_hostify_env(env, volumes))
+        allocations = decode_allocations(allocation_record)
+        if allocations:
+            variable = {"amd": "ROCR_VISIBLE_DEVICES", "intel": "HABANA_VISIBLE_MODULES"}.get(
+                self.config.accelerator_vendor or "", "CUDA_VISIBLE_DEVICES"
+            )
+            prelude += "export %s=%s || exit $?\n" % (
+                variable,
+                quote(",".join(str(i) for i in dict.fromkeys(a.gpu_index for a in allocations))),
+            )
         body = (
             "(\n"
             "%(helpers)s\n"
@@ -299,6 +309,7 @@ class LocalExecutor(Executor):
             "mkdir -p -- %(log_dir_dq)s || exit 1\n"
             "%(prelude)s"
             "_sr_local_write_record %(owner)s %(pid)s.owner || exit 1\n"
+            "%(allocation_commit)s"
             "set +m\n"
             "setsid bash -c %(b64_cmd)s >>%(log)s 2>&1 </dev/null 9>&- &\n"
             "_pid=$!\n"
@@ -317,6 +328,11 @@ class LocalExecutor(Executor):
             "pid": pid_file,
             "name": quote(container_name),
             "owner": quote(get_application_profile().id),
+            "allocation_commit": (
+                "_sr_local_write_record %s %s.allocations || exit 1\n" % (quote(allocation_record), pid_file)
+                if allocation_record and allocations
+                else "rm -f -- %s.allocations || exit 1\n" % pid_file
+            ),
         }
         return body
 
@@ -353,7 +369,7 @@ class LocalExecutor(Executor):
             "_sr_local_state %(pid)s || exit $?\n"
             "%(guard)s\n"
             '_sr_local_stop "$_sr_pid" %(name)s || exit $?\n'
-            "rm -f -- %(pid)s %(pid)s.owner || exit 1\n"
+            "rm -f -- %(pid)s %(pid)s.owner %(pid)s.allocations || exit 1\n"
             "%(report)s\n"
             ") || exit $?"
         ) % {
@@ -553,11 +569,10 @@ class LocalExecutor(Executor):
         ``volumes`` mounts nothing here, but
         is forwarded to :meth:`run_cmd` so container-path env values get
         reverse-mapped to their host source (see :func:`_hostify_env`).
-        ``sparkrun_labels`` is ignored (no container to tag).
+        ``sparkrun_labels`` carries the accepted GPU allocation to the process record.
         """
         self._require_detached(detached)
         self._require_managed_paths()
-        del sparkrun_labels  # accepted but unused — no container to tag
         # ``run_cmd`` owns the detached launch and PID-commit contract.
         return "#!/bin/bash\nset -uo pipefail\n%s" % self.run_cmd(
             image="",
@@ -566,6 +581,7 @@ class LocalExecutor(Executor):
             detach=detached,
             env=env,
             volumes=volumes,
+            sparkrun_labels=sparkrun_labels,
         )
 
     def generate_node_script(
@@ -588,11 +604,9 @@ class LocalExecutor(Executor):
         basename for the per-rank pidfile and logfile.  ``volumes`` mounts
         nothing here, but is forwarded to :meth:`run_cmd` so container-path
         env values get reverse-mapped to their host source (see
-        :func:`_hostify_env`).  ``sparkrun_labels`` is ignored (no
-        container to tag).
+        :func:`_hostify_env`).  ``sparkrun_labels`` carries the accepted GPU allocation to the process record.
         """
         self._require_managed_paths()
-        del sparkrun_labels  # accepted but unused — no container to tag
         from sparkrun.utils import merge_env
 
         all_env = merge_env(nccl_env, env)
@@ -604,6 +618,7 @@ class LocalExecutor(Executor):
             detach=True,
             env=all_env,
             volumes=volumes,
+            sparkrun_labels=sparkrun_labels,
         )
         return (
             "#!/bin/bash\n"
@@ -650,7 +665,7 @@ class LocalExecutor(Executor):
         application are surfaced. Unreachable hosts and failed state acquisition
         are reported as errors without claiming complete coverage for that host.
         """
-        from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy
+        from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, with_gpu_allocations
         from sparkrun.core.hardware import resolve_fallback_hardware
         from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
@@ -669,7 +684,10 @@ class LocalExecutor(Executor):
             '  name=$(basename -- "$f" .pid) || exit 2\n'
             '  _sr_local_state "$f" || exit $?\n'
             '  if _sr_local_alive "$_sr_pid"; then\n'
-            '    printf "%%s\\t%%s\\t%%s\\n" "$name" "$_sr_pid" "$_sr_owner"\n'
+            "    _allocation=\n"
+            '    if _sr_local_read "$f.allocations" allocation; then _allocation=$_sr_value;\n'
+            '    else _rc=$?; [ "$_rc" -eq 1 ] || exit "$_rc"; fi\n'
+            '    printf "%%s\\t%%s\\t%%s\\t%%s\\n" "$name" "$_sr_pid" "$_sr_owner" "$_allocation"\n'
             '  else _rc=$?; [ "$_rc" -eq 1 ] || exit "$_rc"; fi\n'
             "done\n"
         ) % (pid_dir, pid_dir)
@@ -704,11 +722,14 @@ class LocalExecutor(Executor):
 
             workloads, used = _parse_local_pidfile_output(r.stdout)
             host_entries.append(
-                HostOccupancy(
-                    host=host,
-                    workloads=tuple(workloads),
-                    used_slots=used,
-                    free_slots=max(capacity - used, 0),
+                with_gpu_allocations(
+                    HostOccupancy(
+                        host=host,
+                        workloads=tuple(workloads),
+                        used_slots=used,
+                        free_slots=max(capacity - used, 0),
+                    ),
+                    capacity,
                 )
             )
 
@@ -774,6 +795,7 @@ def _parse_local_pidfile_output(stdout: str) -> tuple[list, int]:
     ``ranks_on_host`` reflecting the count.
     """
     from sparkrun.core.cluster_status import ContainerDetail, RunningWorkload
+    from sparkrun.core.allocations import decode_allocations
 
     by_cluster: dict[str, dict] = {}
     for line in stdout.splitlines():
@@ -781,7 +803,8 @@ def _parse_local_pidfile_output(stdout: str) -> tuple[list, int]:
         if not line:
             continue
         name, _, rest = line.partition("\t")
-        _pid, _, owner = rest.partition("\t")
+        _pid, _, owner_and_allocation = rest.partition("\t")
+        owner, _, allocation_record = owner_and_allocation.partition("\t")
         if not owns_resource(name, {OWNER_LABEL: owner} if owner else None):
             continue
         m = _PID_NAME_RE.match(name)
@@ -798,13 +821,17 @@ def _parse_local_pidfile_output(stdout: str) -> tuple[list, int]:
                 role=m.group("role") or "?",
                 status="Up (pid %s)" % _pid,
                 image="(local process)",
+                allocations=decode_allocations(allocation_record),
             )
         )
 
     workloads: list[RunningWorkload] = []
     total = 0
     for cluster_id, bucket in by_cluster.items():
-        ranks_on_host = len(bucket["ranks"])
+        allocated_ranks = {a.rank for c in bucket["containers"] for a in c.allocations}
+        ranks_on_host = (
+            len(allocated_ranks) if allocated_ranks and all(c.allocations for c in bucket["containers"]) else len(bucket["ranks"])
+        )
         total += ranks_on_host
         meta = _load_metadata_safely(cluster_id)
         recipe_name = meta.get("recipe") if meta else None

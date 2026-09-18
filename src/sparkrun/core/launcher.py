@@ -1547,6 +1547,7 @@ def launch_inference(
                 cluster_name=job_cluster_name,
                 ssh_user=job_ssh_user,
                 executor=executor,
+                placement=placement,
                 sctx=sctx,
             )
 

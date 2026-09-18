@@ -1565,6 +1565,29 @@ class Recipe:
         recipe.resolve(overrides)
         return recipe
 
+    def resolve_kv_cache_memory_bytes(self, cli_overrides: dict | None = None) -> int | None:
+        """Resolve the explicit per-GPU KV budget without fetching model metadata."""
+        import shlex
+        from sparkrun.utils.data import byte_size_setting
+
+        config = self.build_config_chain(cli_overrides)
+        value = config.get("kv_cache_memory_bytes")
+        if value is None and self.command:
+            try:
+                tokens = shlex.split(self.command.replace("\\\n", " "))
+            except ValueError:
+                tokens = []
+            for index, token in enumerate(tokens):
+                flag, equal, inline = token.partition("=")
+                if flag not in ("--kv-cache-memory-bytes", "--kv-cache-memory"):
+                    continue
+                value = inline if equal else tokens[index + 1] if index + 1 < len(tokens) else ""
+                if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
+                    value = config.get(value[1:-1])
+                    if value is None:
+                        raise ValueError("Unresolved kv_cache_memory_bytes command parameter")
+        return byte_size_setting(value, key="kv_cache_memory_bytes") if value is not None else None
+
     def estimate_vram(
         self,
         cli_overrides: dict[str, Any] | None = None,
@@ -1602,6 +1625,7 @@ class Recipe:
         )
 
         config = self.build_config_chain(cli_overrides)
+        kv_cache_memory_bytes = self.resolve_kv_cache_memory_bytes(cli_overrides)
 
         # Start with metadata values
         from sparkrun.models.vram import normalize_dtype
@@ -1810,6 +1834,7 @@ class Recipe:
             pipeline_parallel=pipeline_parallel,
             model_vram=float(model_vram) if model_vram is not None else None,
             kv_vram_per_token=float(kv_vram_per_token) if kv_vram_per_token is not None else None,
+            kv_cache_memory_bytes=kv_cache_memory_bytes,
             gpu_memory_utilization=gpu_memory_utilization,
             total_gpu_memory_gb=total_gpu_memory_gb,
             model_type=str(model_type) if model_type else None,

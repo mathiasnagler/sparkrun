@@ -117,6 +117,26 @@ def _cli_test_recipes(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _localhost_test_hardware(monkeypatch):
+    """Localhost is an eight-GPU test node; remote fixtures remain single GB10s.
+
+    CLI option tests exercise solo TP overrides without bypassing admission.
+    """
+    from sparkrun.core.limits import resolved_hardware_for_scheduling
+    from sparkrun.core.hardware import HostHardware, AcceleratorSpec
+
+    def hardware(cluster, hosts):
+        result = resolved_hardware_for_scheduling(cluster, hosts)
+        if "localhost" in result:
+            result["localhost"] = HostHardware(
+                accelerators=[AcceleratorSpec("nvidia", "gb10", count=8, memory_gb=121, max_gpu_memory_utilization=0.9)]
+            )
+        return result
+
+    monkeypatch.setattr("sparkrun.core.limits.resolved_hardware_for_scheduling", hardware)
+
+
+@pytest.fixture(autouse=True)
 def _stub_cluster_status_in_cli_tests(monkeypatch):
     """Default cluster-status acquisition to a no-op so CLI tests don't SSH out.
 
@@ -854,7 +874,7 @@ class TestVramCommand:
         assert "VRAM Estimation" in result.output
         assert "Model weights:" in result.output
         assert "Per-GPU total:" in result.output
-        assert "DGX Spark fit:" in result.output
+        assert "DGX Spark memory fit:" in result.output
 
     def test_vram_with_gpu_mem(self, runner):
         """Test sparkrun recipe vram with --gpu-mem shows budget analysis."""
@@ -1003,8 +1023,8 @@ class TestRunCommand:
         assert result.exit_code != 0
         assert "Error" in result.output
 
-    def test_run_tp_exceeds_max_nodes_errors(self, runner, reset_bootstrap):
-        """Test that --tp exceeding recipe max_nodes produces an error."""
+    def test_solo_recipe_requires_capacity_for_all_tp_ranks(self, runner, reset_bootstrap):
+        """A one-host recipe needs both TP ranks on the same physical host."""
         result = runner.invoke(
             main,
             [
@@ -1019,8 +1039,8 @@ class TestRunCommand:
         )
 
         assert result.exit_code != 0
-        assert "max_nodes=1" in result.output
-        assert "requires 2 nodes" in result.output
+        assert "solo (1-node)" in result.output
+        assert "capacity" in result.output
 
     def test_run_platform_homogeneous_dgx_spark(self, runner, reset_bootstrap):
         """Platform line shows homogeneous DGX Spark when all hosts have GB10 hardware."""
@@ -2372,8 +2392,8 @@ class TestTensorParallelValidation:
             assert "solo" in result.output.lower()
             mock_run.assert_called_once()
 
-    def test_solo_flag_skips_tp_validation(self, runner, reset_bootstrap):
-        """--solo flag should skip tensor_parallel validation entirely."""
+    def test_solo_flag_checks_tp_capacity(self, runner, reset_bootstrap):
+        """Solo TP2 must not fit on a single-GPU node."""
         with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
             result = runner.invoke(
                 main,
@@ -2387,10 +2407,9 @@ class TestTensorParallelValidation:
                 ],
             )
 
-            assert result.exit_code == 0
-            # No trimming or error messages
-            assert "nodes required" not in result.output
-            mock_run.assert_called_once()
+            assert result.exit_code != 0
+            assert "capacity" in result.output
+            mock_run.assert_not_called()
 
     def test_solo_flag_truncates_multiple_hosts(self, runner, reset_bootstrap):
         """--solo with multiple hosts should truncate to first host only."""
@@ -2401,6 +2420,8 @@ class TestTensorParallelValidation:
                     "run",
                     _TEST_RECIPE_NAME,
                     "--solo",
+                    "--tp",
+                    "1",
                     "--dry-run",
                     "--hosts",
                     "10.0.0.1,10.0.0.2",
@@ -2468,25 +2489,21 @@ class TestResolveEffectiveHostsForRecipe:
         assert result == hosts  # 6 == 6, no trimming
         assert is_solo is False
 
-    def test_single_host_no_scheduler_call(self, reset_bootstrap):
-        """Single host short-circuits the scheduler and is reported as solo."""
+    def test_single_host_checks_capacity(self, reset_bootstrap):
         from sparkrun.cli._common import resolve_effective_hosts_for_recipe
 
         recipe = self._make_recipe(defaults={"tensor_parallel": 4})
-        hosts = ["h1"]
-        result, is_solo = resolve_effective_hosts_for_recipe(hosts, recipe, {})
-        assert result == ["h1"]
-        assert is_solo is True
+        with pytest.raises(SystemExit) as error:
+            resolve_effective_hosts_for_recipe(["h1"], recipe, {})
+        assert error.value.code == 1
 
-    def test_solo_flag_forces_one_host(self, reset_bootstrap):
-        """--solo trims to 1 host regardless of parallelism."""
+    def test_solo_flag_requires_capacity_on_one_host(self, reset_bootstrap):
         from sparkrun.cli._common import resolve_effective_hosts_for_recipe
 
         recipe = self._make_recipe(defaults={"tensor_parallel": 4})
-        hosts = ["h1", "h2", "h3", "h4"]
-        result, is_solo = resolve_effective_hosts_for_recipe(hosts, recipe, {}, solo=True)
-        assert result == ["h1"]
-        assert is_solo is True
+        with pytest.raises(SystemExit) as error:
+            resolve_effective_hosts_for_recipe(["h1", "h2", "h3", "h4"], recipe, {}, solo=True)
+        assert error.value.code == 1
 
     def test_max_nodes_caps_host_count(self, reset_bootstrap):
         """recipe.max_nodes enforces an upper bound after scheduling."""

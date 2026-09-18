@@ -66,38 +66,27 @@ def _stub_schedule(monkeypatch, hosts_used, *, capture=None):
 
 
 # ---------------------------------------------------------------------------
-# Single-host bypass and solo short-circuit (scheduler is NOT consulted)
+# Single-host and solo allocation admission
 # ---------------------------------------------------------------------------
 
 
-def test_single_host_bypasses_scheduler(monkeypatch):
-    """One input host short-circuits: no scheduler call, solo, no placement."""
-
-    def _boom(*a, **k):
-        raise AssertionError("scheduler must not be called for a single host")
-
-    monkeypatch.setattr(api, "schedule", _boom)
-
-    recipe = _Recipe(parallelism={"tensor_parallel": 2})
-    host_list, is_solo, notes, placement = resolve_effective_hosts(
-        ["only-host"],
-        recipe,
-        {},
-    )
+def test_single_host_uses_scheduler(monkeypatch):
+    """Solo placement checks occupancy and retains the accepted GPU assignment."""
+    capture = {}
+    _stub_schedule(monkeypatch, ["only-host"], capture=capture)
+    monkeypatch.setattr(api, "status", lambda *a, **k: None)
+    recipe = _Recipe(parallelism={"tensor_parallel": 1})
+    host_list, is_solo, notes, placement = resolve_effective_hosts(["only-host"], recipe, {})
     assert host_list == ["only-host"]
     assert is_solo is True
-    assert placement is None
+    assert placement is not None
+    assert placement.hosts_used == ("only-host",)
+    assert capture["request"].single_host is True
     assert notes == []
 
 
 def test_solo_flag_picks_single_host_via_scheduler(monkeypatch):
-    """``solo=True`` runs a 1-rank schedule to pick one host *with room*.
-
-    Solo no longer blindly trims to ``host_list[0]``; it issues a
-    ``world_size == 1`` scheduling request so the configured scheduler picks
-    an occupancy-appropriate host.  Here the stub returns ``h2`` (not the
-    head), proving the chosen host comes from the scheduler, not a slice.
-    """
+    """Solo asks the scheduler to fit all ranks on one host with room."""
     capture: dict = {}
     _stub_schedule(monkeypatch, ["h2"], capture=capture)
     monkeypatch.setattr(api, "status", lambda *a, **k: None)
@@ -111,10 +100,12 @@ def test_solo_flag_picks_single_host_via_scheduler(monkeypatch):
     )
     assert host_list == ["h2"]
     assert is_solo is True
-    assert placement is None
+    assert placement is not None
+    assert placement.hosts_used == tuple(host_list)
     assert any("solo mode enabled" in n for n in notes)
-    # Solo forces a single-rank request regardless of the recipe's tp=2.
-    assert capture["request"].parallelism.world_size() == 1
+    # All ranks must fit on one host, preserving the recipe's tp=2.
+    assert capture["request"].parallelism.world_size() == 2
+    assert capture["request"].single_host is True
 
 
 def test_solo_raises_when_no_host_has_room(monkeypatch):
@@ -135,9 +126,8 @@ def test_solo_raises_when_no_host_has_room(monkeypatch):
 def test_recipe_mode_solo_forces_single_host(monkeypatch):
     """``recipe.mode == 'solo'`` routes to the single-host occupancy pick.
 
-    Like the ``solo`` flag, ``recipe.mode == 'solo'`` now skips the multi-node
-    scheduling block and issues a 1-rank request through the single-host pick;
-    the final ``is_solo`` gate reports solo and clears the placement.
+    The scheduler retains the assignment and checks the full rank count
+    against the selected host.
     """
     _stub_schedule(monkeypatch, ["h1"])
     monkeypatch.setattr(api, "status", lambda *a, **k: None)
@@ -150,7 +140,8 @@ def test_recipe_mode_solo_forces_single_host(monkeypatch):
     )
     assert host_list == ["h1"]
     assert is_solo is True
-    assert placement is None
+    assert placement is not None
+    assert placement.hosts_used == tuple(host_list)
     assert any("solo mode enabled" in n for n in notes)
 
 
@@ -339,8 +330,8 @@ def test_vram_claim_and_resolved_caps_threaded_into_request(monkeypatch):
     assert request.resources is not None
     assert request.resources.memory_gb == 50.0
     assert request.resources.util_fraction == 1.0
-    # Default DGX hosts → platform cap 0.85 folded into the spec field.
-    assert request.host_hardware["h1"].accelerators[0].max_gpu_memory_utilization == 0.85
+    # Default DGX hosts → platform cap 0.90 folded into the spec field.
+    assert request.host_hardware["h1"].accelerators[0].max_gpu_memory_utilization == 0.90
 
 
 def test_vram_estimate_failure_yields_no_claim(monkeypatch):
@@ -456,37 +447,25 @@ def test_max_nodes_cap_note_when_scheduler_not_run(monkeypatch):
     assert any("max_nodes=2, using 2 of 4 hosts" in n for n in notes)
 
 
-def test_max_nodes_orthogonal_hard_error_with_parallelism(monkeypatch):
-    """Orthogonal max_nodes block raises when required > max_nodes and the
-    scheduler block was skipped.
+def test_solo_max_nodes_caps_hosts_not_gpu_ranks(monkeypatch):
+    from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+    from sparkrun.core.cluster_status import empty_status
 
-    The scheduler block requires ``not solo``; with ``solo=True`` it is
-    skipped even though parallelism is configured.  The orthogonal cap
-    block at the bottom then sees ``parallelism_configured=True`` and
-    ``required (4) > max_nodes (2)`` and raises a hard error *before* the
-    solo truncation runs.
-    """
-
-    def _boom(*a, **k):
-        raise AssertionError("scheduler must not run when solo=True")
-
-    monkeypatch.setattr(api, "schedule", _boom)
-
-    recipe = _Recipe(max_nodes=2, parallelism={"tensor_parallel": 4})
-    with pytest.raises(SparkrunError) as exc:
-        resolve_effective_hosts(
-            ["h1", "h2", "h3", "h4"],
-            recipe,
-            {},
-            solo=True,
-        )
-    assert "requires 4 nodes" in str(exc.value)
-    assert "max_nodes=2" in str(exc.value)
-
-
-# ---------------------------------------------------------------------------
-# C1: self-intent occupancy exclusion
-# ---------------------------------------------------------------------------
+    monkeypatch.setattr(api, "status", lambda hosts, **kwargs: empty_status(hosts))
+    recipe = _Recipe(max_nodes=1, parallelism={"tensor_parallel": 4})
+    cluster = ClusterDefinition(
+        name="c",
+        hosts=["small", "large"],
+        hosts_hardware={
+            "small": HostHardware(accelerators=[AcceleratorSpec("nvidia", "h100", memory_gb=80)]),
+            "large": HostHardware(accelerators=[AcceleratorSpec("nvidia", "h100", count=4, memory_gb=80)]),
+        },
+    )
+    hosts, solo, _, placement = resolve_effective_hosts(
+        cluster.hosts, recipe, {}, solo=True, cluster_def=cluster, scheduler="occupancy-sparse"
+    )
+    assert solo and hosts == ["large"]
+    assert placement is not None and placement.total_ranks == 4
 
 
 def test_exclude_intent_subtracts_self_from_occupancy(monkeypatch):

@@ -261,7 +261,7 @@ class GreedyScheduler(Scheduler):
 
     **Whole-GPU only.**  Rejects requests carrying a fractional
     :class:`~sparkrun.core.scheduler.ResourceRequest`
-    (``util_fraction < 1.0``) rather than silently treating them as
+    (``util_fraction < 0.8``) rather than silently treating them as
     whole-GPU.  Fractional sharing is the job of a separate scheduler
     (e.g. ``SparsePackScheduler`` / ``DensePackScheduler``).
 
@@ -286,6 +286,15 @@ class GreedyScheduler(Scheduler):
                 "or omit ResourceRequest.util_fraction" % request.resources.util_fraction
             )
 
+        if request.single_host and len(request.hosts) > 1 and not (request.layout is not None and request.layout.placements):
+            from dataclasses import replace
+
+            for host in request.hosts:
+                try:
+                    return self.schedule(replace(request, hosts=(host,), single_host=False))
+                except InfeasibleScheduleError:
+                    pass
+            raise InfeasibleScheduleError("No single host has enough GPU slots for this allocation")
         try:
             assignment = pack(
                 request.parallelism,
@@ -300,6 +309,8 @@ class GreedyScheduler(Scheduler):
         except PlacementError as e:
             raise SchedulingError(str(e)) from e
 
+        if request.single_host and len(assignment.hosts_used) > 1:
+            raise InfeasibleScheduleError("Solo allocation requires every layout rank on one host")
         diagnostics = self._diagnostics(request, assignment)
         return SchedulingResult(
             assignment=assignment,

@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from sparkrun.core.allocations import EXCLUSIVE_GPU_THRESHOLD
+
 if TYPE_CHECKING:
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.scheduler import RankAssignment
@@ -34,7 +36,7 @@ class HostFitDetail:
     """Per-rank VRAM requirement (= :attr:`VRAMEstimate.total_per_gpu_gb`)."""
 
     accelerator_memory_gb: float | None
-    """Smallest per-accelerator *usable* memory across this host's accelerators.
+    """Smallest active memory budget across this host's assigned accelerators.
 
     Usable = nominal ``memory_gb × max_gpu_memory_utilization`` (the cap
     resolved by :func:`sparkrun.core.limits.resolve_max_gpu_memory_utilization`).
@@ -58,6 +60,10 @@ class HostFitDetail:
 
     max_gpu_memory_utilization: float | None = None
     """Usable-memory cap applied to the limiting accelerator (``1.0`` = no cap), or ``None``."""
+
+    memory_limit_source: str | None = None
+    memory_estimate_complete: bool = True
+    allocation_mode: str = "exclusive"
 
 
 @dataclass
@@ -94,31 +100,42 @@ def _detail_to_dict(d: HostFitDetail) -> dict:
         "accelerator_memory_gb": d.accelerator_memory_gb,
         "nominal_memory_gb": d.nominal_memory_gb,
         "max_gpu_memory_utilization": d.max_gpu_memory_utilization,
+        "memory_limit_source": d.memory_limit_source,
+        "memory_estimate_complete": d.memory_estimate_complete,
+        "allocation_mode": d.allocation_mode,
         "headroom_gb": d.headroom_gb,
         "ok": d.ok,
         "note": d.note,
     }
 
 
-def _limiting_accelerator(hw, cluster) -> tuple[float, float, float] | None:
+def _limiting_accelerator(hw, cluster, indices=None, estimate=None) -> tuple[float, float, float, str] | None:
     """Find the accelerator with the smallest *usable* memory on *hw*.
 
-    Returns ``(usable_gb, nominal_gb, cap)`` for that accelerator, or ``None``
-    when neither inventory nor the platform supplies capacity.  Usable memory
+    Returns ``(usable_gb, nominal_gb, cap, source)`` for the limiting assigned
+    accelerator, or ``None`` if any assigned accelerator has unknown capacity.  Usable memory
     applies the scheduling/fit cap resolved by
     :func:`sparkrun.core.limits.resolve_max_gpu_memory_utilization`.
     """
-    from sparkrun.core.limits import resolve_max_gpu_memory_utilization, resolve_accelerator_memory_gb
+    from sparkrun.core.limits import resolve_memory_limit, resolve_accelerator_memory_gb
 
-    best: tuple[float, float, float] | None = None
-    for accel in hw.accelerators:
+    best: tuple[float, float, float, str] | None = None
+    slots = [a for a in hw.accelerators for _ in range(a.count)]
+    selected = range(len(slots)) if indices is None else indices
+    if any(index < 0 or index >= len(slots) for index in selected):
+        return None
+    for index in selected:
+        accel = slots[index]
         capacity = resolve_accelerator_memory_gb(accel, hw)
         if capacity is None:
-            continue
-        cap = resolve_max_gpu_memory_utilization(accel, hw, cluster)
-        usable = capacity * cap
+            return None
+        cap, source = resolve_memory_limit(accel, hw, cluster)
+        usable = estimate.fit_budget_gb(capacity, cap) if estimate is not None else capacity * cap
+        if usable < capacity * cap:
+            source = "runtime gpu_memory_utilization"
+            cap = usable / capacity if capacity else 0.0
         if best is None or usable < best[0]:
-            best = (usable, capacity, cap)
+            best = (usable, capacity, cap, source)
     return best
 
 
@@ -131,9 +148,10 @@ def check_fit(
 
     Per-rank VRAM is :attr:`VRAMEstimate.total_per_gpu_gb`; this is the
     memory one GPU needs after tensor/pipeline sharding.  A host with
-    multiple ranks is still expected to provide per-rank memory on each
-    accelerator, so we compare per-rank against the smallest accelerator
-    memory on the host (worst-case fit).
+    multiple ranks is compared against its smallest assigned accelerator's
+    active budget. Unassigned accelerators do not affect this report.
+    This estimates runtime fit; shared allocation admission separately checks
+    the sum of reservations on each accelerator.
 
     Hosts without inventory or platform capacity are reported ``ok=True``
     with a warning: sparkrun cannot verify fit without a capacity estimate.
@@ -157,7 +175,8 @@ def check_fit(
     for host in placement.hosts_used:
         ranks = placement.ranks_on_host(host)
         hw = cluster.hardware_for(host)
-        limiting = _limiting_accelerator(hw, cluster)
+        limiting = _limiting_accelerator(hw, cluster, {placement.local_gpu_for_rank(rank) for rank in ranks}, estimate)
+        mode = "exclusive" if all(placement.by_rank[r].util_fraction >= EXCLUSIVE_GPU_THRESHOLD for r in ranks) else "shared"
 
         if limiting is None:
             note = "accelerator memory capacity unavailable from inventory or platform; fit not verified"
@@ -170,9 +189,11 @@ def check_fit(
                 headroom_gb=None,
                 ok=True,
                 note=note,
+                memory_estimate_complete=False,
+                allocation_mode=mode,
             )
         else:
-            usable_mem, nominal_mem, cap = limiting
+            usable_mem, nominal_mem, cap, source = limiting
             headroom = usable_mem - vram_per_rank
             host_ok = vram_per_rank <= usable_mem
             if not host_ok:
@@ -186,6 +207,9 @@ def check_fit(
                 ok=host_ok,
                 nominal_memory_gb=nominal_mem,
                 max_gpu_memory_utilization=cap,
+                memory_limit_source=source,
+                memory_estimate_complete=estimate.memory_estimate_complete,
+                allocation_mode=mode,
             )
         per_host[host] = detail
 

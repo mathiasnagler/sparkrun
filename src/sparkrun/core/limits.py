@@ -12,7 +12,7 @@ Resolution precedence (highest first):
 2. ``cluster.accelerator_memory_limits[accel.model]`` — per-accelerator-type
 3. ``cluster.max_gpu_memory_utilization`` — cluster-wide default
 4. ``platform.default_max_gpu_memory_utilization(accel)`` — platform default
-   (e.g. DGX Spark GB10 → 0.85)
+   (e.g. DGX Spark GB10 → 0.90)
 5. :data:`~sparkrun.core.hardware.DEFAULT_MAX_GPU_MEMORY_UTILIZATION` (``1.0``)
 
 Only values in ``(0.0, 1.0]`` are accepted at each level; anything else is
@@ -63,28 +63,33 @@ def resolve_max_gpu_memory_utilization(
     See the module docstring for the precedence chain.  Always returns a
     concrete fraction in ``(0.0, 1.0]`` (``1.0`` when nothing applies).
     """
+    return resolve_memory_limit(accel, host_hw, cluster)[0]
+
+
+def resolve_memory_limit(accel: AcceleratorSpec, host_hw: HostHardware, cluster: "ClusterDefinition | None") -> tuple[float, str]:
+    """The scheduling fraction and its provenance, resolved by the same chain."""
     # 1. Per-host+accelerator (explicit on the spec).
     explicit = _valid_fraction(accel.max_gpu_memory_utilization)
     if explicit is not None:
-        return explicit
+        return explicit, accel.memory_limit_source or "accelerator override"
 
     if cluster is not None:
         # 2. Per-accelerator-type map.
         per_type = _valid_fraction(cluster.accelerator_memory_limits.get(accel.model))
         if per_type is not None:
-            return per_type
+            return per_type, "cluster accelerator-type override"
         # 3. Cluster-wide default.
         cluster_wide = _valid_fraction(cluster.max_gpu_memory_utilization)
         if cluster_wide is not None:
-            return cluster_wide
+            return cluster_wide, "cluster override"
 
     # 4. Platform default.
     platform_default = _resolve_platform_default(accel, host_hw)
     if platform_default is not None:
-        return platform_default
+        return platform_default, "platform default"
 
     # 5. Hard fallback.
-    return DEFAULT_MAX_GPU_MEMORY_UTILIZATION
+    return DEFAULT_MAX_GPU_MEMORY_UTILIZATION, "default capacity"
 
 
 def _resolve_platform_default(accel: AcceleratorSpec, host_hw: HostHardware) -> float | None:
@@ -156,14 +161,17 @@ def resolved_hardware_for_scheduling(
     resolved: dict[str, HostHardware] = {}
     for host in hosts:
         hw = cluster.hardware_for(host) if cluster is not None else resolve_fallback_hardware()
-        new_accels = [
-            dataclasses.replace(
-                accel,
-                memory_gb=resolve_accelerator_memory_gb(accel, hw),
-                max_gpu_memory_utilization=resolve_max_gpu_memory_utilization(accel, hw, cluster),
+        new_accels = []
+        for accel in hw.accelerators:
+            cap, source = resolve_memory_limit(accel, hw, cluster)
+            new_accels.append(
+                dataclasses.replace(
+                    accel,
+                    memory_gb=resolve_accelerator_memory_gb(accel, hw),
+                    max_gpu_memory_utilization=cap,
+                    memory_limit_source=source,
+                )
             )
-            for accel in hw.accelerators
-        ]
         resolved[host] = HostHardware(
             accelerators=new_accels,
             fingerprint=hw.fingerprint,

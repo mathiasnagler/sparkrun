@@ -132,7 +132,7 @@ def test_resource_request_defaults_whole_gpu():
 
 def test_resource_request_fractional_predicate():
     assert ResourceRequest(util_fraction=0.3).is_fractional()
-    assert ResourceRequest(util_fraction=0.99).is_fractional()
+    assert not ResourceRequest(util_fraction=0.99).is_fractional()
     assert not ResourceRequest(util_fraction=1.0).is_fractional()
 
 

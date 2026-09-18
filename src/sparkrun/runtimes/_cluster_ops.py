@@ -683,6 +683,8 @@ def launch_containers_parallel(
                 recipe=recipe,
                 runtime=runtime,
                 rank=rank,
+                placement=ctx.placement,
+                host=host,
             )
             script = executor.generate_launch_script(
                 image=ctx.image_for_host(host),
@@ -1044,6 +1046,8 @@ def run_native_cluster(
         recipe=recipe,
         runtime=runtime,
         rank=0,
+        placement=ctx.placement,
+        host=ctx.head_host,
     )
     head_exec_script = executor.generate_exec_serve_script(
         container_name=head_container,
@@ -1144,6 +1148,8 @@ def run_native_cluster(
                     recipe=recipe,
                     runtime=runtime,
                     rank=rank,
+                    placement=ctx.placement,
+                    host=host,
                 )
                 worker_exec_script = executor.generate_exec_serve_script(
                     container_name=worker_container,

@@ -49,9 +49,11 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import ClassVar
 
-from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy
+from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, with_gpu_allocations
+from sparkrun.core.allocations import EXCLUSIVE_GPU_THRESHOLD
 from sparkrun.core.scheduler import (
     InfeasibleScheduleError,
+    CapacityRejection,
     InsufficientCapacityError,
     LayoutConflictError,
     LayoutRequiredError,
@@ -95,7 +97,7 @@ class _OccupancyAwareBase(Scheduler):
     # ----------------------------------------------------------------------
 
     def schedule(self, request: SchedulingRequest) -> SchedulingResult:
-        # 1. Honor an explicit layout verbatim (same as greedy).
+        # 1. Honor explicit indices after checking occupancy and shared budgets.
         if request.layout is not None and request.layout.placements:
             try:
                 assignment = pack(
@@ -110,26 +112,35 @@ class _OccupancyAwareBase(Scheduler):
                 raise LayoutConflictError(str(e)) from e
             except PlacementError as e:
                 raise SchedulingError(str(e)) from e
-            unavailable = set(request.status.observation_errors) if request.status is not None else set()
-            if unavailable.intersection(assignment.hosts_used):
-                raise InfeasibleScheduleError("Explicit layout includes hosts whose occupancy could not be observed")
+            if request.single_host and len(assignment.hosts_used) > 1:
+                raise InfeasibleScheduleError("Solo allocation requires every layout rank on one host")
+            assignment = self._validate_layout(request, assignment)
             return SchedulingResult(
-                assignment=assignment,
-                scheduler_name=self.scheduler_name,
-                diagnostics=("layout honored verbatim",),
+                assignment=assignment, scheduler_name=self.scheduler_name, diagnostics=("layout validated against GPU allocations",)
             )
+
+        if request.single_host and len(request.hosts) > 1:
+            from dataclasses import replace
+
+            reasons = []
+            for host in self._sort_hosts(request.hosts, self._compute_host_load_scores(request)):
+                try:
+                    return self.schedule(replace(request, hosts=(host,), single_host=False))
+                except InfeasibleScheduleError as error:
+                    reasons.extend(error.rejections)
+                except SchedulingError:
+                    if request.layout is not None:
+                        raise
+            raise InfeasibleScheduleError("No single host can satisfy the requested GPU allocation", rejections=tuple(reasons))
 
         resources = request.resources
         is_fractional = resources is not None and resources.is_fractional()
         has_status = request.status is not None and bool(request.status.hosts or request.status.observation_errors)
 
-        # 2. Fallback path: no occupancy + no fractional claim → greedy.
-        # Whole-GPU memory claims (util_fraction == 1.0, memory_gb set) flow
-        # through the fallback too — but the greedy pack now enforces the
-        # per-rank whole-GPU memory budget so the fit guard does not vanish
-        # when cluster status is unavailable (memory cap bypass bug).
+        # Without a requested occupancy snapshot, exclusive allocation uses
+        # physical capacity. Model/KV estimates remain a runtime-fit report.
         if not is_fractional and not has_status:
-            per_rank_memory_gb = resources.memory_gb if resources is not None else None
+            per_rank_memory_gb = None  # Exclusive ownership reserves the GPU, not an estimated footprint.
             try:
                 assignment = pack(
                     request.parallelism,
@@ -161,6 +172,90 @@ class _OccupancyAwareBase(Scheduler):
                 mode="fractional" if is_fractional else "occupancy",
             ),
         )
+
+    @staticmethod
+    def _memory_claims(hw, resources):
+        if resources is None or not resources.is_fractional():
+            return [None] * hw.total_gpus
+        return [
+            resources.memory_gb
+            if resources.memory_gb is not None
+            else spec.memory_gb * resources.util_fraction
+            if spec.memory_gb is not None
+            else None
+            for spec in hw.accelerators
+            for _ in range(spec.count)
+        ]
+
+    @staticmethod
+    def _rejections(host, hw, eligible, util, memory, fraction, claims):
+        specs = [a for a in hw.accelerators for _ in range(a.count)]
+        reasons = []
+        for i, free in enumerate(eligible):
+            if not free:
+                reason = "exclusive_owner" if fraction < EXCLUSIVE_GPU_THRESHOLD else "occupied"
+                detail = "GPU has an existing allocation; exclusive ownership prevents sharing"
+            elif util[i] + 1e-9 < fraction:
+                reason, detail = "compute_budget", "Requested fraction %.2f; unreserved fraction %.2f" % (fraction, util[i])
+            elif fraction < EXCLUSIVE_GPU_THRESHOLD and (memory[i] is None or claims[i] is None):
+                reason, detail = "memory_unknown", "Shared allocation requires known memory capacity and reservation"
+            elif claims[i] is not None and memory[i] is not None and claims[i] > memory[i] + 1e-9:
+                spec = specs[i]
+                cap = spec.max_gpu_memory_utilization if spec.max_gpu_memory_utilization is not None else 1.0
+                reason = "memory_budget"
+                detail = "Requires %.2f GiB; unreserved %.2f GiB (%.2f GiB x %.0f%%, %s)" % (
+                    claims[i],
+                    memory[i],
+                    spec.memory_gb,
+                    cap * 100,
+                    getattr(spec, "memory_limit_source", None) or "hardware capacity",
+                )
+            else:
+                continue
+            reasons.append(CapacityRejection(host, i, reason, detail, claims[i], memory[i]))
+        return reasons
+
+    def _validate_layout(self, request, assignment):
+        """Explicit rank placement still must respect physical GPU ownership."""
+        from dataclasses import replace
+
+        resources = request.resources
+        fractional = resources is not None and resources.is_fractional()
+        fraction = resources.util_fraction if resources is not None and fractional else 1.0
+        budgets = {}
+        slots = []
+        errors = request.status.observation_errors if request.status is not None else {}
+        for slot in assignment.by_rank:
+            host, index = slot.host, slot.local_gpu
+            hw = _hw_for(host, request.host_hardware)
+            if host in errors or not 0 <= index < hw.total_gpus:
+                reason = "observation_failed" if host in errors else "invalid_gpu"
+                detail = errors.get(host, "Layout references a GPU absent from hardware inventory")
+                raise InfeasibleScheduleError(detail, rejections=(CapacityRejection(host, index, reason, detail),))
+            if host not in budgets:
+                occ = request.status.for_host(host) if request.status is not None else None
+                if occ is not None:
+                    occ = with_gpu_allocations(occ, hw.total_gpus)
+                if self._is_ambiguous_host_level(occ, hw.total_gpus, fractional):
+                    raise InfeasibleScheduleError(
+                        "Layout cannot establish which GPUs are free",
+                        rejections=(CapacityRejection(host, index, "unknown_gpu_indices", "Per-GPU occupancy is required"),),
+                    )
+                budgets[host] = self._build_budgets(
+                    num_gpus=hw.total_gpus, gpu_mem_specs=hw.usable_gpu_memory_slots(), host_occ=occ, is_fractional=fractional
+                )
+            util, memory, eligible = budgets[host]
+            claims = self._memory_claims(hw, resources)
+            rejection = tuple(r for r in self._rejections(host, hw, eligible, util, memory, fraction, claims) if r.gpu_index == index)
+            if rejection:
+                raise InfeasibleScheduleError("Explicit layout conflicts with GPU allocation", rejections=rejection)
+            util[index] -= fraction
+            if memory[index] is not None and claims[index] is not None:
+                memory[index] -= claims[index]
+            if not fractional:
+                eligible[index] = False
+            slots.append(replace(slot, util_fraction=fraction, memory_gb=claims[index]))
+        return replace(assignment, by_rank=tuple(slots))
 
     # ----------------------------------------------------------------------
     # Strategy hooks (subclasses must override)
@@ -229,9 +324,9 @@ class _OccupancyAwareBase(Scheduler):
             return RankAssignment(by_rank=(), hosts_used=())
 
         resources = request.resources
-        per_rank_util = resources.util_fraction if resources is not None else 1.0
-        per_rank_mem = resources.memory_gb if resources is not None else None
         is_fractional = resources is not None and resources.is_fractional()
+        per_rank_util = resources.util_fraction if resources is not None and is_fractional else 1.0
+        per_rank_mem = resources.memory_gb if resources is not None and is_fractional else None
 
         status = request.status
         unavailable = status.observation_errors if status is not None else {}
@@ -244,17 +339,20 @@ class _OccupancyAwareBase(Scheduler):
         hosts_used: list[str] = []
         placed_vendors: set[str] = set()
         ambiguous_hosts: list[str] = []
+        rejections: list[CapacityRejection] = []
         remaining = total_ranks
 
         i = 0
         while i < len(sorted_hosts) and remaining > 0:
             host = sorted_hosts[i]
             if host in unavailable:
+                rejections.append(CapacityRejection(host, None, "observation_failed", unavailable[host]))
                 i += 1
                 continue
 
             hw = _hw_for(host, request.host_hardware)
             if hw.total_gpus <= 0:
+                rejections.append(CapacityRejection(host, None, "no_accelerators", "No accelerator slots"))
                 i += 1
                 continue
 
@@ -269,6 +367,9 @@ class _OccupancyAwareBase(Scheduler):
             gpu_mem_specs = hw.usable_gpu_memory_slots()
             num_gpus = len(gpu_mem_specs)
             host_occ = status.for_host(host) if status is not None else None
+            if host_occ is not None:
+                host_occ = with_gpu_allocations(host_occ, num_gpus)
+            claims = self._memory_claims(hw, resources)
 
             # Whole-GPU placement on a multi-GPU host that reports only a
             # host-level slot count (no per-GPU detail) and is *partially* busy is
@@ -278,6 +379,7 @@ class _OccupancyAwareBase(Scheduler):
             # explain why — rather than guessing or aborting a feasible schedule.
             if self._is_ambiguous_host_level(host_occ, num_gpus, is_fractional):
                 ambiguous_hosts.append(host)
+                rejections.append(CapacityRejection(host, None, "unknown_gpu_indices", "Occupied GPU indices are unknown"))
                 i += 1
                 continue
 
@@ -291,6 +393,7 @@ class _OccupancyAwareBase(Scheduler):
             # Skip hosts that ended up with no eligible GPUs (whole-GPU
             # placement on a fully-occupied host).
             if not any(gpu_eligible):
+                rejections.extend(self._rejections(host, hw, gpu_eligible, util_remaining, mem_remaining, per_rank_util, claims))
                 i += 1
                 continue
 
@@ -300,17 +403,23 @@ class _OccupancyAwareBase(Scheduler):
                     num_gpus=num_gpus,
                     util_remaining=util_remaining,
                     mem_remaining=mem_remaining,
-                    gpu_eligible=gpu_eligible,
+                    gpu_eligible=[
+                        eligible
+                        and (not is_fractional or (claim is not None and remaining_memory is not None and claim <= remaining_memory + 1e-9))
+                        for eligible, claim, remaining_memory in zip(gpu_eligible, claims, mem_remaining, strict=True)
+                    ],
                     per_rank_util=per_rank_util,
                     per_rank_mem=per_rank_mem,
                 )
                 if gpu_idx is None:
+                    rejections.extend(self._rejections(host, hw, gpu_eligible, util_remaining, mem_remaining, per_rank_util, claims))
                     break
 
                 util_remaining[gpu_idx] -= per_rank_util
                 memory = mem_remaining[gpu_idx]
-                if per_rank_mem is not None and memory is not None:
-                    mem_remaining[gpu_idx] = memory - per_rank_mem
+                reserved_memory = claims[gpu_idx]
+                if reserved_memory is not None and memory is not None:
+                    mem_remaining[gpu_idx] = memory - reserved_memory
                 if not is_fractional:
                     # Whole-GPU placement: mark slot occupied so the next
                     # rank picks a different GPU on this host.
@@ -321,7 +430,7 @@ class _OccupancyAwareBase(Scheduler):
                         host=host,
                         local_gpu=gpu_idx,
                         util_fraction=per_rank_util,
-                        memory_gb=per_rank_mem,
+                        memory_gb=reserved_memory,
                     )
                 )
                 remaining -= 1
@@ -345,32 +454,33 @@ class _OccupancyAwareBase(Scheduler):
             # If the only reason we couldn't place was ambiguous host-level
             # occupancy, surface that as an actionable layout error rather than a
             # generic "no capacity" — the operator can fix it with per-GPU status
-            # or an explicit recipe.layout.
+            # from the executor's durable allocation records.
             if ambiguous_hosts:
                 raise LayoutConflictError(
                     "Cluster cannot place %d ranks: host(s) %s report only a host-level "
                     "busy count on multi-GPU hardware, so the scheduler cannot tell which "
-                    "GPU indices are free. Provide per-GPU occupancy or an explicit "
-                    "recipe.layout for these hosts." % (total_ranks, sorted(ambiguous_hosts))
+                    "GPU indices are free. Refresh per-GPU occupancy or stop/relaunch "
+                    "legacy workloads to record their GPU assignments." % (total_ranks, sorted(ambiguous_hosts))
                 )
             placed = total_ranks - remaining
             raise InfeasibleScheduleError(
-                "Cluster cannot satisfy %d ranks under current occupancy: "
-                "only placed %d of %d ranks across %d host(s)" % (total_ranks, placed, total_ranks, len(request.hosts))
+                "Cluster cannot satisfy %d ranks: only placed %d of %d ranks across %d host(s)"
+                % (total_ranks, placed, total_ranks, len(request.hosts)),
+                rejections=tuple(rejections),
             )
 
         return RankAssignment(by_rank=tuple(by_rank), hosts_used=tuple(hosts_used))
 
     @staticmethod
     def _is_ambiguous_host_level(host_occ: HostOccupancy | None, num_gpus: int, is_fractional: bool) -> bool:
-        """``True`` when whole-GPU placement can't pick safe GPU indices.
+        """``True`` when placement cannot identify safe GPU indices.
 
         Holds for a multi-GPU host that reports only a host-level slot count
         (no per-GPU :attr:`HostOccupancy.gpus` detail) and is *partially* busy
         (``0 < used_slots < num_gpus``).  Single-GPU hosts, fully-free / fully-busy
-        hosts, and fractional placements are all unambiguous.
+        hosts are unambiguous; shared placement also needs known ownership.
         """
-        if is_fractional or host_occ is None or host_occ.gpus or num_gpus <= 1:
+        if host_occ is None or host_occ.gpus or num_gpus <= 1:
             return False
         return 0 < host_occ.used_slots < num_gpus
 
@@ -485,9 +595,8 @@ class _OccupancyAwareBase(Scheduler):
         directly.  Otherwise we fall back to host-level
         ``used_slots`` / ``free_slots``: for whole-GPU placements that
         translates to "the first ``used_slots`` local-GPU indices are
-        already occupied"; for fractional placements we conservatively
-        assume even distribution of the host-level utilization across
-        the host's GPUs.
+        already occupied" only when the indices are unambiguous. Legacy
+        host-only occupancy never authorizes a shared allocation.
         """
         util_remaining: list[float] = [1.0] * num_gpus
         mem_remaining: list[float | None] = list(gpu_mem_specs)
@@ -506,6 +615,23 @@ class _OccupancyAwareBase(Scheduler):
                             0.0,
                             (mem_remaining[gpu.gpu_index] or 0.0) - gpu.used_memory_gb,
                         )
+                    legacy_owner = any(
+                        not any(c.allocations for c in w.containers)
+                        and (w.util_fraction is None or w.util_fraction >= EXCLUSIVE_GPU_THRESHOLD)
+                        for w in gpu.workloads
+                    )
+                    exclusive = (
+                        gpu.exclusive
+                        or legacy_owner
+                        or (
+                            len(gpu.workloads) <= 1
+                            and gpu.used_util_fraction >= EXCLUSIVE_GPU_THRESHOLD
+                            and not any(c.allocations for w in gpu.workloads for c in w.containers)
+                        )
+                    )
+                    if exclusive:
+                        util_remaining[gpu.gpu_index] = 0.0
+                        eligible[gpu.gpu_index] = False
                     if not is_fractional:
                         # Whole-GPU mode: any non-trivial occupancy excludes the GPU.
                         if gpu.workloads or gpu.used_util_fraction > 0 or gpu.used_memory_gb > 0:
@@ -523,15 +649,12 @@ class _OccupancyAwareBase(Scheduler):
             # we never emit a guessed local_gpu for it.
             for i in range(min(used_slots, num_gpus)):
                 eligible[i] = False
-        elif used_slots > 0 and num_gpus > 0:
-            # Fractional mode: spread the assumed utilization evenly.
-            # Each "used slot" implies one whole GPU consumed; we treat
-            # that as ``used_slots / num_gpus`` per-GPU utilization to
-            # avoid double-subtracting on hosts where exact per-GPU info
-            # is unavailable.
-            per_gpu_used = min(1.0, used_slots / num_gpus)
+        elif used_slots > 0:
+            # A legacy workload has no durable permission to share. Its indices
+            # are known only for one GPU or a fully occupied host.
             for i in range(num_gpus):
-                util_remaining[i] = max(0.0, 1.0 - per_gpu_used)
+                eligible[i] = False
+                util_remaining[i] = 0.0
 
         return util_remaining, mem_remaining, eligible
 

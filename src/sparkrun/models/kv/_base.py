@@ -66,6 +66,9 @@ class ArchField:
     doc: str = ""
     """One-line description, for ``RECIPES.md`` and error messages."""
 
+    item_kind: type = int
+    """Element type for list fields."""
+
     def coerce(self, value: Any) -> Any:
         """Convert an accepted value to its canonical stored form."""
         if self.kind is int:
@@ -73,7 +76,7 @@ class ArchField:
         if self.kind is str:
             return str(value)
         if self.kind is list:
-            return [int(v) for v in value]
+            return [self.item_kind(v) for v in value]
         return value
 
     def validate(self, value: Any) -> str | None:
@@ -96,6 +99,10 @@ class ArchField:
                 return "metadata.%s %r must be a string" % (self.name, value)
             return None
         if self.kind is list:
+            if self.item_kind is str:
+                if not isinstance(value, list) or not value or any(not isinstance(v, str) or not v for v in value):
+                    return "metadata.%s must be a non-empty list of strings" % self.name
+                return None
             if not isinstance(value, list) or not value:
                 return "metadata.%s %r must be a non-empty list of integers" % (self.name, value)
             if any(isinstance(v, bool) or not isinstance(v, int) for v in value):

@@ -344,6 +344,7 @@ def _run_with_stubbed_launcher(opts):
         )()
 
     with (
+        patch("sparkrun.api.status", return_value=_status(("h1", []))),
         patch("sparkrun.core.launcher.launch_inference", side_effect=_fake_launch),
         patch("sparkrun.api._resolve.resolve_runtime", return_value=_FakeRuntime()),
         patch("sparkrun.api._run._evict_superseded_deployments", return_value=([], set())) as evict,
@@ -393,6 +394,7 @@ def test_launch_that_dies_before_starting_containers_evicts_nothing():
         raise KeyboardInterrupt
 
     with (
+        patch("sparkrun.api.status", return_value=_status(("h1", []))),
         patch("sparkrun.core.launcher.launch_inference", side_effect=_die_before_start),
         patch("sparkrun.api._resolve.resolve_runtime", return_value=_FakeRuntime()),
         patch("sparkrun.api._run._evict_superseded_deployments", return_value=([], set())) as evict,

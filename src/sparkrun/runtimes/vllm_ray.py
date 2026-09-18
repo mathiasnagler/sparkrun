@@ -379,6 +379,8 @@ class VllmRayRuntime(VllmRuntimeBase):
             cluster_id=cluster_id,
             recipe=recipe,
             runtime=self,
+            placement=ctx.placement,
+            host=ctx.head_host,
         )
         head_script = executor.generate_ray_head_script(
             image=image,
@@ -474,14 +476,12 @@ class VllmRayRuntime(VllmRuntimeBase):
 
             # Ray manages per-actor ranks internally; each host runs one
             # ``{cluster_id}_worker`` container, so we omit the rank label.
-            _worker_labels = executor.workload_labels_for_cluster(
-                cluster_id=cluster_id,
-                recipe=recipe,
-                runtime=self,
-            )
             with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(ctx.worker_hosts), _config_ssh_cap(ctx.config))) as _wpool:
                 _wfutures = {}
                 for _whost in ctx.worker_hosts:
+                    _worker_labels = executor.workload_labels_for_cluster(
+                        cluster_id=cluster_id, recipe=recipe, runtime=self, placement=ctx.placement, host=_whost
+                    )
                     _whost_env = comm_env.get_env(_whost) if comm_env else None
                     _wscript = executor.generate_ray_worker_script(
                         image=image,

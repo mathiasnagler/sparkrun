@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 import sparkrun.api as api
+from sparkrun.core.cluster_status import ClusterStatus
 from sparkrun.orchestration.executors.docker import DockerExecutor
 from sparkrun.orchestration.ssh import RemoteResult
 
@@ -109,6 +110,9 @@ def test_run_dry_run_returns_run_result_without_ssh():
         runtime_name = "vllm"
         executor = None  # no executor; fallback path
 
+        def world_size(self, parallelism, recipe=None, cluster=None):
+            return parallelism.world_size() or 1
+
     fake_result = type(
         "FakeLaunchResult",
         (),
@@ -136,6 +140,7 @@ def test_run_dry_run_returns_run_result_without_ssh():
     )()
 
     with (
+        patch("sparkrun.api.status", return_value=ClusterStatus()),
         patch("sparkrun.core.launcher.launch_inference", return_value=fake_result),
         patch("sparkrun.api._resolve.resolve_runtime", return_value=_FakeRuntime()),
     ):
@@ -166,6 +171,9 @@ def test_run_solo_mode_truncates_to_one_host():
         runtime_name = "vllm"
         executor = None
 
+        def world_size(self, parallelism, recipe=None, cluster=None):
+            return parallelism.world_size() or 1
+
     def _capture(**kwargs):
         captured_hosts.extend(kwargs["host_list"])
         return type(
@@ -195,6 +203,7 @@ def test_run_solo_mode_truncates_to_one_host():
         )()
 
     with (
+        patch("sparkrun.api.status", return_value=ClusterStatus()),
         patch("sparkrun.core.launcher.launch_inference", side_effect=_capture),
         patch("sparkrun.api._resolve.resolve_runtime", return_value=_FakeRuntime()),
     ):
@@ -648,7 +657,11 @@ def _run_with_scheduler_chain(*, options_scheduler, recipe_scheduler, cluster_sc
         },
     )()
 
+    from sparkrun.schedulers.greedy import GreedyScheduler
+
     with (
+        patch("sparkrun.api.schedule", side_effect=lambda request, **kwargs: GreedyScheduler().schedule(request)),
+        patch("sparkrun.api.status", return_value=ClusterStatus()),
         patch("sparkrun.core.launcher.launch_inference", return_value=fake_result),
         patch("sparkrun.api._resolve.resolve_runtime", return_value=_FakeRuntime()),
         patch("sparkrun.api._resolve.resolve_cluster", return_value=cluster_def),
@@ -899,6 +912,7 @@ def _capture_launch_cluster_id(opts):
         )()
 
     with (
+        patch("sparkrun.api.status", return_value=ClusterStatus()),
         patch("sparkrun.core.launcher.launch_inference", side_effect=_capture),
         patch("sparkrun.api._resolve.resolve_runtime", return_value=_FakeRuntime()),
     ):

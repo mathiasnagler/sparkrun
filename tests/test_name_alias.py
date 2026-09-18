@@ -31,6 +31,7 @@ def test_run_with_name_override(monkeypatch):
     # short-circuit doesn't crash on MagicMock attribute access.
     mock_recipe.max_nodes = None
     mock_recipe.layout = None
+    mock_recipe.scheduler = None
     mock_recipe.pre_exec = None
     mock_recipe.post_exec = None
     mock_recipe.post_commands = None
@@ -50,12 +51,14 @@ def test_run_with_name_override(monkeypatch):
     mock_runtime = MagicMock()
     mock_runtime.native_apis.return_value = []
     mock_runtime.runtime_name = "vllm"
+    mock_runtime.world_size.return_value = 1
     mock_runtime.resolve_container.return_value = "img:latest"
     mock_runtime.validate_recipe.return_value = []
     monkeypatch.setattr("sparkrun.core.bootstrap.get_runtime", lambda *args, **kwargs: mock_runtime)
-    # Placement is no longer stubbed: the CLI computes one ``api.plan`` and
-    # hands it to ``api.run``.  A ``mode="solo"`` single-host recipe
-    # short-circuits the scheduler, so the real plan runs without SSH.
+    # Solo planning uses the scheduler; provide idle status for the fake host.
+    from sparkrun.core.cluster_status import empty_status
+
+    monkeypatch.setattr("sparkrun.api.status", lambda hosts, **kwargs: empty_status(hosts))
     monkeypatch.setattr("sparkrun.cli._run._display_vram_estimate", lambda *args, **kwargs: None)
 
     result = runner.invoke(main, ["run", "test-recipe", "--container-name", "custom-cluster-id", "--solo", "--no-ready-wait"])

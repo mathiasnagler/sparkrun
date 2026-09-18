@@ -855,6 +855,9 @@ class Executor(Plugin):
         recipe=None,
         runtime=None,
         rank: int | None = None,
+        *,
+        placement=None,
+        host: str | None = None,
     ) -> dict[str, str]:
         """Build the canonical sparkrun label dict from a cluster + recipe + runtime.
 
@@ -880,7 +883,7 @@ class Executor(Plugin):
         model = getattr(recipe, "model", None) if recipe is not None else None
         served_model_name = getattr(recipe, "effective_served_model_name", None) if recipe is not None else None
         runtime_name = getattr(runtime, "runtime_name", None) if runtime is not None else None
-        return cls.workload_labels(
+        labels = cls.workload_labels(
             cluster_id=cluster_id,
             recipe_name=recipe_name,
             runtime_name=runtime_name,
@@ -888,6 +891,13 @@ class Executor(Plugin):
             model=model,
             served_model_name=served_model_name,
         )
+        if host is not None:
+            from sparkrun.core.allocations import ALLOCATION_LABEL, allocations_for_host, encode_allocations
+
+            allocations = allocations_for_host(placement, host)
+            if allocations:
+                labels[ALLOCATION_LABEL] = encode_allocations(allocations)
+        return labels
 
     @classmethod
     def workload_labels(

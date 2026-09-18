@@ -729,7 +729,7 @@ def run(
     except api.InsufficientCapacity as e:
         click.echo()
         click.echo("Error: %s" % e, err=True)
-        _render_capacity_diagnostics(getattr(e, "status", None), list(getattr(e, "host_list", ()) or host_list))
+        _render_capacity_diagnostics(getattr(e, "status", None), list(getattr(e, "host_list", ()) or host_list), e.rejections)
         sys.exit(1)
     except api.SparkrunError as e:
         click.echo()

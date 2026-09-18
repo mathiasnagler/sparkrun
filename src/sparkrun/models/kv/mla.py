@@ -59,6 +59,13 @@ _MLA_MODEL_TYPE_PREFIXES = ("deepseek_v", "deepseek2", "kimiko")
 #: instantiating the strategy.
 MLA_ARCH_FIELDS: tuple[ArchField, ...] = (
     ArchField(
+        "layer_types",
+        hf_keys=("layer_types",),
+        kind=list,
+        item_kind=str,
+        doc="Per-layer attention types; mixed linear/MLA cache sizing is unsupported.",
+    ),
+    ArchField(
         "kv_lora_rank",
         hf_keys=("kv_lora_rank",),
         doc="Compressed-latent width, excluding the RoPE tail. Switches KV sizing to the MLA path.",
@@ -265,6 +272,8 @@ class MlaKVStrategy(KVCacheStrategy):
         # makes the estimate a floor rather than a total.
         if "index_head_dim" in cfg:
             found["index_head_dim"] = cfg["index_head_dim"]
+        if "layer_types" in cfg:
+            found["layer_types"] = cfg["layer_types"]
         return found
 
     def detect(self, arch: ArchInfo) -> KVDetection | None:
@@ -319,6 +328,13 @@ class MlaKVStrategy(KVCacheStrategy):
         return KVDetection(source=source, warnings=warnings)
 
     def size(self, arch: ArchInfo, *, max_model_len: int | None) -> KVSizing:
+        if "linear_attention" in (arch.get("layer_types") or ()):
+            return KVSizing(
+                total_bytes=None,
+                replicated_across_tp=True,
+                is_floor=True,
+                unsizable_reason="Hybrid linear/MLA cache sizing is unavailable; runtime must verify context capacity",
+            )
         kv_dtype = arch.kv_dtype or ""
         raw_ratios = arch.get("compress_ratios")
         index_head_dim = arch.get("index_head_dim")

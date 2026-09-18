@@ -94,6 +94,14 @@ def test_same_registry_can_be_intentionally_trusted_after_loading(context):
 
 
 def test_public_run_rejects_import_before_preparation_and_launch(context, monkeypatch):
+    from sparkrun.core.hardware import default_dgx_spark_hardware
+    from sparkrun.core.cluster_status import empty_status
+
+    monkeypatch.setattr(
+        "sparkrun.core.limits.resolved_hardware_for_scheduling",
+        lambda cluster, hosts: {host: default_dgx_spark_hardware() for host in hosts},
+    )
+    monkeypatch.setattr("sparkrun.api.status", lambda hosts, **kwargs: empty_status(hosts))
     context.registry_manager._save_registries([], pending_bootstrap_urls=[])
     details = api.import_recipe(yaml.safe_dump(recipe_data(pre_exec=["echo needs-trust"])), sctx=context)
     forbidden = Mock(side_effect=AssertionError("untrusted recipe reached preparation/launch"))

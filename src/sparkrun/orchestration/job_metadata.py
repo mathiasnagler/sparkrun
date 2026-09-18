@@ -525,6 +525,7 @@ def save_job_metadata(
     ssh_user: str | None = None,
     executor: "Executor | None" = None,
     native_resource: dict | None = None,
+    placement=None,
     sctx: "SparkrunContext | None" = None,
 ) -> None:
     """Persist job metadata so ``cluster status`` can display recipe info.
@@ -631,6 +632,11 @@ def save_job_metadata(
         "started_at": time.time(),
         "placement_token": placement_token_meta,
     }
+    if placement is not None:
+        from sparkrun.core.allocations import allocations_for_host
+        from dataclasses import asdict
+
+        meta["gpu_allocations"] = {host: [asdict(a) for a in allocations_for_host(placement, host)] for host in hosts}
     if recipe_ref:
         meta["recipe_ref"] = recipe_ref
     # Omitted rather than written empty: the read side must be able to tell

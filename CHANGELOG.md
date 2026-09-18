@@ -12,6 +12,16 @@ first tagged release containing them, regardless of their original commit date.
 
 ### 0.4.0 application and API changes
 
+- Honor explicit vLLM `kv_cache_memory_bytes` as a per-GPU allocation, separate
+  from context demand. Hybrid linear/MLA caches report unknown context capacity
+  instead of applying MLA sizing to every layer (#297).
+- Raise the default DGX Spark memory cap to 90%. Occupancy schedulers reserve
+  exclusive GPUs for ordinary runs and utilization claims of at least 80%,
+  leaving estimated model fit to runtime readiness. Shared allocations retain
+  hard compute and memory admission limits, including solo and explicit layouts.
+- Persist GPU reservations on Docker and native workers, recover them across
+  status merging and partial jobs, and bind launches to their assigned devices.
+  Fit summaries share the per-host budgets and report why placement was rejected.
 - Identified GB10 hosts use the platform's 121 GB planning capacity when recorded
   probes lack memory measurements. Scheduling and fit share this fallback and
   utilization caps; explicit inventory capacity takes precedence.

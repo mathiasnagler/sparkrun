@@ -353,7 +353,7 @@ def resolve_effective_hosts_for_recipe(
         # ``resolve_effective_hosts`` already shaped the message (host-count
         # vs occupancy) and attached the status snapshot for diagnostics.
         click.echo("Error: %s" % e, err=True)
-        _render_capacity_diagnostics(getattr(e, "status", None), list(getattr(e, "host_list", ()) or host_list))
+        _render_capacity_diagnostics(getattr(e, "status", None), list(getattr(e, "host_list", ()) or host_list), e.rejections)
         sys.exit(1)
     except api.LayoutRequired as e:
         click.echo("Error: %s" % e, err=True)
@@ -368,7 +368,7 @@ def resolve_effective_hosts_for_recipe(
     return host_list, is_solo
 
 
-def _render_capacity_diagnostics(cluster_status, host_list: list[str]) -> None:
+def _render_capacity_diagnostics(cluster_status, host_list: list[str], rejections=()) -> None:
     """Echo a compact rundown of what's currently running, alongside a capacity error.
 
     Uses the already-fetched :class:`ClusterStatus` snapshot — no new
@@ -376,6 +376,12 @@ def _render_capacity_diagnostics(cluster_status, host_list: list[str]) -> None:
     failed earlier) we point the user at the full ``cluster status``
     command instead.
     """
+    if rejections:
+        click.echo("", err=True)
+        for reason in rejections:
+            device = " / GPU %d" % reason.gpu_index if reason.gpu_index is not None else ""
+            click.echo("  %s%s: %s [%s]" % (reason.host, device, reason.detail, reason.reason), err=True)
+        return
     if cluster_status is None or not getattr(cluster_status, "hosts", ()):
         click.echo("", err=True)
         click.echo(render_identity_text("Run `{app_command} cluster status` to see what's running on the cluster."), err=True)
@@ -385,7 +391,8 @@ def _render_capacity_diagnostics(cluster_status, host_list: list[str]) -> None:
     if not has_workloads:
         click.echo("", err=True)
         click.echo(
-            render_identity_text("No {app_command} workloads detected on these hosts (capacity may be reserved off-cluster)."), err=True
+            render_identity_text("No {app_command} workloads detected; see the placement failure above for the capacity constraint."),
+            err=True,
         )
         click.echo(render_identity_text("Run `{app_command} cluster status` for full details."), err=True)
         return

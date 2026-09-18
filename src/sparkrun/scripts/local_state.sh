@@ -60,6 +60,7 @@ _sr_local_read() {
     case "$2" in
         pid) pattern='[1-9][0-9]{0,9}' ;;
         owner) pattern='[a-z][a-z0-9-]{0,47}' ;;
+        allocation) pattern='[A-Za-z0-9+/]+={0,2}' ;;
     esac
     # Check bytes before command substitution (which strips NULs). A damaged
     # record must not become a valid PID or owner after shell text conversion.

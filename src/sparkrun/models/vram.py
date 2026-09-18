@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from sparkrun.core.hardware import DGX_SPARK_MEMORY_GB
+from sparkrun.core.hardware import DGX_SPARK_MEMORY_GB, DGX_SPARK_SCHEDULING_FRACTION
 from sparkrun.models.dtypes import bytes_per_element, kv_bytes_per_element, normalize_dtype
 from sparkrun.models.hub import hub_metadata_call
 from sparkrun.models.kv import ArchInfo, KVSizing, arch_marker_names, extract_arch_fields, resolve_kv_strategy
@@ -117,16 +117,37 @@ class VRAMEstimate:
     max_context_tokens: int | None = None
     context_multiplier: float | None = None
 
+    kv_cache_memory_bytes: int | None = None
+    """Explicit runtime KV allocation per GPU; independent of TP/PP and sequence count."""
+    kv_cache_per_gpu_gb: float | None = None
+    """KV allocation per GPU: explicit budget when supplied, otherwise estimated demand."""
+
     @property
     def fits_dgx_spark(self) -> bool:
-        """Whether the estimated per-GPU VRAM fits within DGX Spark memory.
+        """Whether estimated per-GPU VRAM fits the active DGX Spark budget.
+
+        Uses the 90% scheduling cap and, for automatic KV sizing, the smaller
+        runtime memory budget. This estimate does not decide GPU ownership.
 
         Legacy single-platform helper.  For heterogeneous-cluster fit checks
         use :func:`sparkrun.models.fit.check_fit`, which inspects each
         host's actual accelerator memory from
         :class:`~sparkrun.core.hardware.HostHardware`.
         """
-        return self.total_per_gpu_gb <= DGX_SPARK_VRAM_GB
+        return self.total_per_gpu_gb <= self.fit_budget_gb(DGX_SPARK_VRAM_GB, DGX_SPARK_SCHEDULING_FRACTION)
+
+    def fit_budget_gb(self, nominal_gb: float, scheduling_fraction: float) -> float:
+        """Memory-fit reporting uses the active runtime budget and scheduling cap."""
+        fraction = scheduling_fraction
+        if self.kv_cache_memory_bytes is None and self.gpu_memory_utilization is not None:
+            fraction = min(fraction, self.gpu_memory_utilization)
+        return nominal_gb * fraction
+
+    @property
+    def memory_estimate_complete(self) -> bool:
+        return self.model_weights_gb > 0 and (
+            self.kv_cache_memory_bytes is not None or (self.kv_cache_total_gb is not None and not self.kv_estimate_is_floor)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the estimate to a JSON-serializable dictionary."""
@@ -134,6 +155,8 @@ class VRAMEstimate:
 
         result = asdict(self)
         result["fits_dgx_spark"] = self.fits_dgx_spark
+        result["memory_estimate_complete"] = self.memory_estimate_complete
+        result["dgx_spark_fit_budget_gb"] = self.fit_budget_gb(DGX_SPARK_VRAM_GB, DGX_SPARK_SCHEDULING_FRACTION)
         return result
 
 
@@ -628,6 +651,7 @@ def estimate_vram(
     pipeline_parallel: int = 1,
     model_vram: float | None = None,
     kv_vram_per_token: float | None = None,
+    kv_cache_memory_bytes: int | None = None,
     gpu_memory_utilization: float | None = None,
     total_gpu_memory_gb: float | None = None,
     model_type: str | None = None,
@@ -652,6 +676,8 @@ def estimate_vram(
         kv_vram_per_token: Direct override for KV cache in GB per token (scaled by max_model_len,
             then divided by TP*PP — or by PP alone when the architecture replicates its cache
             across TP ranks, as MLA does).
+        kv_cache_memory_bytes: Fixed per-GPU KV allocation, superseding utilization
+            for KV budgeting. Estimated context demand remains separate.
         gpu_memory_utilization: Fraction of GPU memory the runtime is allowed to use (e.g. 0.9).
         total_gpu_memory_gb: Per-GPU memory of the *target* accelerator (e.g. 48 for an
             RTX A6000). Defaults to the DGX Spark figure when unset, preserving the
@@ -667,6 +693,8 @@ def estimate_vram(
     Returns:
         VRAMEstimate with per-GPU totals and any warnings.
     """
+    if kv_cache_memory_bytes is not None and (type(kv_cache_memory_bytes) is not int or kv_cache_memory_bytes <= 0):
+        raise ValueError("kv_cache_memory_bytes must be a positive integer")
     warnings: list[str] = []
     # Apply the bfloat16 fallback only at computation sites, not on the value
     # returned in VRAMEstimate.kv_dtype.  Keeping the original (possibly None)
@@ -745,6 +773,8 @@ def estimate_vram(
     kv_shard_factor = pp if sizing.replicated_across_tp else shard_factor
     per_gpu_kv_gb = (kv_cache_total_gb / kv_shard_factor) if kv_cache_total_gb else 0.0
 
+    if kv_cache_memory_bytes is not None:
+        per_gpu_kv_gb = kv_cache_memory_bytes / (1024**3)
     total_per_gpu_gb = per_gpu_weights_gb + per_gpu_kv_gb
 
     # --- GPU memory budget analysis ---
@@ -759,7 +789,12 @@ def estimate_vram(
     # DGX Spark default. Keeps the budget honest on non-DGX clusters.
     _total_gpu_gb = total_gpu_memory_gb if (total_gpu_memory_gb and total_gpu_memory_gb > 0) else DGX_SPARK_VRAM_GB
 
-    if gpu_memory_utilization is not None and gpu_memory_utilization > 0:
+    if kv_cache_memory_bytes is not None:
+        available_kv_gb = per_gpu_kv_gb
+        max_context_tokens = strategy.tokens_for_budget(arch_info, sizing, kv_cache_memory_bytes * kv_shard_factor)
+        if max_context_tokens is not None and max_model_len and max_model_len > 0:
+            context_multiplier = max_context_tokens / max_model_len
+    elif gpu_memory_utilization is not None and gpu_memory_utilization > 0:
         usable_gpu_memory_gb = _total_gpu_gb * gpu_memory_utilization
         available_kv_gb = usable_gpu_memory_gb - per_gpu_weights_gb
 
@@ -784,6 +819,8 @@ def estimate_vram(
         model_weights_gb=model_weights_gb,
         kv_cache_per_token_bytes=kv_cache_per_token_bytes,
         kv_cache_total_gb=kv_cache_total_gb,
+        kv_cache_memory_bytes=kv_cache_memory_bytes,
+        kv_cache_per_gpu_gb=per_gpu_kv_gb if kv_cache_memory_bytes is not None or kv_cache_total_gb is not None else None,
         total_per_gpu_gb=total_per_gpu_gb,
         max_model_len=max_model_len,
         tensor_parallel=tp,

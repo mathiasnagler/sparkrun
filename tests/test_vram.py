@@ -941,12 +941,13 @@ class TestTargetGpuMemory:
 class TestResolveTargetAccelerator:
     def _cluster(self, model, mem):
         from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+        from sparkrun.core.cluster_manager import ClusterDefinition
 
-        class C:
-            hosts = ["h1"]
-            hosts_hardware = {"h1": HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model=model, memory_gb=mem)])}
-
-        return C()
+        return ClusterDefinition(
+            name="c",
+            hosts=["h1"],
+            hosts_hardware={"h1": HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model=model, memory_gb=mem)])},
+        )
 
     def test_resolves_from_cluster_hardware(self):
         from sparkrun.utils.cli_formatters import _resolve_target_accelerator
@@ -954,14 +955,12 @@ class TestResolveTargetAccelerator:
         mem, model = _resolve_target_accelerator(self._cluster("rtx-a6000", 48.0), None)
         assert mem == 48.0 and model == "rtx-a6000"
 
-    def test_none_when_no_hardware(self):
+    def test_platform_capacity_without_explicit_inventory(self):
         from sparkrun.utils.cli_formatters import _resolve_target_accelerator
+        from sparkrun.core.cluster_manager import ClusterDefinition
 
-        class C:
-            hosts = ["h1"]
-            hosts_hardware = {}
-
-        assert _resolve_target_accelerator(C(), None) == (None, None)
+        cluster = ClusterDefinition(name="c", hosts=["h1"])
+        assert _resolve_target_accelerator(cluster, None) == (121, "gb10")
         assert _resolve_target_accelerator(None, None) == (None, None)
 
 

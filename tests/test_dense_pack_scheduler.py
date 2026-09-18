@@ -385,8 +385,8 @@ def test_explicit_layout_honored_verbatim():
     assert "layout" in result.diagnostics[0]
 
 
-def test_explicit_layout_overrides_status_and_resources():
-    """When layout is set, status + resources are ignored — layout wins."""
+def test_explicit_layout_still_checks_occupancy():
+    """Explicit indices cannot bypass the GPU ownership checks."""
     layout = RecipeLayout(
         placements=[
             Placement(host="h1", ranks=(0,)),
@@ -408,9 +408,9 @@ def test_explicit_layout_overrides_status_and_resources():
         status=status,
         resources=ResourceRequest(util_fraction=0.5),
     )
-    result = sched.schedule(req)
-    assert result.assignment.host_for_rank(0) == "h1"
-    assert result.assignment.host_for_rank(1) == "h2"
+    with pytest.raises(InfeasibleScheduleError) as exc:
+        sched.schedule(req)
+    assert exc.value.rejections[0].host == "h1"
 
 
 # --------------------------------------------------------------------------

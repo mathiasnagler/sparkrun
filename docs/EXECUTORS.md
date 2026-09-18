@@ -680,3 +680,18 @@ A failed monitor poll also retains last-known workloads with an explicit error
 and zero confirmed free capacity. A successful subsequent poll clears that error.
 When reusing a plan, conflicting SSH `User` options are rejected before ensure
 or handler dispatch, as well as before a direct launcher submission.
+
+
+### Durable GPU assignments
+
+Accepted GPU allocations are stored in the `sparkrun.gpu_allocations` Docker
+label or a native `.pid.allocations` sidecar. The versioned record includes global
+rank, physical local GPU index, utilization reservation, and shared memory
+reservation. Job metadata also includes per-host allocation records for
+inspection. Worker status recovery does not require the controller's metadata.
+
+Launch commands expose the assigned devices to the workload. Status preserves
+the assignments through Docker/local merging, startup, idle serving, and partial
+job survival. Native teardown removes the sidecar with the PID record. Absent or
+invalid records never grant permission to share; legacy workloads remain
+conservatively occupied until their actual device assignments are known.

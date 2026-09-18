@@ -35,6 +35,7 @@ from typing import ClassVar, Mapping
 
 from scitrera_app_framework import Plugin, Variables
 
+from sparkrun.core.allocations import EXCLUSIVE_GPU_THRESHOLD, validate_fraction, validate_memory
 from sparkrun.core.cluster_status import ClusterStatus
 from sparkrun.core.hardware import HostHardware
 from sparkrun.core.layout import RecipeLayout
@@ -173,8 +174,24 @@ class SchedulingError(Exception):
     """
 
 
+@dataclass(frozen=True)
+class CapacityRejection:
+    """One candidate GPU's reason for refusing a rank."""
+
+    host: str
+    gpu_index: int | None
+    reason: str
+    detail: str
+    required_memory_gb: float | None = None
+    available_memory_gb: float | None = None
+
+
 class InfeasibleScheduleError(SchedulingError):
     """The scheduler cannot satisfy the request with the available capacity."""
+
+    def __init__(self, message: str, *, rejections: tuple[CapacityRejection, ...] = ()):
+        super().__init__(message)
+        self.rejections = rejections
 
 
 class LayoutConflictError(SchedulingError):
@@ -192,25 +209,32 @@ class ResourceRequest:
 
     Default values request a whole accelerator — today's behavior.  A
     fractional-capable scheduler (e.g. ``SparsePackScheduler`` /
-    ``DensePackScheduler``) honors ``util_fraction < 1.0`` and packs
+    ``DensePackScheduler``) honors ``util_fraction < 0.8`` and packs
     multiple ranks onto one accelerator if their combined claims fit
     within ``memory_gb`` and ``util_fraction`` budgets.
 
     The default :class:`~sparkrun.schedulers.greedy.GreedyScheduler`
-    rejects requests with ``util_fraction < 1.0`` rather than silently
+    rejects requests with ``util_fraction < 0.8`` rather than silently
     treating them as whole-GPU — schedulers are expected to fail fast
     when asked for behavior they can't deliver.
     """
 
     memory_gb: float | None = None
-    """VRAM budget for this rank.  ``None`` means "as much as available"."""
+    """Shared rank's GiB reservation; ``None`` derives utilization × capacity.
+
+    For exclusive allocations this is a fit estimate, not an admission limit.
+    """
 
     util_fraction: float = 1.0
     """Fraction of one accelerator this rank uses.  ``1.0`` = exclusive ownership."""
 
+    def __post_init__(self):
+        validate_fraction(self.util_fraction)
+        validate_memory(self.memory_gb)
+
     def is_fractional(self) -> bool:
-        """``True`` if this request asks for a fraction of an accelerator."""
-        return self.util_fraction < 1.0
+        """Allocations of at least 80% reserve the entire accelerator."""
+        return self.util_fraction < EXCLUSIVE_GPU_THRESHOLD
 
 
 @dataclass(frozen=True)
@@ -223,7 +247,7 @@ class RankSlot:
 
     Fractional schedulers may emit multiple :class:`RankSlot` entries
     sharing the same ``(host, local_gpu)`` coordinate with
-    ``util_fraction < 1.0``, carrying the per-rank VRAM commitment in
+    ``util_fraction < 0.8``, carrying the per-rank VRAM commitment in
     :attr:`memory_gb`.
     """
 
@@ -293,9 +317,12 @@ class SchedulingRequest:
     resources: ResourceRequest | None = None
     """Per-rank resource claim.  ``None`` means a whole accelerator per rank
     (today's default).  Fractional-capable schedulers honor
-    :attr:`ResourceRequest.util_fraction` < 1.0 to pack multiple ranks
+    :attr:`ResourceRequest.util_fraction` < 0.8 to pack multiple ranks
     onto one accelerator; the default :class:`GreedyScheduler` rejects
     fractional claims rather than silently treating them as whole-GPU."""
+
+    single_host: bool = False
+    """All ranks must fit on one candidate host (solo execution)."""
 
 
 @dataclass(frozen=True)

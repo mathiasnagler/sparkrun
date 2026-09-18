@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from sparkrun.core.status_observation import ExecutorCoverage, RunningSnapshot
+from sparkrun.core.allocations import GpuAllocation
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,9 @@ class ContainerDetail:
     callers fall back to the cluster's default executor.
     """
 
+    allocations: tuple[GpuAllocation, ...] = ()
+    """Worker-persisted reservations; empty means legacy/unknown, never shared."""
+
 
 @dataclass(frozen=True)
 class RunningWorkload:
@@ -54,9 +58,10 @@ class RunningWorkload:
 
     :attr:`memory_used_gb` and :attr:`util_fraction` are optional
     per-workload resource accounting fields populated by status
-    providers that can observe them (e.g. parsing ``nvidia-smi``).
-    Fractional-capable schedulers read these to compute available
-    capacity for occupancy-sparse / occupancy-dense placement.
+    providers with per-workload allocation information. They describe reserved
+    capacity, not current GPU activity. Worker-persisted allocations in
+    ``containers`` take precedence when present; legacy unknown claims never
+    establish permission to share.
     """
 
     cluster_id: str
@@ -139,6 +144,9 @@ class GpuOccupancy:
     used_memory_gb: float = 0.0
     used_util_fraction: float = 0.0
     workloads: tuple[RunningWorkload, ...] = field(default_factory=tuple)
+
+    exclusive: bool = False
+    """An exclusive allocation owns this GPU even when the engine is idle."""
 
 
 @dataclass(frozen=True)
@@ -301,13 +309,16 @@ class ClusterStatus:
             used = entry.used_slots + peer_added_slots
             capacity = entry.total_slots  # shared host hardware → == peer.total_slots
             merged.append(
-                HostOccupancy(
-                    host=entry.host,
-                    workloads=tuple(workloads),
-                    used_slots=used,
-                    free_slots=max(capacity - used, 0),
-                    free_memory_gb=entry.free_memory_gb,
-                    gpus=entry.gpus,
+                with_gpu_allocations(
+                    HostOccupancy(
+                        host=entry.host,
+                        workloads=tuple(workloads),
+                        used_slots=used,
+                        free_slots=max(capacity - used, 0),
+                        free_memory_gb=entry.free_memory_gb,
+                        gpus=_merge_gpu_observations(entry.gpus, peer.gpus),
+                    ),
+                    capacity,
                 )
             )
         for entry in other.hosts:
@@ -372,9 +383,9 @@ def _union_containers(
     primary: tuple[ContainerDetail, ...],
     peer: tuple[ContainerDetail, ...],
 ) -> tuple[ContainerDetail, ...]:
-    """Concatenate two container lists, deduped by ``name`` (primary wins)."""
-    seen = {c.name for c in primary}
-    extra = [c for c in peer if c.name not in seen]
+    """Deduplicate the same realization, retaining distinct executor processes."""
+    seen = {(c.name, c.executor) for c in primary}
+    extra = [c for c in peer if (c.name, c.executor) not in seen]
     if not extra:
         return primary
     return primary + tuple(extra)
@@ -420,3 +431,76 @@ def empty_status(hosts: list[str], executor: str = "") -> ClusterStatus:
         queried_at=0.0,
         executor=executor,
     )
+
+
+def with_gpu_allocations(occupancy: HostOccupancy, capacity: int) -> HostOccupancy:
+    """Combine worker reservations with existing observations without freeing unknown slots."""
+    if not any(c.allocations for w in occupancy.workloads for c in w.containers):
+        return occupancy
+    gpu_workloads: dict[int, list[RunningWorkload]] = {}
+    reservations: dict[int, list[GpuAllocation]] = {}
+    unknown = max(0, occupancy.used_slots - sum(w.ranks_on_host for w in occupancy.workloads))
+    for workload in occupancy.workloads:
+        records = {}
+        conflicting = False
+        for container in workload.containers:
+            for allocation in container.allocations:
+                key = (container.executor, allocation.rank)
+                if key in records and records[key] != allocation:
+                    conflicting = True
+                records[key] = allocation
+        # Missing/conflicting records cannot establish free capacity. Distinct
+        # executor realizations reserve separately, even for the same rank/job.
+        if (
+            not workload.containers
+            or conflicting
+            or any(not c.allocations for c in workload.containers)
+            or any(a.gpu_index >= capacity for a in records.values())
+        ):
+            unknown += max(1, workload.ranks_on_host)
+            continue
+        for a in records.values():
+            reservations.setdefault(a.gpu_index, []).append(a)
+            if workload not in gpu_workloads.setdefault(a.gpu_index, []):
+                gpu_workloads[a.gpu_index].append(workload)
+    observed = {g.gpu_index: g for g in occupancy.gpus}
+    gpus = []
+    for index in range(capacity):
+        old = observed.get(index, GpuOccupancy(index))
+        records = reservations.get(index, [])
+        exclusive = bool(unknown) or old.exclusive or any(a.exclusive for a in records)
+        reserved_util = 1.0 if exclusive else sum(a.util_fraction for a in records)
+        reserved_mem = sum(a.memory_gb or 0 for a in records)
+        workloads = tuple(dict.fromkeys(w.cluster_id for w in (*old.workloads, *gpu_workloads.get(index, []))))
+        by_id = {w.cluster_id: w for w in (*old.workloads, *gpu_workloads.get(index, []))}
+        gpus.append(
+            GpuOccupancy(
+                gpu_index=index,
+                used_memory_gb=max(old.used_memory_gb, reserved_mem),
+                used_util_fraction=max(old.used_util_fraction, reserved_util),
+                workloads=tuple(by_id[cid] for cid in workloads),
+                exclusive=exclusive,
+            )
+        )
+    used = sum(bool(g.workloads or g.exclusive or g.used_util_fraction or g.used_memory_gb) for g in gpus)
+    return replace(occupancy, gpus=tuple(gpus), used_slots=used, free_slots=max(0, capacity - used))
+
+
+def _merge_gpu_observations(primary, secondary):
+    result = {g.gpu_index: g for g in primary}
+    for gpu in secondary:
+        old = result.get(gpu.gpu_index)
+        if old is None:
+            result[gpu.gpu_index] = gpu
+            continue
+        old_ids = {w.cluster_id for w in old.workloads}
+        overlapping = any(w.cluster_id in old_ids for w in gpu.workloads)
+        combine = max if overlapping else lambda a, b: a + b
+        result[gpu.gpu_index] = replace(
+            old,
+            workloads=old.workloads + tuple(w for w in gpu.workloads if w.cluster_id not in old_ids),
+            used_memory_gb=combine(old.used_memory_gb, gpu.used_memory_gb),
+            used_util_fraction=combine(old.used_util_fraction, gpu.used_util_fraction),
+            exclusive=old.exclusive or gpu.exclusive,
+        )
+    return tuple(result[index] for index in sorted(result))

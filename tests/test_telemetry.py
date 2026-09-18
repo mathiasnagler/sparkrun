@@ -360,6 +360,9 @@ def test_api_run_calls_api_level_telemetry():
         runtime_name = "vllm"
         executor = None
 
+        def world_size(self, parallelism, recipe=None, cluster=None):
+            return 1
+
     fake_runtime = _FakeRuntime()
     fake_result = type(
         "FakeLaunchResult",
