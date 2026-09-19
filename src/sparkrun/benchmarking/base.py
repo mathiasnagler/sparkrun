@@ -86,6 +86,14 @@ class BenchmarkingPlugin(Plugin, ABC):
     categories: ClassVar[tuple[str, ...]] = ("performance",)
     primary_category: ClassVar[str] = "performance"
 
+    # What the ``model`` argument of ``build_benchmark_command`` *means* to this
+    # framework.  See :func:`resolve_request_model` — the default is the name
+    # the endpoint answers to, because that is what an OpenAI-compatible client
+    # has to send.  A framework whose ``--model`` identifies the *weights*
+    # (llama-benchy, which tokenizes locally and takes the request name
+    # separately) declares ``True``.
+    model_argument_is_model_id: ClassVar[bool] = False
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         # If the subclass declared ``categories`` but not ``primary_category``,
@@ -307,6 +315,44 @@ class BenchmarkingPlugin(Plugin, ABC):
 
     def __repr__(self) -> str:
         return "%s(framework_name=%r)" % (self.__class__.__name__, self.framework_name)
+
+
+def resolve_request_model(framework: BenchmarkingPlugin, recipe: "Recipe", config_chain: Variables | Mapping[str, Any]) -> str:
+    """The ``model`` value handed to ``build_benchmark_command``.
+
+    Two different things are called "the model" and a benchmark framework wants
+    exactly one of them.  ``recipe.model`` identifies the *weights* — an HF repo
+    id, the thing a local tokenizer is loaded from.  The served name is what the
+    endpoint answers to, which is what goes in the ``"model"`` field of every
+    request.  They differ whenever a recipe declares ``served_model_name``, and
+    sending the repo id to a server that answers only to the alias is a 404 on
+    every request.
+
+    sparkrun passed ``recipe.model`` to every framework, which is right for
+    llama-benchy (its ``--model`` is the tokenizer identity and the request name
+    is a separate ``--served-model-name``, issue #257) and wrong for anything
+    whose ``--model`` is simply the name it sends — tool-eval-bench, and by
+    default any framework written against an OpenAI-compatible endpoint
+    (issue #298).  So the **served name is the default** and the model id is the
+    declared exception: the two coincide for every recipe without an alias, and
+    where they don't, defaulting to the id fails every request rather than at
+    worst mislabelling a tokenizer.
+
+    The ``command:`` fallback inside :func:`resolve_served_model_name` matters
+    here for the same reason it does everywhere else: a recipe that hardcodes
+    ``--served-model-name`` in its template is invisible to the config chain.
+    """
+    from sparkrun.core.recipe import resolve_served_model_name
+    from sparkrun.models.download import parse_gguf_model_spec
+
+    if getattr(framework, "model_argument_is_model_id", False):
+        return recipe.model
+    name = resolve_served_model_name(recipe, config_chain.get("served_model_name"))
+    # Only the model-id fallback can carry sparkrun's GGUF ``repo:quant``
+    # suffix, which no server answers to. A *declared* alias is a free-form
+    # name and may legitimately contain a colon ("qwen3:8b"), so it is never
+    # split.
+    return parse_gguf_model_spec(name)[0] if name == recipe.model else name
 
 
 def redact_hosts(hosts) -> list[str]:

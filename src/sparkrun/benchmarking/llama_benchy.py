@@ -182,6 +182,10 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
     """
 
     framework_name = "llama-benchy"
+    # ``--model`` is the *weights* identity (llama-benchy tokenizes locally);
+    # the request name is a separate ``--served-model-name``, injected by
+    # ``prepare_benchmark_args`` below. See ``base.resolve_request_model``.
+    model_argument_is_model_id = True
     default_args: dict[str, Any] = {
         "pp": [2048],
         "depth": [0],

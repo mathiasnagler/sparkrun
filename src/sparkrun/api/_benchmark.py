@@ -14,6 +14,8 @@ from sparkrun.benchmarking._measurement import (
 
 from sparkrun.core.application_profile import remote_cache_path
 from sparkrun.benchmarking._credentials import BenchmarkCredentials, resolve_credentials
+from sparkrun.benchmarking.base import resolve_request_model
+from sparkrun.core.recipe import resolve_served_model_name
 from sparkrun.benchmarking.metadata import public_benchmark_data, benchmark_recipe_fingerprint
 from sparkrun.benchmarking.run_state import DEFAULT_BENCHMARK_TIMEOUT
 
@@ -680,6 +682,8 @@ def _execute_benchmark(
 
     config_chain = recipe.build_config_chain(overrides)
     effective_tp = _config_integer(config_chain.get("tensor_parallel") or 1, key="tensor_parallel")
+    request_model = resolve_request_model(fw, recipe, config_chain)
+    served_model_name = resolve_served_model_name(recipe, config_chain.get("served_model_name"))
 
     # Only measurement arguments enter task definitions, identity and state.
     for k, bv in fw.prepare_benchmark_args(recipe, config_chain, overrides).items():
@@ -697,6 +701,11 @@ def _execute_benchmark(
     emitter.banner("=" * 60)
     emitter.banner("Recipe:                %s" % recipe.qualified_name)
     emitter.banner("Model:                 %s" % recipe.model)
+    # The banner is what a reader checks the target against, and under an alias
+    # the model id is *not* what the requests carry — naming only the id is how
+    # a whole suite of 404s reads as a model-quality result (issue #298).
+    if served_model_name != recipe.model:
+        emitter.banner("Served as:             %s" % served_model_name)
     emitter.banner("Runtime:               %s" % runtime.runtime_name)
     if recipe.container:
         emitter.banner("Declared image:        %s" % recipe.container)
@@ -1226,7 +1235,7 @@ def _execute_benchmark(
                     tasks=tasks,
                     state=state,
                     target_url=base_url,
-                    model=recipe.model,
+                    model=request_model,
                     timeout=effective_timeout,
                     task_events=pui,
                     cache_dir=cache_dir,
@@ -1964,7 +1973,11 @@ def _resume_locked(
                 tasks=tasks,
                 state=state,
                 target_url=base_url,
-                model=recipe.model,
+                # Resolved off the *recorded* recipe and overrides, like the
+                # model id it replaces: a resumed schedule must keep asking for
+                # what the measured deployment serves, not what an edited
+                # recipe now declares.
+                model=resolve_request_model(fw, recipe, recipe.build_config_chain(saved_overrides)),
                 timeout=effective_timeout,
                 task_events=pui,
                 cache_dir=cache_dir,

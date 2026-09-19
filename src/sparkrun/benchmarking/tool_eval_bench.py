@@ -213,8 +213,18 @@ class ToolEvalBenchFramework(BenchmarkingPlugin):
 
         ``--json-file`` produces the scheduler-owned artifact. Standalone
         command construction without a result file uses JSON on stdout.
+
+        ``--model`` is the name sent in each request, so *model* arrives already
+        resolved to the served name (``base.resolve_request_model``).  An
+        explicit ``model`` in *args* — ``-b model=<name>`` — overrides it: it is
+        the escape hatch for an endpoint whose served name sparkrun cannot see,
+        and it used to be dropped on the floor, leaving the flag looking
+        accepted while every scenario asked for something else (issue #298).
         """
         _validate_run_args(args)
+        requested_model = args.get("model")
+        if requested_model is not None:
+            model = str(requested_model)
         ref = args.get("framework_pinned_version") or args.get("ref") or _DEFAULT_REF
         wants_perf = any(args.get(k) for k in _PERF_TRIGGER_ARGS)
         if wants_perf:

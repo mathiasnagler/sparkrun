@@ -1221,6 +1221,25 @@ that hardcodes the flag and orphan already-running workloads from `stop` /
 `logs` / `--ensure`, which recompute it. Precedent for parsing the template at
 all: `kv_cache_dtype` (issue #248).
 
+**A benchmark framework wants one of the two, and which one is a property of
+the framework** (`benchmarking/base.py:resolve_request_model`). `recipe.model`
+identifies the *weights*; the served name is what the endpoint answers to. The
+common path passed `recipe.model` to every framework, which is right for
+llama-benchy — its `--model` is the tokenizer identity and the request name
+rides a separate `--served-model-name`, which is what #257 fixed — and wrong
+for anything whose `--model` is simply the name it sends. tool-eval-bench is
+that shape, so an aliased recipe 404'd all 15 scenarios while the suite exited
+0 (issue #298). So the **served name is the default** and the model id is the
+declared exception (`BenchmarkingPlugin.model_argument_is_model_id`, the
+`Executor.status_scope` / `BuilderPlugin.transforms_image` precedent): the two
+coincide for every recipe without an alias, so defaulting the other way buys
+nothing and costs every request on the recipes where they differ. Three details:
+the `:quant` suffix is stripped from the **fallback only** (a declared alias is
+free-form and `qwen3:8b` is a real name); resume resolves off the *recorded*
+recipe, like the model id it replaced; and `-b model=` — previously dropped on
+the floor by tool-eval-bench's arg loop, so the flag looked accepted — is now
+the explicit override for an endpoint whose name sparkrun cannot see.
+
 It stays narrow otherwise — serve arguments are **not** hashed — because
 `stop` / `logs` / `--ensure` recompute it from the recipe without the flags the
 user typed at launch. Three reasons not to widen it to the fingerprint:
