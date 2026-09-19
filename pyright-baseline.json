@@ -8,13 +8,6 @@
       "rule": "reportMissingImports",
       "message": "Import \"sparkrun.bin\" could not be resolved",
       "count": 1
-    },
-    {
-      "file": "src/sparkrun/plugins/sparkroute/workload_plugins.py",
-      "severity": "warning",
-      "rule": "reportMissingImports",
-      "message": "Import \"sparkrun.plugins.coldsnap.api\" could not be resolved",
-      "count": 2
     }
   ]
 }

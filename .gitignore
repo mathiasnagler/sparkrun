@@ -12,7 +12,7 @@ __pycache__/
 # `source` it, and tests/test_rdma_image.py skips (rather than fails) when it
 # is missing, so leaving it untracked would silently disarm that guard.
 !docker/rdma-test/image.env
-uv.lock
+# uv.lock is tracked because the type-check workflow uses uv sync --locked.
 reference_materials/
 .coverage
 /src/sparkrun.egg-info/

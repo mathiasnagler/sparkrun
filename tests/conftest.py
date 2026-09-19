@@ -143,13 +143,19 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
 
     real_run = subprocess.run
 
-    def offline_git_run(args, *a, **kw):
-        if isinstance(args, (list, tuple)) and args and Path(args[0]).name == "git":
-            if {"clone", "fetch", "pull", "ls-remote"}.intersection(args[1:]):
+    def offline_run(args, *a, **kw):
+        if isinstance(args, (list, tuple)) and args:
+            command = Path(args[0]).name
+            if command == "git" and {"clone", "fetch", "pull", "ls-remote"}.intersection(args[1:]):
                 pytest.fail("Unmocked Git network operation in test: %r" % (args,))
+            # Even current-context depends on the developer's kubeconfig and
+            # kubectl installation. Mock at the client or process boundary;
+            # a unit test must never consult or operate on a real cluster.
+            if command in {"kubectl", "kubectl.exe"}:
+                pytest.fail("Unmocked kubectl operation in test: %r" % (args,))
         return real_run(args, *a, **kw)
 
-    monkeypatch.setattr(subprocess, "run", offline_git_run)
+    monkeypatch.setattr(subprocess, "run", offline_run)
 
     import sparkrun.core.bootstrap
 

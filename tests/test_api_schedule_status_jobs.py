@@ -207,12 +207,20 @@ def test_status_empty_host_list_returns_empty():
 
 def test_status_k8s_executor_reports_confirmed_empty_cluster(monkeypatch):
     """An empty Kubernetes response, not an unimplemented query, means idle."""
-    monkeypatch.setattr("sparkrun.plugins.k8s.orchestration.client.KubectlClient.run_json", lambda *a, **kw: {"items": []})
+    from sparkrun.plugins.k8s.orchestration.client import KubectlClient
+
+    def current_context(self, args, **kwargs):
+        assert args == ["config", "current-context"]
+        return RemoteResult(host="k8s", returncode=0, stdout="test-context\n", stderr="")
+
+    monkeypatch.setattr(KubectlClient, "run", current_context)
+    monkeypatch.setattr(KubectlClient, "run_json", lambda *a, **kw: {"items": []})
     snapshot = api.status(["host-a", "host-b"], executor="k8s")
     assert not snapshot.errors
     assert snapshot.executor == "k8s"
     assert len(snapshot.hosts) == 2
     assert all(h.workloads == () for h in snapshot.hosts)
+    assert snapshot.coverage[0].target.overrides["k8s_context"] == "test-context"
 
 
 def test_status_merges_local_workloads_into_docker(monkeypatch):
@@ -296,14 +304,22 @@ def test_status_local_unavailable_returns_primary_unchanged(monkeypatch):
     assert snapshot.executor == "docker"
 
 
-def test_status_k8s_cluster_scopes_to_k8s_only():
-    """A k8s-pinned cluster resolves to the k8s substrate — docker/local are NOT
-    swept in (different scope).  K8sExecutor returns its empty default here."""
-    cluster = ClusterDefinition(name="c", hosts=["host-a"], executor="k8s")
-    # No SSH mock needed: k8s scope excludes the host executors, and the k8s
-    # query_status default returns empty without SSH.
+def test_status_k8s_cluster_scopes_to_k8s_only(monkeypatch):
+    """An explicit Kubernetes target queries only that scope, without SSH."""
+    from sparkrun.plugins.k8s.orchestration.client import KubectlClient
+
+    cluster = ClusterDefinition(name="c", hosts=["host-a"], executor="k8s", executor_config={"k8s_context": "test-context"})
+    monkeypatch.setattr(KubectlClient, "run_json", lambda *a, **kw: {"items": []})
+
+    def unexpected_ssh(*args, **kwargs):
+        pytest.fail("Kubernetes status must not query host executors")
+
+    monkeypatch.setattr("sparkrun.orchestration.ssh.run_remote_scripts_parallel", unexpected_ssh)
     snapshot = api.status(["host-a"], cluster=cluster)
+    assert not snapshot.errors
     assert snapshot.executor == "k8s"
+    assert len(snapshot.coverage) == 1
+    assert snapshot.coverage[0].target.overrides["k8s_context"] == "test-context"
 
 
 def test_status_host_scope_respects_enabled_executors(monkeypatch):
