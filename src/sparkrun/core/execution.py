@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence
 if TYPE_CHECKING:
     from sparkrun.api._models import RunOptions, RunPlan
     from sparkrun.core.context import SparkrunContext
+    from sparkrun.core.hardware import HostHardware
     from sparkrun.core.timing import Timeline
 
 
@@ -61,6 +62,12 @@ class PreparedExecution:
     assets: LaunchAssetPolicy = field(default_factory=LaunchAssetPolicy)
     state: Any = None
     receipts: Mapping[str, Any] = field(default_factory=dict)
+    host_hardware: Mapping[str, "HostHardware"] = field(default_factory=dict)
+    """Fresh combined probe observations for this operation, before device selection.
+
+    When supplied, covers every launch host. The host overlays facts onto an
+    isolated cluster view, retaining configured memory limits and placement.
+    """
 
 
 @dataclass(frozen=True)

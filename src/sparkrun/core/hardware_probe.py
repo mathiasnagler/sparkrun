@@ -323,6 +323,7 @@ def probe_host(
     ssh_kwargs: dict[str, Any] | None = None,
     *,
     dry_run: bool = False,
+    mgmt_interface: str | None = None,
 ) -> HostHardware:
     """Run a single combined SSH probe and return :class:`HostHardware`.
 
@@ -339,6 +340,7 @@ def probe_host(
             :func:`~sparkrun.orchestration.ssh.run_remote_script`
             (``ssh_user``, ``ssh_key``, ``ssh_options``, …).
         dry_run: Return an empty :class:`HostHardware` without SSH.
+        mgmt_interface: Cluster management-interface pin for interface discovery.
 
     Returns:
         :class:`HostHardware` with ``accelerators``, ``fingerprint``,
@@ -355,7 +357,7 @@ def probe_host(
     # "hardware probe failed".
     result = run_remote_script(
         host,
-        generate_combined_probe_script(),
+        generate_combined_probe_script(mgmt_interface),
         timeout=30,
         allow_local=True,
         **(ssh_kwargs or {}),
@@ -372,6 +374,7 @@ def probe_hosts(
     ssh_kwargs: dict[str, Any] | None = None,
     *,
     dry_run: bool = False,
+    mgmt_interface: str | None = None,
 ) -> dict[str, HostHardware]:
     """Run :func:`probe_host` on multiple hosts in parallel.
 
@@ -382,6 +385,7 @@ def probe_hosts(
         hosts: Hostnames or IPs to probe.
         ssh_kwargs: SSH connection parameters (forwarded to parallel helper).
         dry_run: Return empty :class:`HostHardware` per host without SSH.
+        mgmt_interface: Cluster management-interface pin for interface discovery.
 
     Returns:
         Mapping of host → :class:`HostHardware`.
@@ -399,7 +403,7 @@ def probe_hosts(
     logger.info("Probing hardware on %d host(s): %s", len(hosts), ", ".join(hosts))
     results = run_remote_scripts_parallel(
         hosts,
-        generate_combined_probe_script(),
+        generate_combined_probe_script(mgmt_interface),
         timeout=30,
         allow_local=True,
         **kw,

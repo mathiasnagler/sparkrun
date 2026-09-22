@@ -131,6 +131,17 @@ def _localhost_test_hardware(monkeypatch):
 
     monkeypatch.setattr(ClusterDefinition, "hardware_for", hardware)
 
+    # Planning now probes before placement. Keep the live result consistent
+    # with this synthetic inventory instead of detecting the developer's GPU.
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        "sparkrun.core.hardware_probe.probe_hosts",
+        lambda hosts, **kw: {
+            host: replace(hardware(ClusterDefinition(name="test", hosts=hosts), host), source="detected") for host in hosts
+        },
+    )
+
 
 @pytest.fixture(autouse=True)
 def _stub_cluster_status_in_cli_tests(monkeypatch):

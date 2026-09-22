@@ -171,10 +171,10 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
           the host matched via :meth:`matches` but carries a different model
           name (unlikely in practice, guards against fingerprint drift).
         * RoCEv2 RDMA capability (``"rdma:roce-v2"``) is present on the GB10
-          accelerator — warns when missing because multi-node collectives over
-          the ConnectX-7 fabric require RoCEv2.
+          accelerator — warns when missing from inventory or detection. An
+          assumed profile has no fabric evidence and cannot establish absence.
 
-        Returns a list of human-readable warning strings; empty means healthy.
+        Returns warning strings for recorded hardware; empty does not prove fabric connectivity.
         """
         warnings: list[str] = []
 
@@ -189,9 +189,10 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
             )
             return warnings
 
-        # Check for RoCEv2 on at least one GB10 entry
+        # Assumed hardware intentionally omits fabric capabilities. The caller
+        # reports that hardware is unverified; absence here is not detection.
         has_roce = any("rdma:roce-v2" in a.capabilities for a in gb10_accels)
-        if not has_roce:
+        if not has_roce and host_hardware.source != "assumed":
             warnings.append(
                 "DGX Spark GB10 accelerator is missing 'rdma:roce-v2' capability — "
                 "multi-node collective communication over ConnectX-7 fabric may fail"

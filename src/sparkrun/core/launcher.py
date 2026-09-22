@@ -15,8 +15,9 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+from sparkrun.core.progress import PROGRESS
 from sparkrun.core.timing import ROOT as TIMELINE_ROOT, STATUS_ERROR, Timeline, timed
 from sparkrun.core.readiness import DEFAULT_PORT_READY_TIMEOUT_S, DEFAULT_HEALTH_READY_TIMEOUT_S, resolve_readiness_settings
 from sparkrun.core.readiness import (
@@ -28,6 +29,7 @@ from sparkrun.core.readiness import (
 )
 
 if TYPE_CHECKING:
+    from sparkrun.core.hardware import HostHardware
     from sparkrun.core.backend_select import BackendBundle
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.config import SparkrunConfig
@@ -870,6 +872,7 @@ def launch_inference(
     execution_context: "ExecutionContext | None" = None,
     execution_strategy: "RecipeExecutionStrategy | None" = None,
     prepared_execution: "PreparedExecution | None" = None,
+    hardware_observations: "Mapping[str, HostHardware] | None" = None,
     sctx: SparkrunContext | None = None,
 ) -> LaunchResult:
     """Launch an inference workload.
@@ -960,6 +963,20 @@ def launch_inference(
         raise ValueError("execution_strategy and prepared_execution must be provided together")
     if execution_strategy is not None and execution_context is None:
         raise ValueError("execution_context is required with an execution strategy")
+    # api.run overlays observations before setting up replacement. Direct
+    # launcher callers need the same policy-preserving view; reapplying this
+    # pure overlay performs no probe and leaves placement/identity intact.
+    if prepared_execution is not None and prepared_execution.host_hardware:
+        from sparkrun.core.hardware_observations import apply_hardware_observations
+
+        if execution_context is None:
+            raise ValueError("hardware observations require an execution context")
+        cluster = apply_hardware_observations(
+            cluster or execution_context.plan.cluster, prepared_execution.host_hardware, host_list, placement
+        )
+        sctx = (sctx or execution_context.sctx).for_cluster(cluster)
+        config = sctx.config
+        execution_context = replace(execution_context, plan=replace(execution_context.plan, cluster=cluster), sctx=sctx)
     asset_policy = prepared_execution.assets if prepared_execution is not None else None
 
     from sparkrun.orchestration.distribution import resolve_auto_transfer_mode
@@ -1063,6 +1080,16 @@ def launch_inference(
     # ``None`` for host-list-only launches, which detect per host.
     mgmt_interface = cluster.mgmt_interface if cluster is not None else None
 
+    launch_observations = dict(hardware_observations or {})
+    if prepared_execution is not None:
+        launch_observations.update(prepared_execution.host_hardware)
+    observed_ib = None
+    if launch_observations:
+        from sparkrun.orchestration.infiniband import ib_detection_from_observations
+
+        observations = {host: hw.ib_info for host, hw in launch_observations.items() if hw.ib_info is not None}
+        if set(observations) == set(host_list):
+            observed_ib = ib_detection_from_observations(host_list, observations, topology=topology)
     transfer_result = resolve_auto_transfer_mode(
         transfer_mode or "auto",
         host_list,
@@ -1070,6 +1097,7 @@ def launch_inference(
         dry_run=dry_run,
         topology=topology,
         mgmt_interface=mgmt_interface,
+        **({"observed_ib": observed_ib} if observed_ib is not None else {}),
     )
     effective_transfer_mode = transfer_result.mode
 
@@ -1139,6 +1167,10 @@ def launch_inference(
 
     compat_errors = []
     for host, hw in launch_hardware.items():
+        if host in launch_observations and launch_observations[host].source == "detected" and cluster is not None:
+            from sparkrun.core.hardware_observations import format_hardware_evidence, hardware_evidence
+
+            logger.log(PROGRESS, "Host %s hardware: %s", host, format_hardware_evidence(hardware_evidence(cluster, host, placement)))
         if getattr(runtime, "requires_capability", ()):
             compat_errors.extend(check_runtime_host_compatibility(runtime, host, hw))
         for accel in hw.accelerators:
@@ -1466,8 +1498,6 @@ def launch_inference(
 
     target = executor.resolve_target(dry_run=dry_run)
     if target.user_scoped:
-        from dataclasses import replace
-
         job_ssh_user = resolve_destination_user(target, host_list, ssh_kwargs)
         ssh_kwargs = {**ssh_kwargs, "ssh_user": job_ssh_user}
         config = copy.copy(config)

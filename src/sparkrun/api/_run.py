@@ -4,7 +4,7 @@ The launch path is split at the point where it stops deciding and starts
 acting:
 
 :func:`plan` — **decide** (no cluster state changes)
-  1. Resolve recipe / cluster / hosts / runtime; prepare the transport.
+  1. Resolve recipe / cluster / hosts / runtime; prepare transport and probe hardware.
   2. Run the scheduler once via :func:`sparkrun.api.schedule`, against live
      occupancy, applying the orthogonal constraints (solo, ``max_nodes``).
   3. Compose intent_id / placement_token / cluster_id.
@@ -62,12 +62,43 @@ def _launch_errors(source: str):
         raise SparkrunError("%s failed: %s" % (source, error)) from error
 
 
+def _observe_plan_hardware(cluster, hosts, *, sctx, dry_run):
+    """Discover host facts once, before scheduling; preserve saved policy."""
+    from sparkrun.orchestration.executor import cluster_status_scope
+
+    if dry_run or cluster_status_scope(cluster, config=sctx.config, v=sctx.variables) != "host":
+        return cluster, {}
+    from sparkrun.core.hardware import HostHardware
+    from sparkrun.core.hardware_probe import probe_hosts
+    from sparkrun.core.hardware_observations import apply_hardware_observations
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+    ssh_kwargs = build_ssh_kwargs(sctx.config)
+    if cluster.user:
+        ssh_kwargs = {**ssh_kwargs, "ssh_user": cluster.user}
+    results = probe_hosts(list(hosts), ssh_kwargs=ssh_kwargs, mgmt_interface=cluster.mgmt_interface)
+    observations = {host: results.get(host, HostHardware(notes="hardware probe returned no result")) for host in hosts}
+    detected = {}
+    for host, hardware in observations.items():
+        if hardware.source == "detected":
+            detected[host] = hardware
+        else:
+            logger.warning(
+                "Host %s hardware probe unavailable (%s); using configured inventory or platform assumptions",
+                host,
+                hardware.notes or "no detected hardware",
+            )
+    if detected:
+        cluster = apply_hardware_observations(cluster, detected, list(detected))
+    return cluster, observations
+
+
 def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPlan:
     """Decide *what* the launch described by *options* would do, without doing it.
 
     Resolves recipe / cluster / runtime, prepares the transport, runs the
-    scheduler once against live occupancy, and composes the launch's
-    identifiers.  Returns a :class:`RunPlan`; changes no cluster state.
+    hardware probe before scheduling against live occupancy, and composes the
+    launch's identifiers.  Returns a :class:`RunPlan`; changes no cluster state.
 
     Hand the result to :func:`run` (``run(options, plan=plan)``) to launch
     it.  That is the *only* correct way to render a pre-launch summary: a
@@ -112,9 +143,8 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
 
     # Transport prepare: for provider-backed clusters (e.g. Thunder) this
     # refreshes ephemeral connection details (fresh IP/port, SSH key, managed
-    # ssh alias) BEFORE any SSH runs — the occupancy status query inside
-    # ``resolve_effective_hosts`` below is the first SSH.  No-op for plain-SSH
-    # clusters, so existing clusters pay nothing.
+    # ssh alias) BEFORE the planning hardware/occupancy probes below.
+    # Transport preparation is a no-op for plain-SSH clusters.
     from sparkrun.api._resolve import scope_operation
 
     sctx, _ = scope_operation(cluster_def, sctx=sctx, dry_run=options.dry_run)
@@ -141,6 +171,14 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
         validate_readiness_policy(config=config, recipe=recipe, runtime=runtime)
     except ValueError as error:
         raise SparkrunError(str(error)) from error
+
+    # Hardware facts must reach both placement and the pre-launch summary.
+    # The raw observations travel with the plan so launch/strategies can reuse
+    # drivers and network discovery without another SSH sweep.
+    with _launch_errors("hardware discovery"):
+        cluster_def, host_hardware = _observe_plan_hardware(cluster_def, hosts, sctx=sctx, dry_run=options.dry_run)
+    sctx = sctx.for_cluster(cluster_def)
+    config = sctx.config
 
     # Scheduler selection chain: caller > recipe > cluster > greedy default.
     from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER, get_scheduler, resolve_scheduler_selector
@@ -240,6 +278,7 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
         recipe=recipe,
         runtime=runtime,
         cluster=cluster_def,
+        host_hardware=host_hardware,
         candidate_hosts=tuple(hosts),
         host_list=tuple(host_list),
         is_solo=is_solo,
@@ -397,6 +436,14 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
             raise ValueError(
                 "execution strategy prepared itself as %r, expected %r" % (prepared_execution.strategy, execution_strategy.name)
             )
+        if prepared_execution is not None and prepared_execution.host_hardware:
+            from sparkrun.core.hardware_observations import apply_hardware_observations
+
+            cluster_def = apply_hardware_observations(cluster_def, prepared_execution.host_hardware, host_list, placement)
+            plan = replace(plan, cluster=cluster_def)
+            sctx = sctx.for_cluster(cluster_def)
+            config = sctx.config
+            execution_context = replace(execution_context, plan=plan, sctx=sctx)
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as error:
@@ -526,6 +573,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         "execution_context": execution_context,
         "execution_strategy": execution_strategy,
         "prepared_execution": prepared_execution,
+        "hardware_observations": {host: plan.host_hardware[host] for host in host_list if host in plan.host_hardware},
     }
 
     # 5. Launch.
@@ -540,6 +588,10 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         "serve_port": result.serve_port,
         "effective_cache_dir": result.effective_cache_dir,
     }
+    if plan.host_hardware or (prepared_execution is not None and prepared_execution.host_hardware):
+        from sparkrun.core.hardware_observations import hardware_evidence
+
+        metadata["hardware_evidence"] = {host: hardware_evidence(cluster_def, host, placement) for host in host_list}
     if result.recipe_ref:
         metadata["recipe_ref"] = result.recipe_ref
     if result.runtime_info:

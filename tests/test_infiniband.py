@@ -717,3 +717,41 @@ def test_pin_comm_env_to_ib_does_not_mutate_input():
     )
 
     assert comm_env.get_env("h1") == before
+
+
+def test_combined_observations_produce_the_same_network_settings_as_standalone_probe(monkeypatch):
+    from sparkrun.orchestration.infiniband import detect_ib_for_hosts, ib_detection_from_observations
+    from sparkrun.orchestration.ssh import RemoteResult
+
+    observations = {
+        "h1": {
+            "IB_DETECTED": "1",
+            "DETECTED_GID_INDEX": "3",
+            "DETECTED_HCA_LIST": "mlx5_0",
+            "DETECTED_SOCKET_IFNAME": "mgmt0",
+            "DETECTED_NET_LIST": "roce0,roce1",
+            "DETECTED_IB_IPS": "192.168.1.1,192.168.2.1",
+            "DETECTED_MGMT_IP": "10.0.0.1",
+        },
+        "h2": {
+            "IB_DETECTED": "1",
+            "DETECTED_GID_INDEX": "3",
+            "DETECTED_HCA_LIST": "mlx5_1",
+            "DETECTED_SOCKET_IFNAME": "mgmt1",
+            "DETECTED_NET_LIST": "roce2",
+            "DETECTED_IB_IPS": "192.168.1.2",
+            "DETECTED_MGMT_IP": "10.0.0.2",
+        },
+    }
+    monkeypatch.setattr(
+        "sparkrun.orchestration.ssh.run_remote_scripts_parallel",
+        lambda *a, **kw: [
+            RemoteResult(host=h, returncode=0, stdout="\n".join(k + "=" + v for k, v in info.items()), stderr="")
+            for h, info in reversed(list(observations.items()))
+        ],
+    )
+    standalone = detect_ib_for_hosts(["h1", "h2"], topology="ring")
+    combined = ib_detection_from_observations(["h1", "h2"], observations, topology="ring")
+    assert standalone == combined
+    assert combined.ib_candidates["h1"] == ["192.168.1.1", "192.168.2.1"]
+    assert combined.comm_env.get_env("h2")["NCCL_SOCKET_IFNAME"].startswith("mgmt1")

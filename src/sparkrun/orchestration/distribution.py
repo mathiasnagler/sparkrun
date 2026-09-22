@@ -91,6 +91,7 @@ def resolve_auto_transfer_mode(
     dry_run: bool = False,
     topology: str | None = None,
     mgmt_interface: str | None = None,
+    observed_ib: IBDetectionResult | None = None,
 ) -> TransferModeResult:
     """Resolve ``"auto"`` transfer mode to a concrete strategy.
 
@@ -105,17 +106,28 @@ def resolve_auto_transfer_mode(
     has local InfiniBand, IB detection and connectivity validation
     are performed here.  The results are stored in the returned
     :class:`TransferModeResult` so ``distribute_resources()`` can
-    reuse them without redundant remote calls.
+    reuse them without redundant remote calls. ``observed_ib`` may supply
+    interface discovery from an earlier combined hardware probe in this
+    operation; the existing local-transfer reachability check still runs once.
     """
+
+    def resolved(mode, *, auto_delegated=False):
+        validated = None
+        if observed_ib is not None and mode == "local" and len(host_list) > 1:
+            from sparkrun.orchestration.infiniband import validate_ib_connectivity
+
+            validated = validate_ib_connectivity(observed_ib.ib_candidates, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+        return TransferModeResult(mode=mode, ib_result=observed_ib, ib_validated=validated, auto_delegated=auto_delegated)
+
     if transfer_mode != "auto":
-        return TransferModeResult(mode=transfer_mode)
+        return resolved(transfer_mode)
 
     _cross_user = _is_cross_user(ssh_kwargs)
     _in_cluster = is_control_in_cluster(host_list)
 
     if _in_cluster and not _cross_user:
         logger.info("Auto-detected transfer mode: local (control is cluster member)")
-        return TransferModeResult(mode="local")
+        return resolved("local")
 
     if _cross_user:
         logger.info(
@@ -125,19 +137,21 @@ def resolve_auto_transfer_mode(
         # auto_delegated=True: the mode was *inferred* (not user-chosen), so a
         # delegated pull failure should fall back to push (e.g. a private image
         # the head can't pull but the control machine has locally).
-        return TransferModeResult(mode="delegated", auto_delegated=True)
+        return resolved("delegated", auto_delegated=True)
 
     # External control + same user: check if local machine has IB.
     # If no local IB, control can never reach cluster IB → delegated.
     if not _has_local_ib():
         logger.info("Auto-detected transfer mode: delegated (external control, no local IB)")
-        return TransferModeResult(mode="delegated", auto_delegated=True)
+        return resolved("delegated", auto_delegated=True)
 
     # Local IB exists — run IB detection + connectivity validation to
     # resolve definitively and cache results for distribute_resources().
     from sparkrun.orchestration.infiniband import detect_ib_for_hosts, validate_ib_connectivity
 
-    ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, topology=topology, mgmt_interface=mgmt_interface)
+    ib_result = observed_ib or detect_ib_for_hosts(
+        host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, topology=topology, mgmt_interface=mgmt_interface
+    )
     ib_validated = validate_ib_connectivity(ib_result.ib_candidates, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
 
     if ib_validated:

@@ -327,9 +327,12 @@ def test_dgx_spark_validate_host_happy_path():
     assert DgxSparkPlatform().validate_host(_dgx_spark_hw(with_roce=True)) == []
 
 
-def test_dgx_spark_validate_host_missing_roce():
+@pytest.mark.parametrize("source", ["inventory", "detected"])
+def test_dgx_spark_validate_host_missing_roce(source):
     """GB10 without RoCEv2 capability → exactly one warning mentioning ConnectX-7."""
-    warnings = DgxSparkPlatform().validate_host(_dgx_spark_hw(with_roce=False))
+    hw = _dgx_spark_hw(with_roce=False)
+    hw.source = source
+    warnings = DgxSparkPlatform().validate_host(hw)
     assert len(warnings) == 1
     assert "rdma:roce-v2" in warnings[0]
     assert "ConnectX-7" in warnings[0]
@@ -347,7 +350,7 @@ def test_assumed_hardware_does_not_claim_attached_fabric():
     hw = default_dgx_spark_hardware()
     assert hw.source == "assumed"
     assert not hw.has_capability("rdma:roce-v2")
-    assert DgxSparkPlatform().validate_host(hw)
+    assert DgxSparkPlatform().validate_host(hw) == []
 
 
 # --------------------------------------------------------------------------

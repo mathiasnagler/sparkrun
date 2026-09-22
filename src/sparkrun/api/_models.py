@@ -13,12 +13,13 @@ collection.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
     from sparkrun.orchestration.executor import ExecutorTarget
     from sparkrun.core.cluster_manager import ClusterDefinition, ClusterStatusResult
     from sparkrun.core._executor_destination import ExecutorDestination
+    from sparkrun.core.hardware import HostHardware
     from sparkrun.core.recipe import Recipe
     from sparkrun.core.scheduler import RankAssignment
 
@@ -194,8 +195,8 @@ class RunPlan:
     and what is launched are the same object.
 
     Building a plan performs the cluster-facing work that placement needs —
-    transport preparation and one occupancy query — but changes no cluster
-    state.  It is safe to build a plan and never launch it.
+    transport preparation, hardware discovery and one occupancy query — but
+    changes no cluster state.  It is safe to build a plan and never launch it.
     """
 
     recipe: "Recipe"
@@ -255,6 +256,14 @@ class RunPlan:
 
     Consumers must treat this snapshot as read-only. It pins discovery and
     launch to the same destination; hardware launch policy is resolved later.
+    """
+    host_hardware: Mapping[str, "HostHardware"] = field(default_factory=dict, kw_only=True)
+    """Operation-local combined probe results for candidate hosts, before policy.
+
+    Empty for dry runs and non-host executors. Failed observations are retained
+    so consumers can reject them without repeating the probe. Saved inventory
+    is never placed here. The cluster contains the successful observations
+    overlaid with configured budgets; this mapping keeps the raw facts.
     """
     recipe_fingerprint: str = ""
     """Serve-configuration digest of the *declared* recipe.

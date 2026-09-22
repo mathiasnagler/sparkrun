@@ -162,6 +162,27 @@ verbatim, and `HostHardware.accelerators` is materialized through
 connection per host, all concurrent. Single-host callers use `probe_host()`;
 both APIs return accelerator and InfiniBand information together.
 
+For host executors (Docker and local processes), `api.plan()` runs this combined
+probe before occupancy scheduling and the CLI memory-fit summary. Candidate hosts
+are probed concurrently once per plan, using the prepared transport, cluster SSH
+user and management-interface pin. Dry runs skip discovery; provider-managed
+executors such as Kubernetes retain their own inventory path.
+
+`RunPlan.host_hardware` retains the raw, operation-local observations. Successful
+observations are overlaid onto an ephemeral cluster view while preserving
+configured capacity ceilings, utilization limits and physical GPU indices. Saved
+cluster inventory is unchanged. A failed observation leaves existing inventory
+or the application's hardware assumption in use, with a warning; the failed
+result is retained so stricter consumers can reject it without a second probe.
+
+`run(plan=...)` carries the observations into launch and reuses interface data
+for transfer selection. ColdSnap checks its driver requirements against the same
+results; direct ColdSnap operations probe when no planning observation exists.
+Reports distinguish detected GPU/driver identity, measured or estimated capacity,
+and discovered interfaces. GB10's 121 GiB platform fallback remains an estimate,
+so detecting the GPU does not establish verified memory fit. Interface discovery
+also does not establish peer connectivity or validate the RDMA data path.
+
 ### Plugin-owned hardware probes
 
 Selected integrations can call

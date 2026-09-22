@@ -499,6 +499,15 @@ def run_env(tmp_path, monkeypatch, v):
     )
     monkeypatch.setattr("sparkrun.api._status.status", idle)
     monkeypatch.setattr("sparkrun.api.status", idle)
+    from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+
+    monkeypatch.setattr(
+        "sparkrun.core.hardware_probe.probe_hosts",
+        lambda hosts, **kwargs: {
+            host: HostHardware(accelerators=[AcceleratorSpec("nvidia", "gb10", capabilities=frozenset({"cuda"}))], source="detected")
+            for host in hosts
+        },
+    )
     return config_root
 
 

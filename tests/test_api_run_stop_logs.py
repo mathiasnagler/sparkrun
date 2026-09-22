@@ -95,7 +95,8 @@ def test_run_options_immutable_through_run():
 # --------------------------------------------------------------------------
 
 
-def test_run_dry_run_returns_run_result_without_ssh():
+@pytest.mark.parametrize("reuse_hardware", [False, True])
+def test_run_dry_run_returns_run_result_without_ssh(reuse_hardware):
     """A dry-run call returns a populated RunResult without invoking SSH.
 
     Patching ``launch_inference`` keeps this hermetic — we just verify
@@ -139,12 +140,51 @@ def test_run_dry_run_returns_run_result_without_ssh():
         },
     )()
 
+    from types import SimpleNamespace
+    from sparkrun.core.execution import PreparedExecution
+    from sparkrun.core.hardware import HostHardware, AcceleratorSpec
+
+    observed = HostHardware(
+        accelerators=[AcceleratorSpec("nvidia", "gb10", capabilities=frozenset({"cuda", "rdma:roce-v2"}))],
+        source="detected",
+        driver_versions={"nvidia": "610.43.02"},
+        ib_info={"IB_DETECTED": "1", "DETECTED_NET_LIST": "roce0"},
+    )
+    contexts = []
+
+    def resolve(context):
+        contexts.append(context)
+        if not reuse_hardware:
+            return None, ()
+        strategy = SimpleNamespace(
+            name="snapshot",
+            finalize_preparation=lambda context, receipts: PreparedExecution("snapshot", host_hardware={"h1": observed}),
+        )
+        return strategy, ()
+
     with (
         patch("sparkrun.api.status", return_value=ClusterStatus()),
-        patch("sparkrun.core.launcher.launch_inference", return_value=fake_result),
+        patch("sparkrun.core.launcher.launch_inference", return_value=fake_result) as launch,
         patch("sparkrun.api._resolve.resolve_runtime", return_value=_FakeRuntime()),
+        patch("sparkrun.core.execution.resolve_recipe_execution", side_effect=resolve),
     ):
         result = api.run(opts)
+
+    if reuse_hardware:
+        kwargs = launch.call_args.kwargs
+        original = contexts[0]
+        assert original.plan.cluster.hardware_for("h1").source == "assumed"
+        assert kwargs["cluster"].hardware_for("h1").source == "detected"
+        assert kwargs["placement"] is original.plan.placement
+        assert kwargs["execution_context"].plan.cluster is kwargs["cluster"]
+        assert kwargs["execution_context"].sctx is kwargs["sctx"]
+        assert kwargs["execution_context"].plan.cluster_id == original.plan.cluster_id
+        evidence = result.metadata["hardware_evidence"]["h1"]
+        assert evidence["accelerators"][0]["capacity_verification"] == "estimated"
+        assert evidence["drivers"]["nvidia"]["version"] == "610.43.02"
+        assert evidence["interfaces"]["status"] == "discovered"
+    else:
+        assert "hardware_evidence" not in result.metadata
 
     assert isinstance(result, api.RunResult)
     assert result.cluster_id == "sparkrun_fakefakefake"

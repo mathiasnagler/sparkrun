@@ -495,8 +495,6 @@ def detect_ib_for_hosts(
         return IBDetectionResult()
 
     kw = ssh_kwargs or {}
-    head_host = hosts[0]
-
     logger.info("Detecting InfiniBand on %d host(s)...", len(hosts))
     ib_script = generate_ib_detect_script(mgmt_interface)
     ib_results = run_remote_scripts_parallel(
@@ -507,16 +505,35 @@ def detect_ib_for_hosts(
         **kw,
     )
 
+    observations = {result.host: parse_ib_detect_output(result.stdout) for result in ib_results if result.success}
+    return ib_detection_from_observations(hosts, observations, topology=topology, backends=backends)
+
+
+def ib_detection_from_observations(
+    hosts: list[str],
+    observations: dict[str, dict[str, str]],
+    *,
+    topology: str | None = None,
+    backends: "dict[str, BackendBundle] | None" = None,
+) -> IBDetectionResult:
+    """Derive communication settings from this operation's combined probe.
+
+    This is interface discovery, not a connectivity verdict. Callers retain
+    the same SSH principal, management-interface pin and target host set.
+    """
+    if not hosts:
+        return IBDetectionResult()
+    head_host = hosts[0]
     per_host_env: dict[str, dict[str, str]] = {}
     ib_ip_map: dict[str, str] = {}
     ib_iface_map: dict[str, str] = {}
     ib_candidates: dict[str, list[str]] = {}
     mgmt_ip_map: dict[str, str] = {}
 
-    for result in ib_results:
-        if not result.success:
+    for host in hosts:
+        if host not in observations:
             continue
-        ib_info = parse_ib_detect_output(result.stdout)
+        ib_info = observations[host]
 
         # Detection degraded to "no management interface".  Not fatal — the
         # socket-interface env falls back to the fabric adapters below — but
@@ -528,7 +545,7 @@ def detect_ib_for_hosts(
                 "  No management interface identified on %s (no default route, and none inferable) — "
                 "pinning control traffic to the detected fabric interface(s) instead. "
                 "Set the cluster's `mgmt_interface` to pin one explicitly.",
-                result.host,
+                host,
             )
 
         # Per-host comm env: route through backend when provided so
@@ -536,14 +553,14 @@ def detect_ib_for_hosts(
         # from *backends* (or all hosts when *backends* is None) use the
         # legacy NCCL generator — byte-identical to NcclBackend on NVIDIA.
         if backends is not None:
-            if result.host not in backends:
-                raise ValueError("Missing collective backend for host %s" % result.host)
-            host_env = backends[result.host].collective.env_for_host(ib_info, topology=topology)
+            if host not in backends:
+                raise ValueError("Missing collective backend for host %s" % host)
+            host_env = backends[host].collective.env_for_host(ib_info, topology=topology)
         else:
             host_env = generate_nccl_env(ib_info, topology=topology)
         if host_env:
-            per_host_env[result.host] = host_env
-            if result.host == head_host:
+            per_host_env[host] = host_env
+            if host == head_host:
                 logger.info("  InfiniBand detected on %s, comm env configured", head_host)
 
         # IB IP for transfer routing.  Preserve all detected IPs as
@@ -552,24 +569,24 @@ def detect_ib_for_hosts(
         # links are reachable from any given peer.
         ib_ips = extract_ib_ips(ib_info)
         if ib_ips:
-            ib_ip_map[result.host] = ib_ips[0]
-            ib_candidates[result.host] = list(ib_ips)
+            ib_ip_map[host] = ib_ips[0]
+            ib_candidates[host] = list(ib_ips)
             if len(ib_ips) > 1:
-                logger.debug("  %s IB transfer IP candidates: %s", result.host, ib_ips)
+                logger.debug("  %s IB transfer IP candidates: %s", host, ib_ips)
             else:
-                logger.debug("  %s IB transfer IP: %s", result.host, ib_ips[0])
+                logger.debug("  %s IB transfer IP: %s", host, ib_ips[0])
 
             # Interface backing the first IB IP (parallel to DETECTED_IB_IPS),
             # used to re-pin socket-interface env when init falls back to fabric.
             net_ifaces = [name.strip() for name in ib_info.get("DETECTED_NET_LIST", "").split(",") if name.strip()]
             if net_ifaces:
-                ib_iface_map[result.host] = net_ifaces[0]
+                ib_iface_map[host] = net_ifaces[0]
 
         # Management IP (from default route interface)
         mgmt_ip = ib_info.get("DETECTED_MGMT_IP", "").strip()
         if mgmt_ip:
-            mgmt_ip_map[result.host] = mgmt_ip
-            logger.debug("  %s mgmt IP: %s", result.host, mgmt_ip)
+            mgmt_ip_map[host] = mgmt_ip
+            logger.debug("  %s mgmt IP: %s", host, mgmt_ip)
 
     comm_env = ClusterCommEnv.from_per_host(per_host_env)
     if comm_env.is_empty():

@@ -279,15 +279,22 @@ class _StubRuntime:
         return 0
 
 
-def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path):
+@pytest.mark.parametrize("reuse_hardware", [False, True])
+def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path, caplog, reuse_hardware):
     """launch_inference resolves backends and passes them to runtime.run()."""
     from sparkrun.core import launcher
     from sparkrun.core.launcher import launch_inference
 
+    transfer_calls = []
+
+    def transfer(*args, **kwargs):
+        transfer_calls.append(kwargs)
+        return type("R", (), {"mode": "local"})()
+
     # Make all the heavy-lift / network helpers no-ops.
     monkeypatch.setattr(
         "sparkrun.orchestration.distribution.resolve_auto_transfer_mode",
-        lambda *a, **kw: type("R", (), {"mode": "local"})(),
+        transfer,
     )
     monkeypatch.setattr(
         "sparkrun.orchestration.distribution.distribute_from_config",
@@ -380,6 +387,20 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path)
         hosts_hardware={"nv-host": _nvidia_hw()},
     )
 
+    observations = {}
+    if reuse_hardware:
+        from sparkrun.core.hardware_observations import apply_hardware_observations
+
+        observations = {
+            "nv-host": HostHardware(
+                accelerators=[AcceleratorSpec("nvidia", "gb10", capabilities=frozenset({"cuda", "rdma:roce-v2"}))],
+                source="detected",
+                driver_versions={"nvidia": "610.43.02"},
+                ib_info={"IB_DETECTED": "1", "DETECTED_NET_LIST": "roce0"},
+            )
+        }
+        cluster = apply_hardware_observations(cluster, observations, ["nv-host"])
+    caplog.set_level("INFO")
     result = launch_inference(
         recipe=_Recipe(),
         runtime=runtime,
@@ -387,6 +408,7 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path)
         overrides={},
         config=_Cfg(),
         cluster=cluster,
+        hardware_observations=observations,
         is_solo=True,
         dry_run=True,
         sync_tuning=False,
@@ -400,8 +422,17 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path)
     assert "nv-host" in threaded
     assert isinstance(threaded["nv-host"].collective, NcclBackend)
 
+    if reuse_hardware:
+        assert transfer_calls[0]["observed_ib"].comm_env.get_env("nv-host")["NCCL_NET"] == "IB"
+        assert "610.43.02 detected" in caplog.text
+        assert "capacity 121.0 GiB estimated" in caplog.text
+        assert "hardware is assumed" not in caplog.text
+    else:
+        assert "observed_ib" not in transfer_calls[0]
 
-def test_execution_strategy_prepares_capsules_and_skips_model_before_activation(monkeypatch, tmp_path):
+
+@pytest.mark.parametrize("reuse_hardware", [False, True])
+def test_execution_strategy_prepares_capsules_and_skips_model_before_activation(monkeypatch, tmp_path, caplog, reuse_hardware):
     from sparkrun.core import launcher
     from sparkrun.core.execution import ActivationResult, LaunchAssetPolicy, PreparedExecution
     from sparkrun.core.launcher import launch_inference
@@ -409,9 +440,15 @@ def test_execution_strategy_prepares_capsules_and_skips_model_before_activation(
 
     events = []
     distribution = {}
+    transfer_calls = []
+
+    def resolve_transfer(*args, **kwargs):
+        transfer_calls.append(kwargs)
+        return type("R", (), {"mode": "local"})()
+
     monkeypatch.setattr(
         "sparkrun.orchestration.distribution.resolve_auto_transfer_mode",
-        lambda *a, **kw: type("R", (), {"mode": "local"})(),
+        resolve_transfer,
     )
 
     def distribute(*args, **kwargs):
@@ -433,6 +470,9 @@ def test_execution_strategy_prepares_capsules_and_skips_model_before_activation(
         hf_cache_dir = tmp_path / "hf"
         cache_dir = tmp_path / "cache"
         missing_mount_source_policy = "fail"
+
+        def for_cluster(self, cluster):
+            return self
 
         def get_registry_manager(self):
             return None
@@ -461,6 +501,10 @@ def test_execution_strategy_prepares_capsules_and_skips_model_before_activation(
         name = "snapshot"
 
         def prepare_activation(self, context):
+            if reuse_hardware:
+                assert context.execution.plan.cluster.hardware_for("h1").source == "detected"
+                assert context.execution.plan.cluster.max_gpu_memory_utilization == 0.8
+                assert context.execution.plan.placement is placement
             assert events == ["assets"]
             events.append("prepare-only")
             return "receipt"
@@ -474,6 +518,39 @@ def test_execution_strategy_prepares_capsules_and_skips_model_before_activation(
         "registry/capsule0@sha256:" + "b" * 64,
         "registry/capsule1@sha256:" + "c" * 64,
     )
+    from sparkrun.api import RunPlan, RunOptions
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.context import SparkrunContext
+    from sparkrun.core.execution import ExecutionContext
+    from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+    from sparkrun.core.scheduler import RankAssignment, RankSlot
+
+    hardware = (
+        {
+            host: HostHardware(
+                accelerators=[AcceleratorSpec("nvidia", "gb10", capabilities=frozenset({"cuda", "rdma:roce-v2"}))],
+                source="detected",
+                driver_versions={"nvidia": "610.43.02"},
+                ib_info={"IB_DETECTED": "1", "DETECTED_NET_LIST": "roce0"},
+            )
+            for host in ["h1", "h2"]
+        }
+        if reuse_hardware
+        else {}
+    )
+    cluster = ClusterDefinition(name="test", hosts=["h1", "h2"], max_gpu_memory_utilization=0.8)
+    placement = RankAssignment((RankSlot("h1", 0), RankSlot("h2", 0)), ("h1", "h2"))
+    plan = RunPlan(
+        recipe=_Recipe(),
+        runtime=_StubRuntime(),
+        cluster=cluster,
+        candidate_hosts=("h1", "h2"),
+        host_list=("h1", "h2"),
+        is_solo=False,
+        placement=placement,
+    )
+    context = ExecutionContext(RunOptions(recipe=_Recipe()), plan, SparkrunContext(None, _Cfg()))
+    caplog.set_level("INFO")
     _StubRuntime.last_kwargs = {}
     result = launch_inference(
         recipe=_Recipe(),
@@ -484,7 +561,9 @@ def test_execution_strategy_prepares_capsules_and_skips_model_before_activation(
         dry_run=False,
         sync_tuning=False,
         before_start=lambda: events.append("evict"),
-        execution_context=object(),
+        cluster=cluster,
+        placement=placement,
+        execution_context=context,
         execution_strategy=_Strategy(),
         prepared_execution=PreparedExecution(
             "snapshot",
@@ -498,6 +577,7 @@ def test_execution_strategy_prepares_capsules_and_skips_model_before_activation(
                 sync_tuning=False,
                 clear_page_cache=False,
             ),
+            host_hardware=hardware,
         ),
     )
 
@@ -512,6 +592,16 @@ def test_execution_strategy_prepares_capsules_and_skips_model_before_activation(
     assert spans["execution.prepare_activation"]["attrs"]["strategy"] == "snapshot"
     assert spans["execution.activate"]["attrs"]["strategy"] == "snapshot"
     assert spans["execution.prepare_activation"]["parent"] == spans["launch"]["id"]
+
+    if reuse_hardware:
+        assert transfer_calls[0]["observed_ib"].comm_env.get_env("h1")["NCCL_NET"] == "IB"
+        assert "610.43.02 detected" in caplog.text
+        assert "capacity 121.0 GiB estimated" in caplog.text
+        assert "RDMA interfaces discovered (roce0); peer connectivity not tested" in caplog.text
+        assert "hardware is assumed" not in caplog.text
+        assert cluster.hardware_for("h1").source == "assumed"
+    else:
+        assert "observed_ib" not in transfer_calls[0]
 
 
 def test_execution_strategy_records_the_same_job_identity_as_a_normal_launch(monkeypatch, tmp_path):
@@ -610,7 +700,8 @@ def test_execution_strategy_records_the_same_job_identity_as_a_normal_launch(mon
 # ---------------------------------------------------------------------------
 
 
-def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tmp_path, caplog):
+@pytest.mark.parametrize("hardware_source", ["inventory", "detected", "assumed"])
+def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tmp_path, caplog, hardware_source):
     """validate_host warnings appear in the log at WARNING level but do not abort launch."""
     import logging
 
@@ -662,7 +753,9 @@ def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tm
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.hardware import AcceleratorSpec, HostHardware
 
-    hw_no_roce = HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="gb10", capabilities=frozenset({"cuda"}))])
+    hw_no_roce = HostHardware(
+        accelerators=[AcceleratorSpec(vendor="nvidia", model="gb10", capabilities=frozenset({"cuda"}))], source=hardware_source
+    )
     cluster = ClusterDefinition(
         name="warn-test",
         hosts=["dgx-host"],
@@ -732,9 +825,11 @@ def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tm
 
     # At least one warning mentioning the host and the missing capability
     warning_texts = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("dgx-host" in w and "rdma:roce-v2" in w for w in warning_texts), (
-        "Expected a warning about missing rdma:roce-v2 for dgx-host, got: %s" % warning_texts
-    )
+    if hardware_source == "assumed":
+        assert not any("rdma:roce-v2" in w for w in warning_texts)
+        assert any("dgx-host" in w and "hardware is assumed" in w for w in warning_texts)
+    else:
+        assert any("dgx-host" in w and "rdma:roce-v2" in w for w in warning_texts), warning_texts
 
 
 # ---------------------------------------------------------------------------

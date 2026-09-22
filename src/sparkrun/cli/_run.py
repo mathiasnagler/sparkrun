@@ -716,7 +716,7 @@ def run(
     click.echo("Runtime:   %s" % runtime.runtime_name)
     click.echo("Image:     %s" % container_image)
     click.echo("Model:     %s" % recipe.model)
-    click.echo("Planning:  querying cluster occupancy and model metadata...", nl=False)
+    click.echo("Planning:  probing hardware, querying cluster occupancy and model metadata...", nl=False)
 
     # Decide the launch ONCE.  Everything below renders from this plan, and the
     # plan is handed back to ``api.run`` — so what is displayed is exactly what

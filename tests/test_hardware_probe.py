@@ -278,3 +278,19 @@ def test_probe_hosts_partial_failure(monkeypatch):
     result = probe_hosts(hosts)
     assert result["good-host"].accelerators[0].model == "gb10"
     assert "hardware probe failed" in result["bad-host"].notes
+
+
+def test_combined_probe_management_pin_reaches_single_and_parallel_ssh(monkeypatch):
+    scripts = []
+
+    def single(host, script, **kwargs):
+        scripts.append(script)
+        return RemoteResult(host=host, returncode=0, stdout=_combined(_ACCEL_DGX, _IB_DETECTED), stderr="")
+
+    monkeypatch.setattr("sparkrun.orchestration.ssh.run_remote_script", single)
+    monkeypatch.setattr(
+        "sparkrun.orchestration.ssh.run_remote_scripts_parallel", lambda hosts, script, **kw: [single(h, script, **kw) for h in hosts]
+    )
+    probe_host("h1", mgmt_interface="mgmt0")
+    probe_hosts(["h1", "h2"], mgmt_interface="mgmt0")
+    assert scripts == [generate_combined_probe_script("mgmt0")] * 3

@@ -224,3 +224,170 @@ def test_plan_prepares_transport_once(recipe, idle_cluster, v):
             api.run(_options(recipe), plan=plan)
 
     assert prepare.call_count == 1, "run() re-prepared a transport the plan already prepared"
+
+
+def test_live_hardware_precedes_placement_and_is_reused_by_normal_launch(recipe, monkeypatch, v, capsys):
+    from copy import deepcopy
+    from dataclasses import replace
+    from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+    from sparkrun.models.vram import VRAMEstimate
+    from sparkrun.utils.cli_formatters import display_vram_estimate
+
+    options = replace(_options(recipe), dry_run=False)
+    options.cluster.user = "cluster-user"
+    options.cluster.mgmt_interface = "mgmt0"
+    options.cluster.max_gpu_memory_utilization = 0.8
+    before = deepcopy(options.cluster)
+    observed = {
+        host: HostHardware(
+            accelerators=[AcceleratorSpec("nvidia", "gb10", capabilities=frozenset({"cuda", "rdma:roce-v2"}))],
+            source="detected",
+            driver_versions={"nvidia": "610.43.02"},
+            ib_info={"IB_DETECTED": "1", "DETECTED_NET_LIST": "roce0"},
+        )
+        for host in _HOSTS
+    }
+    events = []
+
+    def probe(hosts, *, ssh_kwargs, mgmt_interface):
+        events.append("probe")
+        assert hosts == _HOSTS
+        assert ssh_kwargs["ssh_user"] == "cluster-user"
+        assert mgmt_interface == "mgmt0"
+        return observed
+
+    def status(hosts, *, cluster, **kwargs):
+        assert events == ["probe"]
+        events.append("occupancy")
+        assert all(cluster.hardware_for(h).source == "detected" for h in hosts)
+        return ClusterStatus(hosts=tuple(HostOccupancy(host=h, free_slots=1) for h in hosts), executor="docker")
+
+    monkeypatch.setattr("sparkrun.core.hardware_probe.probe_hosts", probe)
+    monkeypatch.setattr(api, "status", status)
+    monkeypatch.setattr(
+        recipe,
+        "estimate_vram",
+        lambda **kw: VRAMEstimate(
+            model_weights_gb=155.4,
+            total_per_gpu_gb=77.7,
+            tensor_parallel=2,
+            kv_cache_per_token_bytes=None,
+            kv_cache_total_gb=None,
+            max_model_len=None,
+        ),
+    )
+    plan = api.plan(options)
+    assert events == ["probe", "occupancy"]
+    assert options.cluster == before
+    assert plan.host_hardware == observed
+    assert plan.cluster.max_gpu_memory_utilization == 0.8
+    display_vram_estimate(recipe, cluster=plan.cluster, placement=plan.placement)
+    output = capsys.readouterr().out
+    assert "hardware=detected" in output
+    assert "hardware=assumed" not in output
+    assert "probe the target" not in output
+    assert "Placement memory fit: UNVERIFIED" in output
+    assert "capacity source=platform default" in output
+
+    with mock.patch("sparkrun.core.launcher.launch_inference") as launch:
+        launch.return_value = mock.MagicMock(
+            cluster_id=plan.cluster_id,
+            host_list=list(plan.host_list),
+            rc=0,
+            is_solo=False,
+            runtime_info={},
+            recipe_ref=None,
+            serve_command="",
+            container_image="",
+            serve_port=0,
+            effective_cache_dir="",
+        )
+        result = api.run(options, plan=plan)
+    assert events == ["probe", "occupancy"]
+    assert launch.call_args.kwargs["placement"] is plan.placement
+    assert launch.call_args.kwargs["hardware_observations"] == {h: observed[h] for h in plan.host_list}
+    assert launch.call_args.kwargs["cluster"] is plan.cluster
+    assert result.metadata["hardware_evidence"][plan.host_list[0]]["accelerators"][0]["capacity_verification"] == "estimated"
+
+
+def test_planning_discovers_additional_gpu_slots_before_scheduling(recipe, monkeypatch, v):
+    from dataclasses import replace
+    from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+    from sparkrun.models.vram import VRAMEstimate
+
+    options = replace(_options(recipe), dry_run=False, hosts=("h3",))
+    options.cluster.hosts = ["h3"]
+    options.cluster.hosts_hardware = {
+        "h3": HostHardware(
+            accelerators=[
+                AcceleratorSpec("nvidia", "gb10", memory_gb=100, max_gpu_memory_utilization=0.6),
+                AcceleratorSpec("nvidia", "gb10", memory_gb=110, max_gpu_memory_utilization=0.7),
+            ]
+        )
+    }
+    monkeypatch.setattr(
+        "sparkrun.core.hardware_probe.probe_hosts",
+        lambda *a, **kw: {
+            "h3": HostHardware(
+                accelerators=[AcceleratorSpec("nvidia", "gb10", count=2, memory_gb=121, capabilities=frozenset({"cuda"}))],
+                source="detected",
+            )
+        },
+    )
+    monkeypatch.setattr(api, "status", lambda *a, **kw: ClusterStatus(hosts=(HostOccupancy(host="h3", free_slots=2),)))
+    monkeypatch.setattr(
+        recipe,
+        "estimate_vram",
+        lambda **kw: VRAMEstimate(
+            model_weights_gb=80,
+            total_per_gpu_gb=40,
+            tensor_parallel=2,
+            kv_cache_per_token_bytes=None,
+            kv_cache_total_gb=None,
+            max_model_len=None,
+        ),
+    )
+    plan = api.plan(options)
+    assert {(slot.host, slot.local_gpu) for slot in plan.placement.by_rank} == {("h3", 0), ("h3", 1)}
+    assert [(a.memory_gb, a.max_gpu_memory_utilization) for a in plan.cluster.hardware_for("h3").accelerators] == [(100, 0.6), (110, 0.7)]
+    assert plan.host_hardware["h3"].accelerators[0].memory_gb == 121
+
+
+@pytest.mark.parametrize("skip", ["dry-run", "provider"])
+def test_planning_probe_skips_dry_run_and_non_host_substrates(monkeypatch, skip):
+    from types import SimpleNamespace
+    from sparkrun.api._run import _observe_plan_hardware
+
+    cluster = ClusterDefinition(name="c", hosts=["h"])
+    monkeypatch.setattr("sparkrun.orchestration.executor.cluster_status_scope", lambda *a, **kw: "k8s" if skip == "provider" else "host")
+    monkeypatch.setattr("sparkrun.core.hardware_probe.probe_hosts", lambda *a, **kw: pytest.fail("unexpected SSH probe"))
+    result, observations = _observe_plan_hardware(
+        cluster, ["h"], sctx=SimpleNamespace(config=None, variables=None), dry_run=skip == "dry-run"
+    )
+    assert result is cluster
+    assert observations == {}
+
+
+def test_planning_retains_probe_failures_without_promoting_inventory(monkeypatch, caplog):
+    from types import SimpleNamespace
+    from sparkrun.api._run import _observe_plan_hardware
+    from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+
+    configured = HostHardware(accelerators=[AcceleratorSpec("nvidia", "gb10")])
+    cluster = ClusterDefinition(name="c", hosts=["failed", "missing", "empty"], hosts_hardware={"failed": configured})
+    monkeypatch.setattr("sparkrun.orchestration.executor.cluster_status_scope", lambda *a, **kw: "host")
+    monkeypatch.setattr("sparkrun.orchestration.primitives.build_ssh_kwargs", lambda *a: {})
+    monkeypatch.setattr(
+        "sparkrun.core.hardware_probe.probe_hosts",
+        lambda *a, **kw: {
+            "failed": HostHardware(notes="SSH failed"),
+            "empty": HostHardware(source="detected"),
+        },
+    )
+    result, observations = _observe_plan_hardware(cluster, cluster.hosts, sctx=SimpleNamespace(config=None, variables=None), dry_run=False)
+    assert result.hardware_for("failed") is configured
+    assert result.hardware_for("missing").source == "assumed"
+    assert result.hardware_for("empty").total_gpus == 0
+    assert observations["missing"].source != "detected"
+    assert observations["failed"].notes == "SSH failed"
+    assert "using configured inventory or platform assumptions" in caplog.text

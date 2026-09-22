@@ -1,5 +1,7 @@
 """Unit tests for sparkrun.orchestration.primitives module."""
 
+import pytest
+
 from unittest.mock import patch, MagicMock
 
 from sparkrun.orchestration.ssh import RemoteResult
@@ -935,3 +937,76 @@ def test_cleanup_containers_empty_hosts_noop(mock_run):
 
     assert cleanup_containers([], ["c0"]) == []
     mock_run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("mode", "in_cluster", "cross_user", "local_ib", "reachable", "expected", "checks"),
+    [
+        ("local", True, False, True, True, "local", 1),
+        ("auto", True, False, True, False, "local", 1),
+        ("auto", False, False, True, True, "local", 1),
+        ("auto", False, False, True, False, "delegated", 1),
+        ("auto", False, False, False, True, "delegated", 0),
+        ("auto", True, True, True, True, "delegated", 0),
+        ("push", False, False, True, True, "push", 0),
+    ],
+)
+def test_combined_probe_reused_through_transfer_selection_and_distribution(
+    monkeypatch, mode, in_cluster, cross_user, local_ib, reachable, expected, checks
+):
+    from sparkrun.orchestration.distribution import distribute_from_config
+    from sparkrun.orchestration.infiniband import ib_detection_from_observations
+
+    observations = {
+        h: {"IB_DETECTED": "1", "DETECTED_IB_IPS": "192.168.1." + str(i), "DETECTED_NET_LIST": "roce0", "DETECTED_MGMT_IP": h}
+        for i, h in enumerate(["h1", "h2"], 1)
+    }
+    observed = ib_detection_from_observations(["h1", "h2"], observations)
+    monkeypatch.setattr("sparkrun.orchestration.distribution.is_control_in_cluster", lambda _: in_cluster)
+    monkeypatch.setattr("sparkrun.orchestration.distribution._is_cross_user", lambda _: cross_user)
+    monkeypatch.setattr("sparkrun.orchestration.distribution._has_local_ib", lambda: local_ib)
+    monkeypatch.setattr("sparkrun.orchestration.distribution.is_local_host", lambda _: False)
+    with (
+        patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts", side_effect=AssertionError("duplicate interface probe")) as detect,
+        patch(
+            "sparkrun.orchestration.infiniband.validate_ib_connectivity", return_value=observed.ib_ip_map if reachable else {}
+        ) as validate,
+        patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}),
+    ):
+        selection = resolve_auto_transfer_mode(mode, ["h1", "h2"], observed_ib=observed)
+        assert selection.mode == expected
+        assert selection.ib_result is observed
+        assert validate.call_count == checks
+
+        recipe = MagicMock()
+        dist_cfg = MagicMock()
+        dist_cfg.containers.enabled = False
+        dist_cfg.models.enabled = False
+        recipe.distribution_config.resolve.return_value = dist_cfg
+        comm_env, ib_ips, mgmt_ips, _ = distribute_from_config(
+            recipe,
+            "img:latest",
+            ["h1", "h2"],
+            "/cache",
+            MagicMock(),
+            dry_run=True,
+            transfer_mode=selection.mode,
+            pre_ib=selection,
+        )
+        assert comm_env == observed.comm_env
+        assert mgmt_ips == {"h1": "h1", "h2": "h2"}
+        if expected == "local":
+            assert ib_ips == (observed.ib_ip_map if reachable else {})
+        assert validate.call_count == checks
+        detect.assert_not_called()
+
+
+def test_reusing_solo_probe_does_not_add_a_network_check(monkeypatch):
+    from sparkrun.orchestration.infiniband import IBDetectionResult
+
+    monkeypatch.setattr("sparkrun.orchestration.distribution.is_control_in_cluster", lambda _: True)
+    monkeypatch.setattr("sparkrun.orchestration.distribution._is_cross_user", lambda _: False)
+    with patch("sparkrun.orchestration.infiniband.validate_ib_connectivity") as validate:
+        result = resolve_auto_transfer_mode("auto", ["h"], observed_ib=IBDetectionResult())
+    assert result.mode == "local"
+    validate.assert_not_called()

@@ -66,10 +66,21 @@ class HostFitDetail:
     allocation_mode: str = "exclusive"
 
     @property
+    def memory_capacity_verification(self) -> str:
+        from sparkrun.core.hardware_observations import capacity_verification
+
+        return capacity_verification(self.accelerator_memory_gb, self.memory_capacity_source)
+
+    @property
     def status(self) -> str:
         if not self.ok:
             return "exceeds"
-        if self.accelerator_memory_gb is None or not self.memory_estimate_complete or self.hardware_source == "assumed":
+        if (
+            self.accelerator_memory_gb is None
+            or not self.memory_estimate_complete
+            or self.hardware_source == "assumed"
+            or self.memory_capacity_verification in {"unknown", "estimated"}
+        ):
             return "unknown"
         return "fits"
 
@@ -120,6 +131,7 @@ def _detail_to_dict(d: HostFitDetail) -> dict:
         "max_gpu_memory_utilization": d.max_gpu_memory_utilization,
         "memory_limit_source": d.memory_limit_source,
         "memory_capacity_source": d.memory_capacity_source,
+        "memory_capacity_verification": d.memory_capacity_verification,
         "hardware_source": d.hardware_source,
         "status": d.status,
         "memory_estimate_complete": d.memory_estimate_complete,
