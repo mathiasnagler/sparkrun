@@ -12,6 +12,14 @@ first tagged release containing them, regardless of their original commit date.
 
 ### 0.4.0 application and API changes
 
+- Fixed model distribution transferring no weights when a host's HF cache uses
+  huggingface_hub's shared blob store (1.32 and later, on by default): both
+  transfer paths now pass `--copy-unsafe-links`, materialising the blob links
+  that leave the model directory while keeping the in-tree snapshot links as
+  links, so each blob is still stored once. Weight-existence checks require a
+  readable file rather than a matching name, so a bytes-less skeleton of
+  dangling symlinks is a cache miss instead of a permanent false hit that
+  skipped both the download and the repair (#299).
 - Honor explicit vLLM `kv_cache_memory_bytes` as a per-GPU allocation, separate
   from context demand. Hybrid linear/MLA caches report unknown context capacity
   instead of applying MLA sizing to every layer (#297).
